@@ -2,7 +2,7 @@ classdef PRBCCMO < ALGORITHM
 % <2026> <multi> <real/integer/label/binary/permutation> <constrained>
 % Pareto-relevant boundary CCMO
 % type     --- 1    --- Type of operator (1. GA 2. DE)
-% bRho     --- 0.5  --- Boundary evaluation ratio relative to N
+% bRho     --- 0.2  --- Boundary evaluation ratio relative to N
 % afRho    --- 0.5  --- Feasible boundary archive size ratio
 % aiRho    --- 0.5  --- Infeasible boundary archive size ratio
 % trainRho --- 4    --- Training archive size ratio
@@ -26,7 +26,7 @@ classdef PRBCCMO < ALGORITHM
         function main(Algorithm,Problem)
             %% Parameter setting
             [type,bRho,afRho,aiRho,trainRho,hidden,epoch,lr,xRho,lsRho,mRho] = ...
-                Algorithm.ParameterSet(1,0.5,0.5,0.5,4,20,25,0.01,0.5,0.25,0.25);
+                Algorithm.ParameterSet(1,0.2,0.5,0.5,4,20,25,0.01,0.5,0.25,0.25);
 
             BoundaryBudget = max(0,round(bRho*Problem.N));
             ArchiveFMax    = max(0,round(afRho*Problem.N));
@@ -36,6 +36,7 @@ classdef PRBCCMO < ALGORITHM
             NumLocal       = max(0,round(lsRho*Problem.N));
             NumMate        = max(0,round(mRho*Problem.N));
             [W,~]          = UniformPoint(max(Problem.N,2),Problem.M);
+            NumBoundarySources = 4;
 
             %% Generate random populations
             PopulationC = Problem.Initialization();
@@ -47,7 +48,7 @@ classdef PRBCCMO < ALGORITHM
             ArchiveF    = [];
             ArchiveI    = [];
             [TrainDec,TrainLabel] = UpdateTrainingArchive([],[],[PopulationC,PopulationU],[],TrainMax);
-            Algorithm.metric = InitializeBoundaryMetrics(Algorithm.metric);
+            Algorithm.metric = InitializeBoundaryMetrics(Algorithm.metric,NumBoundarySources);
             
             %% Optimization
             while Algorithm.NotTerminated(PopulationC)
@@ -58,11 +59,12 @@ classdef PRBCCMO < ALGORITHM
 
                 CandidatePool = GenerateBoundaryCandidates( ...
                     Problem,PopulationC,PopulationU,ArchiveF,ArchiveI, ...
-                    FitnessC,FitnessU,type,NumCross,NumLocal,NumMate);
+                    FitnessC,FitnessU,type,W,NumCross,NumLocal,NumMate);
                 
                 BoundaryBudgetNow = min(BoundaryBudget,max(0,Problem.maxFE-Problem.FE));
                 [BoundaryOffspring,BoundaryInfo] = SelectBoundaryCandidates( ...
                     Problem,CandidatePool,PopulationC,Model,W,BoundaryBudgetNow);
+                HelperU = SelectHelperPopulation(OffspringU,PopulationC,Model,W,BoundaryBudgetNow);
 
                 if isempty(BoundaryOffspring)
                     CrossBoundary = [];
@@ -70,15 +72,15 @@ classdef PRBCCMO < ALGORITHM
                     CrossBoundary = BoundaryOffspring(BoundaryInfo.source==1);
                 end
 
-                BoundaryBaseCount = numel(PopulationC) + numel(OffspringC);
+                BoundaryBaseCount = numel(PopulationC) + numel(OffspringC) + numel(HelperU);
                 [PopulationC,FitnessC,SelectedIdxC] = EnvironmentalSelectionC( ...
-                    [PopulationC,OffspringC,BoundaryOffspring],Problem.N,Model,W);
+                    [PopulationC,OffspringC,HelperU,BoundaryOffspring],Problem.N,Model,W);
                 [PopulationU,FitnessU] = EnvironmentalSelectionU( ...
                     [PopulationU,OffspringU,CrossBoundary],Problem.N);
 
                 Algorithm.metric = RecordBoundaryMetrics( ...
                     Algorithm.metric,Problem.FE,BoundaryOffspring,BoundaryInfo, ...
-                    SelectedIdxC,BoundaryBaseCount);
+                    SelectedIdxC,BoundaryBaseCount,NumBoundarySources);
 
                 [ArchiveF,ArchiveI] = UpdateBoundaryArchives( ...
                     ArchiveF,ArchiveI,BoundaryOffspring,PopulationC,Model,W, ...
@@ -109,17 +111,70 @@ function [OffspringC,OffspringU] = GenerateRegularOffspring(Problem,PopulationC,
     end
 end
 
-function Metric = InitializeBoundaryMetrics(Metric)
+function HelperU = SelectHelperPopulation(OffspringU,PopulationC,Model,W,HelperBudget)
+% Reinject a filtered helper subset from P_U into the constrained update.
+
+    HelperU = [];
+    if isempty(OffspringU)
+        return;
+    end
+    if nargin < 5 || isempty(HelperBudget)
+        HelperBudget = numel(OffspringU);
+    end
+
+    FeasibleMask = all(OffspringU.cons<=0,2);
+    if any(FeasibleMask)
+        HelperU = OffspringU(FeasibleMask);
+    end
+
+    Infeasible = OffspringU(~FeasibleMask);
+    if isempty(Infeasible)
+        return;
+    end
+
+    Prob    = PredictBoundaryMLP(Model,Infeasible.decs);
+    Score   = 1 - 2*abs(Prob-0.5);
+    NearIdx = find(Score>=0.5);
+    if isempty(NearIdx)
+        if ~isempty(HelperU)
+            Keep = KeepLatestDecisionRows(HelperU.decs);
+            HelperU = HelperU(Keep);
+        end
+        return;
+    end
+
+    Infeasible = Infeasible(NearIdx);
+    Score      = Score(NearIdx);
+    FeasibleC  = PopulationC(all(PopulationC.cons<=0,2));
+    if isempty(FeasibleC)
+        FeasibleObj = zeros(0,size(Infeasible.objs,2));
+    else
+        FeasibleObj = FeasibleC.objs;
+    end
+    HelperBudget = min(max(0,HelperBudget),numel(Infeasible));
+    Order = RerankBoundaryCandidates(Infeasible.objs,Score,[],FeasibleObj,W,HelperBudget);
+    if ~isempty(Order)
+        HelperU = [HelperU,Infeasible(Order)];
+    end
+
+    if isempty(HelperU)
+        return;
+    end
+    Keep = KeepLatestDecisionRows(HelperU.decs);
+    HelperU = HelperU(Keep);
+end
+
+function Metric = InitializeBoundaryMetrics(Metric,NumSources)
     Metric.boundary_FE_t       = zeros(0,1);
     Metric.B_selected_t        = zeros(0,1);
     Metric.B_feasible_t        = zeros(0,1);
     Metric.B_enterPc_t         = zeros(0,1);
-    Metric.B_selected_source_t = zeros(0,3);
-    Metric.B_feasible_source_t = zeros(0,3);
-    Metric.B_enterPc_source_t  = zeros(0,3);
+    Metric.B_selected_source_t = zeros(0,NumSources);
+    Metric.B_feasible_source_t = zeros(0,NumSources);
+    Metric.B_enterPc_source_t  = zeros(0,NumSources);
 end
 
-function Metric = RecordBoundaryMetrics(Metric,CurrentFE,BoundaryOffspring,BoundaryInfo,SelectedIdxC,BoundaryBaseCount)
+function Metric = RecordBoundaryMetrics(Metric,CurrentFE,BoundaryOffspring,BoundaryInfo,SelectedIdxC,BoundaryBaseCount,NumSources)
     FeasibleMask = false(0,1);
     EnterIdx     = zeros(0,1);
     if ~isempty(BoundaryOffspring)
@@ -132,9 +187,9 @@ function Metric = RecordBoundaryMetrics(Metric,CurrentFE,BoundaryOffspring,Bound
     Metric.B_feasible_t(end+1,1)  = sum(FeasibleMask);
     Metric.B_enterPc_t(end+1,1)   = numel(EnterIdx);
 
-    Metric.B_selected_source_t(end+1,:) = CountBySource(BoundaryInfo.source,3);
-    Metric.B_feasible_source_t(end+1,:) = CountBySource(BoundaryInfo.source(FeasibleMask),3);
-    Metric.B_enterPc_source_t(end+1,:)  = CountBySource(BoundaryInfo.source(EnterIdx),3);
+    Metric.B_selected_source_t(end+1,:) = CountBySource(BoundaryInfo.source,NumSources);
+    Metric.B_feasible_source_t(end+1,:) = CountBySource(BoundaryInfo.source(FeasibleMask),NumSources);
+    Metric.B_enterPc_source_t(end+1,:)  = CountBySource(BoundaryInfo.source(EnterIdx),NumSources);
 end
 
 function Counts = CountBySource(Source,NumSources)

@@ -93,13 +93,3 @@ function Archive = UpdateInfeasibleArchive(Archive,NewSolutions,CurrentFeasible,
     [~,Rank] = sortrows(RankMat,[1 2 3 4]);
     Archive  = Pool(Rank(1:min(MaxSize,length(Rank))));
 end
-
-function flag = AnyDominates(PopObj,obj)
-    flag = false;
-    if isempty(PopObj)
-        return;
-    end
-    LessEqual = all(PopObj<=repmat(obj,size(PopObj,1),1),2);
-    Less      = any(PopObj<repmat(obj,size(PopObj,1),1),2);
-    flag      = any(LessEqual & Less);
-end

@@ -106,13 +106,3 @@ function AddIdx = SelectInfeasibleIdx(Population,SelectedFeasibleIdx,CandidateId
     [~,Rank] = sortrows(RankMat,[1 2 3 4]);
     AddIdx   = CandidateIdx(Rank(1:min(N,length(Rank))))';
 end
-
-function flag = AnyDominates(PopObj,obj)
-    flag = false;
-    if isempty(PopObj)
-        return;
-    end
-    LessEqual = all(PopObj<=repmat(obj,size(PopObj,1),1),2);
-    Less      = any(PopObj<repmat(obj,size(PopObj,1),1),2);
-    flag      = any(LessEqual & Less);
-end
