@@ -1,22 +1,21 @@
-function Pool = GenerateBoundaryCandidates(Problem,PopulationC,PopulationU,ArchiveF,ArchiveI,FitnessC,FitnessU,type,W,NumCross,NumLocal,NumMate)
-% Generate the unevaluated boundary candidate pool.
+function Pool = GenerateBoundaryCandidates(Problem,PopulationC,PopulationU,ArchiveF,ArchiveI,type,W,NumBridge,NumLocal)
+% Generate the unevaluated boundary candidate pool from bridge and local sources.
 
     Pool.decs      = zeros(0,Problem.D);
     Pool.proxyObjs = zeros(0,Problem.M);
     Pool.source    = zeros(0,1);
 
-    [Decs,Proxy] = GenerateCrossCandidates(Problem,PopulationC,PopulationU,FitnessC,FitnessU,type,W,NumCross);
+    FeasibleC   = PopulationC(all(PopulationC.cons<=0,2));
+    InfeasibleU = PopulationU(~all(PopulationU.cons<=0,2));
+    FeasiblePool   = [FeasibleC,ArchiveF];
+    InfeasiblePool = [InfeasibleU,ArchiveI];
+
+    [Decs,Proxy] = GenerateBridgeCandidates(Problem,FeasiblePool,InfeasiblePool,type,W,NumBridge);
     Pool = AppendPool(Pool,Decs,Proxy,1);
 
-    [NumLocalF,NumLocalI] = SplitLocalBudget(NumLocal,numel(ArchiveF),numel(ArchiveI));
-    [Decs,Proxy] = LocalBoundaryPerturbation(Problem,ArchiveF,NumLocalF);
+    [Decs,Proxy] = GenerateLocalCandidates( ...
+        Problem,ArchiveF,ArchiveI,FeasiblePool,InfeasiblePool,W,NumLocal);
     Pool = AppendPool(Pool,Decs,Proxy,2);
-
-    [Decs,Proxy] = LocalBoundaryPerturbation(Problem,ArchiveI,NumLocalI);
-    Pool = AppendPool(Pool,Decs,Proxy,3);
-
-    [Decs,Proxy] = GenerateBoundaryMatingCandidates(Problem,ArchiveI,PopulationC,FitnessC,type,W,NumMate);
-    Pool = AppendPool(Pool,Decs,Proxy,4);
 end
 
 function Pool = AppendPool(Pool,Decs,ProxyObjs,Source)
@@ -28,53 +27,43 @@ function Pool = AppendPool(Pool,Decs,ProxyObjs,Source)
     Pool.source    = [Pool.source;repmat(Source,size(Decs,1),1)];
 end
 
-function [Decs,ProxyObjs] = GenerateCrossCandidates(Problem,PopulationC,PopulationU,FitnessC,~,type,W,N)
+function [Decs,ProxyObjs] = GenerateBridgeCandidates(Problem,FeasiblePool,InfeasiblePool,type,W,N)
     Decs      = zeros(0,Problem.D);
     ProxyObjs = zeros(0,Problem.M);
-    if N <= 0 || isempty(PopulationC) || isempty(PopulationU)
+    if N <= 0 || isempty(FeasiblePool) || isempty(InfeasiblePool)
         return;
     end
 
+    FitnessF = CalFitness(FeasiblePool.objs);
     if type == 1
-        ParentC   = TournamentSelection(2,N,FitnessC);
-        ParentU   = MatchPartnersBySector(PopulationC(ParentC).objs,PopulationU.objs,W);
-        ParentDec = [PopulationC(ParentC).decs;PopulationU(ParentU).decs];
+        ParentF   = TournamentSelection(2,N,FitnessF);
+        ParentI   = MatchPartnersBySector(FeasiblePool(ParentF).objs,InfeasiblePool.objs,W);
+        ParentDec = [FeasiblePool(ParentF).decs;InfeasiblePool(ParentI).decs];
         Decs      = OperatorGAhalf(Problem,ParentDec);
-        ProxyObjs = 0.5*(PopulationC(ParentC).objs + PopulationU(ParentU).objs);
+        ProxyObjs = 0.5*(FeasiblePool(ParentF).objs + InfeasiblePool(ParentI).objs);
     else
-        Base      = TournamentSelection(2,N,FitnessC);
-        BaseObj    = PopulationC(Base).objs;
-        Donor1    = MatchPartnersBySector(BaseObj,PopulationU.objs,W);
-        Donor2    = MatchPartnersBySector(BaseObj,PopulationU.objs,W,Donor1);
-        Decs      = OperatorDE(Problem,PopulationC(Base).decs, ...
-            PopulationU(Donor1).decs,PopulationU(Donor2).decs);
-        ProxyObjs = (PopulationC(Base).objs + PopulationU(Donor1).objs + PopulationU(Donor2).objs)/3;
+        Base      = TournamentSelection(2,N,FitnessF);
+        BaseObj   = FeasiblePool(Base).objs;
+        Donor1    = MatchPartnersBySector(BaseObj,InfeasiblePool.objs,W);
+        Donor2    = MatchPartnersBySector(BaseObj,InfeasiblePool.objs,W,Donor1);
+        Decs      = OperatorDE(Problem,FeasiblePool(Base).decs, ...
+            InfeasiblePool(Donor1).decs,InfeasiblePool(Donor2).decs);
+        ProxyObjs = (FeasiblePool(Base).objs + InfeasiblePool(Donor1).objs + InfeasiblePool(Donor2).objs)/3;
     end
 end
 
-function [Decs,ProxyObjs] = GenerateBoundaryMatingCandidates(Problem,ArchiveI,PopulationC,~,type,W,N)
-% Generate A_I x P_C candidates for the next constrained search step.
-
+function [Decs,ProxyObjs] = GenerateLocalCandidates(Problem,ArchiveF,ArchiveI,FeasiblePool,InfeasiblePool,W,N)
     Decs      = zeros(0,Problem.D);
     ProxyObjs = zeros(0,Problem.M);
-    if N <= 0 || isempty(ArchiveI) || isempty(PopulationC)
+    if N <= 0 || (isempty(ArchiveF) && isempty(ArchiveI))
         return;
     end
 
-    PickI = randi(numel(ArchiveI),1,N);
-    if type == 1
-        PickC     = MatchPartnersBySector(ArchiveI(PickI).objs,PopulationC.objs,W);
-        ParentDec = [ArchiveI(PickI).decs;PopulationC(PickC).decs];
-        Decs      = OperatorGAhalf(Problem,ParentDec);
-        ProxyObjs = 0.5*(ArchiveI(PickI).objs + PopulationC(PickC).objs);
-    else
-        SeedObj    = ArchiveI(PickI).objs;
-        PickC1    = MatchPartnersBySector(SeedObj,PopulationC.objs,W);
-        PickC2    = MatchPartnersBySector(SeedObj,PopulationC.objs,W,PickC1);
-        Decs      = OperatorDE(Problem,ArchiveI(PickI).decs, ...
-            PopulationC(PickC1).decs,PopulationC(PickC2).decs);
-        ProxyObjs = (ArchiveI(PickI).objs + PopulationC(PickC1).objs + PopulationC(PickC2).objs)/3;
-    end
+    [NumLocalF,NumLocalI] = SplitLocalBudget(N,numel(ArchiveF),numel(ArchiveI));
+    [DecF,ProxyF] = LocalBoundaryPerturbation(Problem,ArchiveF,InfeasiblePool,NumLocalF,W,true);
+    [DecI,ProxyI] = LocalBoundaryPerturbation(Problem,ArchiveI,FeasiblePool,NumLocalI,W,false);
+    Decs      = [DecF;DecI];
+    ProxyObjs = [ProxyF;ProxyI];
 end
 
 function [NumLocalF,NumLocalI] = SplitLocalBudget(NumLocal,NumArchiveF,NumArchiveI)
@@ -107,48 +96,4 @@ function [NumLocalF,NumLocalI] = SplitLocalBudget(NumLocal,NumArchiveF,NumArchiv
     NumLocalF = round(NumLocal*RatioF);
     NumLocalF = min(max(1,NumLocalF),NumLocal-1);
     NumLocalI = NumLocal - NumLocalF;
-end
-
-function Match = MatchPartnersBySector(AnchorObj,CandidateObj,W,Exclude)
-    N = size(AnchorObj,1);
-    Match = zeros(1,N);
-    if N == 0 || isempty(CandidateObj)
-        Match = zeros(1,0);
-        return;
-    end
-    if nargin < 4 || isempty(Exclude)
-        Exclude = zeros(N,1);
-    else
-        Exclude = Exclude(:);
-    end
-
-    RefObj = [AnchorObj;CandidateObj];
-    SectorA = AssociateSectors(AnchorObj,W,RefObj);
-    SectorC = AssociateSectors(CandidateObj,W,RefObj);
-    MinObj  = min(RefObj,[],1);
-    Range   = max(RefObj,[],1) - MinObj;
-    Range(Range<1e-12) = 1;
-
-    for i = 1 : N
-        SameSector = find(SectorC==SectorA(i));
-        SameSector = RemoveExcluded(SameSector,Exclude(i));
-        if isempty(SameSector)
-            SameSector = RemoveExcluded((1:size(CandidateObj,1))',Exclude(i));
-        end
-        if isempty(SameSector)
-            SameSector = Exclude(i);
-        end
-        AnchorNorm = (AnchorObj(i,:)-MinObj)./Range;
-        CandNorm   = (CandidateObj(SameSector,:)-MinObj)./Range;
-        Dist       = sum((CandNorm-AnchorNorm).^2,2);
-        [~,Best]   = min(Dist);
-        Match(i)   = SameSector(Best);
-    end
-end
-
-function Pool = RemoveExcluded(Pool,Exclude)
-    if isempty(Pool) || Exclude <= 0 || numel(Pool) <= 1
-        return;
-    end
-    Pool = Pool(Pool~=Exclude);
 end

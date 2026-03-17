@@ -12,6 +12,11 @@ function P = PredictBoundaryMLP(Model,X)
 
     Xn = (X-Model.Mu)./Model.Sigma;
     H  = tanh(Xn*Model.W1 + repmat(Model.b1,size(Xn,1),1));
-    Z  = H*Model.W2 + Model.b2;
+    Temp = 1;
+    if isfield(Model,'Temp') && ~isempty(Model.Temp)
+        Temp = max(Model.Temp,1e-6);
+    end
+    Z  = (H*Model.W2 + Model.b2)./Temp;
     P  = 1./(1+exp(-Z));
+    P  = min(max(P,1e-6),1-1e-6);
 end
