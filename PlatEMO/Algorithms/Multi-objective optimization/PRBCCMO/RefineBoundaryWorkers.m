@@ -1,6 +1,10 @@
-function [Offspring,Info,MigrationPool,BracketPairs,HardNegativeBatch] = RefineBoundaryWorkers( ...
-    Problem,BoundarySeeds,BoundaryInfo,PopulationC,PopulationU,ArchiveF,ArchiveI,Model,W,HardNegativeArchive,Budget)
+function [Offspring,Info,MigrationPool,BracketPairs,HardNegativeBatch,WorkerAudit] = RefineBoundaryWorkers( ...
+    Problem,BoundarySeeds,BoundaryInfo,PopulationC,PopulationU,ArchiveF,ArchiveI,Model,W,HardNegativeArchive,Budget,RuntimeOptions)
 % Execute feasible expansion, infeasible bracketing, and hard-negative confirmation.
+
+    if nargin < 12 || ~isstruct(RuntimeOptions)
+        RuntimeOptions = struct();
+    end
 
     Offspring = [];
     MigrationPool = [];
@@ -8,6 +12,7 @@ function [Offspring,Info,MigrationPool,BracketPairs,HardNegativeBatch] = RefineB
     HardNegativeBatch.Dec    = zeros(0,Problem.D);
     HardNegativeBatch.Radius = zeros(0,1);
     Info = EmptyBoundaryInfo(Problem.M);
+    WorkerAudit = repmat(InitWorkerAudit(Problem.D),0,1);
     if Budget <= 0 || isempty(BoundarySeeds)
         return;
     end
@@ -16,7 +21,6 @@ function [Offspring,Info,MigrationPool,BracketPairs,HardNegativeBatch] = RefineB
     OffspringCell = cell(1,numel(BoundarySeeds));
     MigrationCell = cell(1,numel(BoundarySeeds));
     InfoCell      = cell(1,numel(BoundarySeeds));
-    Filled        = 0;
     FeasibleRef = PopulationC(all(PopulationC.cons<=0,2));
     if isempty(FeasibleRef)
         FeasibleObj = zeros(0,Problem.M);
@@ -25,25 +29,51 @@ function [Offspring,Info,MigrationPool,BracketPairs,HardNegativeBatch] = RefineB
     end
     InfeasibleRef = [PopulationU(~all(PopulationU.cons<=0,2)),ArchiveI];
     FeasibleAnchorPool = [FeasibleRef,ArchiveF];
+    WorkerAudit = repmat(InitWorkerAudit(Problem.D),numel(BoundarySeeds),1);
 
     for i = 1 : numel(BoundarySeeds)
+        WorkerAudit(i) = InitWorkerAudit(Problem.D);
+        WorkerAudit(i).seedIndex = i;
+        WorkerAudit(i).seedFeasible = all(BoundarySeeds(i).con<=0,2);
         if Remaining <= 0
-            break;
+            WorkerAudit(i).lineageFeasibleDec = GetSeedLineageFeasibleDec(BoundarySeeds(i),[]);
+            continue;
         end
+
         Seed = BoundarySeeds(i);
         Source = BoundaryInfo.source(i);
-        if all(Seed.con<=0)
-            [Desc,MoveAdd] = HandleFeasibleSeed( ...
-                Problem,Seed,InfeasibleRef,Remaining,W);
+        if UseIsotropicLocal(RuntimeOptions)
+            if all(Seed.con<=0)
+                [Desc,MoveAdd] = HandlePlainFeasibleSeed(Problem,Seed,Remaining);
+            else
+                [Desc,MoveAdd] = HandlePlainInfeasibleSeed(Problem,Seed,Remaining);
+            end
             NewBracket = EmptyBracketPairs();
             NewHardNeg.Dec    = zeros(0,Problem.D);
             NewHardNeg.Radius = zeros(0,1);
         else
-            [Desc,MoveAdd,NewBracket,NewHardNeg] = HandleInfeasibleSeed( ...
-                Problem,Seed,FeasibleAnchorPool,Remaining,W);
+            if all(Seed.con<=0)
+                [Desc,MoveAdd] = HandleFeasibleSeed( ...
+                    Problem,Seed,InfeasibleRef,Remaining,W);
+                NewBracket = EmptyBracketPairs();
+                NewHardNeg.Dec    = zeros(0,Problem.D);
+                NewHardNeg.Radius = zeros(0,1);
+            else
+                [Desc,MoveAdd,NewBracket,NewHardNeg] = HandleInfeasibleSeed( ...
+                    Problem,Seed,FeasibleAnchorPool,Remaining,W);
+            end
         end
 
         Remaining = Remaining - numel(Desc);
+        WorkerAudit(i).localEvalCount = numel(Desc);
+        WorkerAudit(i).bracketGap = NaN;
+        if ~isempty(NewBracket.Gap)
+            WorkerAudit(i).bracketGap = NewBracket.Gap(1);
+        end
+        WorkerAudit(i).hardNegativeConfirmed = ~isempty(NewHardNeg.Dec);
+        WorkerAudit(i).frrSuccess = ~all(Seed.con<=0,2) && any(all(Desc.cons<=0,2));
+        WorkerAudit(i).lineageFeasibleDec = GetSeedLineageFeasibleDec(Seed,Desc);
+
         if isempty(Desc)
             BracketPairs = MergeBracketPairs(BracketPairs,NewBracket);
             HardNegativeBatch = MergeHardNegBatch(HardNegativeBatch,NewHardNeg);
@@ -52,16 +82,15 @@ function [Offspring,Info,MigrationPool,BracketPairs,HardNegativeBatch] = RefineB
 
         BracketPairs  = MergeBracketPairs(BracketPairs,NewBracket);
         HardNegativeBatch = MergeHardNegBatch(HardNegativeBatch,NewHardNeg);
-        Filled = Filled + 1;
-        OffspringCell{Filled} = Desc;
-        MigrationCell{Filled} = MoveAdd;
-        InfoCell{Filled} = AppendWorkerInfo( ...
+        OffspringCell{i} = Desc;
+        MigrationCell{i} = MoveAdd;
+        InfoCell{i} = AppendWorkerInfo( ...
             Problem,EmptyBoundaryInfo(Problem.M),Desc,Source,FeasibleObj,Model,W,HardNegativeArchive);
     end
 
-    Offspring     = MergePopulationCells(OffspringCell(1:Filled));
-    MigrationPool = MergePopulationCells(MigrationCell(1:Filled));
-    Info          = MergeBoundaryInfoCells(InfoCell(1:Filled),Problem.M);
+    Offspring     = MergePopulationCells(OffspringCell);
+    MigrationPool = MergePopulationCells(MigrationCell);
+    Info          = MergeBoundaryInfoCells(InfoCell,Problem.M);
 end
 
 function [Desc,MigrationPool] = HandleFeasibleSeed(Problem,Seed,InfeasiblePool,Remaining,W)
@@ -142,6 +171,44 @@ function [Desc,MigrationPool,BracketPairs,HardNegativeBatch] = HandleInfeasibleS
 
     [HardDesc,MigrationPool,HardNegativeBatch] = ConfirmHardNegative(Problem,Seed,Anchor,Remaining);
     Desc = [Desc,HardDesc];
+end
+
+function [Desc,MigrationPool] = HandlePlainFeasibleSeed(Problem,Seed,Remaining)
+    Desc = [];
+    MigrationPool = [];
+    if Remaining <= 0
+        return;
+    end
+
+    QueryCount = min(2,Remaining);
+    Decs = zeros(QueryCount,Problem.D);
+    for j = 1 : QueryCount
+        Decs(j,:) = GenerateIsotropicLocalSample(Problem,Seed,0.10 + 0.06*(j-1));
+    end
+    Desc = Problem.Evaluation(Decs);
+    FeasibleDesc = Desc(all(Desc.cons<=0,2));
+    if ~isempty(FeasibleDesc)
+        MigrationPool = FeasibleDesc;
+    end
+end
+
+function [Desc,MigrationPool] = HandlePlainInfeasibleSeed(Problem,Seed,Remaining)
+    Desc = [];
+    MigrationPool = [];
+    if Remaining <= 0
+        return;
+    end
+
+    QueryCount = min(2,Remaining);
+    Decs = zeros(QueryCount,Problem.D);
+    for j = 1 : QueryCount
+        Decs(j,:) = GenerateIsotropicLocalSample(Problem,Seed,0.06 + 0.04*(j-1));
+    end
+    Desc = Problem.Evaluation(Decs);
+    FeasibleDesc = Desc(all(Desc.cons<=0,2));
+    if ~isempty(FeasibleDesc)
+        MigrationPool = FeasibleDesc;
+    end
 end
 
 function [Desc,MigrationPool,HardNegativeBatch] = ConfirmHardNegative(Problem,Seed,Anchor,Remaining)
@@ -276,6 +343,21 @@ function Dec = GenerateHardNegativeSample(Problem,Seed,Anchor,Radius)
     Dec = Problem.CalDec(Dec);
 end
 
+function Dec = GenerateIsotropicLocalSample(Problem,Seed,StepScale)
+    Parent = [Seed.dec;Seed.dec];
+    Dec = OperatorGAhalf(Problem,Parent,{0,20,1,20});
+    Dec = Dec(1,:);
+    RealIdx = find(Problem.encoding<=2);
+    if ~isempty(RealIdx)
+        Range = Problem.upper(RealIdx) - Problem.lower(RealIdx);
+        Range(Range<1e-12) = 1;
+        Noise = randn(1,numel(RealIdx));
+        Noise = Noise./max(norm(Noise),1e-12);
+        Dec(RealIdx) = Seed.dec(RealIdx) + StepScale*Noise.*Range;
+    end
+    Dec = Problem.CalDec(Dec);
+end
+
 function Gap = ComputeDecisionGap(Problem,Dec1,Dec2)
     Range = Problem.upper - Problem.lower;
     Range(Range<1e-12) = 1;
@@ -338,4 +420,41 @@ function Info = EmptyBoundaryInfo(M)
     Info.utility   = zeros(0,1);
     Info.sector    = zeros(0,1);
     Info.proxyObjs = zeros(0,M);
+end
+
+function Audit = InitWorkerAudit(D)
+    Audit = struct( ...
+        'seedIndex',0, ...
+        'seedFeasible',false, ...
+        'localEvalCount',0, ...
+        'frrSuccess',false, ...
+        'bracketGap',NaN, ...
+        'hardNegativeConfirmed',false, ...
+        'lineageFeasibleDec',zeros(0,D));
+end
+
+function FeasibleDec = GetSeedLineageFeasibleDec(Seed,Desc)
+    D = numel(Seed.dec);
+    FeasibleDec = zeros(0,D);
+    if all(Seed.con<=0,2)
+        FeasibleDec = Seed.dec;
+    end
+    if ~isempty(Desc)
+        DescFeasible = Desc(all(Desc.cons<=0,2));
+        if ~isempty(DescFeasible)
+            FeasibleDec = [FeasibleDec;DescFeasible.decs];
+        end
+    end
+    if isempty(FeasibleDec)
+        return;
+    end
+    Keep = KeepLatestDecisionRows(FeasibleDec);
+    FeasibleDec = FeasibleDec(Keep,:);
+end
+
+function Flag = UseIsotropicLocal(RuntimeOptions)
+    Flag = false;
+    if isstruct(RuntimeOptions) && isfield(RuntimeOptions,'LocalMode') && ~isempty(RuntimeOptions.LocalMode)
+        Flag = round(RuntimeOptions.LocalMode) == 2;
+    end
 end

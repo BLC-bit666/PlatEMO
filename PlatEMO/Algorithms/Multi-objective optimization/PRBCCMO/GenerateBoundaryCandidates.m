@@ -1,6 +1,9 @@
-function Pool = GenerateBoundaryCandidates(Problem,PopulationC,PopulationU,ArchiveF,ArchiveI,type,W,NumBridge,NumLocal)
+function Pool = GenerateBoundaryCandidates(Problem,PopulationC,PopulationU,ArchiveF,ArchiveI,type,W,NumBridge,NumLocal,RuntimeOptions)
 % Generate the unevaluated boundary candidate pool from bridge and local sources.
 
+    if nargin < 10 || ~isstruct(RuntimeOptions)
+        RuntimeOptions = struct();
+    end
     Pool.decs      = zeros(0,Problem.D);
     Pool.proxyObjs = zeros(0,Problem.M);
     Pool.source    = zeros(0,1);
@@ -14,7 +17,7 @@ function Pool = GenerateBoundaryCandidates(Problem,PopulationC,PopulationU,Archi
     Pool = AppendPool(Pool,Decs,Proxy,1);
 
     [Decs,Proxy] = GenerateLocalCandidates( ...
-        Problem,ArchiveF,ArchiveI,FeasiblePool,InfeasiblePool,W,NumLocal);
+        Problem,ArchiveF,ArchiveI,FeasiblePool,InfeasiblePool,W,NumLocal,RuntimeOptions);
     Pool = AppendPool(Pool,Decs,Proxy,2);
 end
 
@@ -52,7 +55,7 @@ function [Decs,ProxyObjs] = GenerateBridgeCandidates(Problem,FeasiblePool,Infeas
     end
 end
 
-function [Decs,ProxyObjs] = GenerateLocalCandidates(Problem,ArchiveF,ArchiveI,FeasiblePool,InfeasiblePool,W,N)
+function [Decs,ProxyObjs] = GenerateLocalCandidates(Problem,ArchiveF,ArchiveI,FeasiblePool,InfeasiblePool,W,N,RuntimeOptions)
     Decs      = zeros(0,Problem.D);
     ProxyObjs = zeros(0,Problem.M);
     if N <= 0 || (isempty(ArchiveF) && isempty(ArchiveI))
@@ -60,8 +63,8 @@ function [Decs,ProxyObjs] = GenerateLocalCandidates(Problem,ArchiveF,ArchiveI,Fe
     end
 
     [NumLocalF,NumLocalI] = SplitLocalBudget(N,numel(ArchiveF),numel(ArchiveI));
-    [DecF,ProxyF] = LocalBoundaryPerturbation(Problem,ArchiveF,InfeasiblePool,NumLocalF,W,true);
-    [DecI,ProxyI] = LocalBoundaryPerturbation(Problem,ArchiveI,FeasiblePool,NumLocalI,W,false);
+    [DecF,ProxyF] = LocalBoundaryPerturbation(Problem,ArchiveF,InfeasiblePool,NumLocalF,W,true,RuntimeOptions);
+    [DecI,ProxyI] = LocalBoundaryPerturbation(Problem,ArchiveI,FeasiblePool,NumLocalI,W,false,RuntimeOptions);
     Decs      = [DecF;DecI];
     ProxyObjs = [ProxyF;ProxyI];
 end

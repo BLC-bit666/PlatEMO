@@ -52,7 +52,7 @@ function [Dec,Lab] = TrimBalancedFIFO(Dec,Lab,ProtectFlag,MaxTrain)
         return;
     end
 
-    HardQuota = min(sum(ProtectFlag),min(max(1,round(0.1*MaxTrain)),MaxTrain));
+    HardQuota = min(sum(ProtectFlag),min(max(1,round(0.25*MaxTrain)),MaxTrain));
     Protected = find(ProtectFlag);
     if HardQuota > 0
         Protected = Protected(max(1,end-HardQuota+1):end);

@@ -1,5 +1,5 @@
 function [CalDec,CalLabel,CalNear] = UpdateCalibrationBuffer(CalDec,CalLabel,CalNear,NewSolutions,NewInfo,MaxCal)
-% Update a held-out calibration buffer with recent near-boundary samples.
+% Update a held-out labeled buffer used for calibration or evaluation.
 
     if nargin < 1 || isempty(CalDec)
         CalDec = [];

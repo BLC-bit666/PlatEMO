@@ -1,5 +1,5 @@
-function [Decs,ProxyObjs,SeedIdx] = LocalBoundaryPerturbation(Problem,Seeds,Anchors,N,W,IsFeasibleSeed)
-% Generate label-aware local boundary candidates around archived seeds.
+function [Decs,ProxyObjs,SeedIdx] = LocalBoundaryPerturbation(Problem,Seeds,Anchors,N,W,IsFeasibleSeed,RuntimeOptions)
+% Generate local boundary candidates around archived seeds.
 
     Decs      = zeros(0,Problem.D);
     ProxyObjs = zeros(0,Problem.M);
@@ -12,6 +12,9 @@ function [Decs,ProxyObjs,SeedIdx] = LocalBoundaryPerturbation(Problem,Seeds,Anch
     end
     if nargin < 6
         IsFeasibleSeed = true;
+    end
+    if nargin < 7 || ~isstruct(RuntimeOptions)
+        RuntimeOptions = struct();
     end
 
     SeedIdx   = randi(numel(Seeds),1,N);
@@ -29,13 +32,30 @@ function [Decs,ProxyObjs,SeedIdx] = LocalBoundaryPerturbation(Problem,Seeds,Anch
         else
             Anchor = Anchors(Opposite(i));
         end
-        if IsFeasibleSeed
-            Decs(i,:) = ExpandFromFeasibleSeed(Problem,Seed,Anchor);
-            ProxyObjs(i,:) = Seed.objs;
+        if UseIsotropicLocal(RuntimeOptions)
+            if IsFeasibleSeed
+                Decs(i,:) = GenerateIsotropicNeighbor(Problem,Seed,0.12);
+                ProxyObjs(i,:) = Seed.objs;
+            else
+                Decs(i,:) = GenerateIsotropicNeighbor(Problem,Seed,0.08);
+                ProxyObjs(i,:) = InferProxyObjective(Seed,Anchor);
+            end
         else
-            Decs(i,:) = SearchFromInfeasibleSeed(Problem,Seed,Anchor);
-            ProxyObjs(i,:) = InferProxyObjective(Seed,Anchor);
+            if IsFeasibleSeed
+                Decs(i,:) = ExpandFromFeasibleSeed(Problem,Seed,Anchor);
+                ProxyObjs(i,:) = Seed.objs;
+            else
+                Decs(i,:) = SearchFromInfeasibleSeed(Problem,Seed,Anchor);
+                ProxyObjs(i,:) = InferProxyObjective(Seed,Anchor);
+            end
         end
+    end
+end
+
+function Flag = UseIsotropicLocal(RuntimeOptions)
+    Flag = false;
+    if isstruct(RuntimeOptions) && isfield(RuntimeOptions,'LocalMode') && ~isempty(RuntimeOptions.LocalMode)
+        Flag = round(RuntimeOptions.LocalMode) == 2;
     end
 end
 
@@ -112,6 +132,18 @@ end
 function Range = ScaleRange(Problem,Idx)
     Range = Problem.upper(Idx) - Problem.lower(Idx);
     Range(Range<1e-12) = 1;
+end
+
+function Dec = GenerateIsotropicNeighbor(Problem,Seed,StepScale)
+    Dec = BaseLabelAwareChild(Problem,Seed,[]);
+    RealIdx = find(Problem.encoding<=2);
+    if ~isempty(RealIdx)
+        Range = ScaleRange(Problem,RealIdx);
+        Noise = randn(1,numel(RealIdx));
+        Noise = Noise./max(norm(Noise),1e-12);
+        Dec(RealIdx) = Seed.dec(RealIdx) + StepScale*Noise.*Range;
+    end
+    Dec = RepairDecision(Problem,Dec);
 end
 
 function Dec = RepairDecision(Problem,Dec)

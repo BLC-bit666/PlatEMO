@@ -1,4 +1,4 @@
-function [Offspring,Info] = SelectBoundaryCandidates(Problem,Pool,PopulationC,Model,W,HardNegativeArchive,Budget)
+function [Offspring,Info] = SelectBoundaryCandidates(Problem,Pool,PopulationC,Model,W,HardNegativeArchive,Budget,RuntimeOptions)
 % Select and evaluate boundary candidates with boundary utility scoring.
 
     Offspring = [];
@@ -13,6 +13,9 @@ function [Offspring,Info] = SelectBoundaryCandidates(Problem,Pool,PopulationC,Mo
     Info.sector    = zeros(0,1);
     Info.proxyObjs = zeros(0,Problem.M);
 
+    if nargin < 8 || ~isstruct(RuntimeOptions)
+        RuntimeOptions = struct();
+    end
     if Budget <= 0 || isempty(Pool.decs)
         return;
     end
@@ -26,8 +29,14 @@ function [Offspring,Info] = SelectBoundaryCandidates(Problem,Pool,PopulationC,Mo
 
     Detail = ScoreBoundaryCandidates( ...
         Problem,Pool.decs,Pool.proxyObjs,FeasibleObj,Model,W,HardNegativeArchive);
-    [~,Order] = sort(Detail.utility,'descend');
-    Accept = Order(1:min(Budget,length(Order)));
+    SelectionMode = ResolveSelectionMode(RuntimeOptions);
+    RankScore = ResolveSelectionScore(Detail,SelectionMode);
+    if SelectionMode == 3
+        Accept = randperm(size(Pool.decs,1),min(Budget,size(Pool.decs,1)));
+    else
+        [~,Order] = sort(RankScore(:),'descend');
+        Accept = Order(1:min(Budget,length(Order)));
+    end
     if isempty(Accept)
         return;
     end
@@ -39,13 +48,29 @@ function [Offspring,Info] = SelectBoundaryCandidates(Problem,Pool,PopulationC,Mo
 
     Offspring = Problem.Evaluation(DecsSel);
     Info.source    = SourceSel(:);
-    Info.score     = Detail.utility(Accept);
+    Info.score     = RankScore(Accept);
     Info.prob      = ProbSel(:);
     Info.entropy   = Detail.entropy(Accept);
     Info.hvGain    = Detail.hvGain(Accept);
     Info.novelty   = Detail.sectorNovelty(Accept);
     Info.penalty   = Detail.penaltyFactor(Accept);
-    Info.utility   = Detail.utility(Accept);
+    Info.utility   = RankScore(Accept);
     Info.sector    = Detail.sector(Accept);
     Info.proxyObjs = ProxySel;
+end
+
+function SelectionMode = ResolveSelectionMode(RuntimeOptions)
+    SelectionMode = 1;
+    if isstruct(RuntimeOptions) && isfield(RuntimeOptions,'SelectionMode') && ~isempty(RuntimeOptions.SelectionMode)
+        SelectionMode = max(1,min(3,round(RuntimeOptions.SelectionMode)));
+    end
+end
+
+function Score = ResolveSelectionScore(Detail,SelectionMode)
+    switch SelectionMode
+        case 2
+            Score = Detail.uncertaintyUtility(:);
+        otherwise
+            Score = Detail.utility(:);
+    end
 end

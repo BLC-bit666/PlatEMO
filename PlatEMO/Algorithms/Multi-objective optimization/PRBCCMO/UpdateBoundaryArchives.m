@@ -1,6 +1,9 @@
-function [ArchiveF,ArchiveI] = UpdateBoundaryArchives(Problem,ArchiveF,ArchiveI,BoundaryOffspring,PopulationC,Model,W,HardNegativeArchive,ArchiveFMax,ArchiveIMax)
+function [ArchiveF,ArchiveI] = UpdateBoundaryArchives(Problem,ArchiveF,ArchiveI,BoundaryOffspring,PopulationC,Model,W,HardNegativeArchive,ArchiveFMax,ArchiveIMax,RuntimeOptions)
 % Update feasible and infeasible boundary archives with utility-aware ranking.
 
+    if nargin < 11 || ~isstruct(RuntimeOptions)
+        RuntimeOptions = struct();
+    end
     if isempty(BoundaryOffspring) && isempty(ArchiveF) && isempty(ArchiveI)
         return;
     end
@@ -20,12 +23,12 @@ function [ArchiveF,ArchiveI] = UpdateBoundaryArchives(Problem,ArchiveF,ArchiveI,
     end
 
     ArchiveF = UpdateArchiveByUtility( ...
-        Problem,ArchiveF,BoundaryFeasible,FeasibleObj,Model,W,HardNegativeArchive,ArchiveFMax);
+        Problem,ArchiveF,BoundaryFeasible,FeasibleObj,Model,W,HardNegativeArchive,ArchiveFMax,RuntimeOptions);
     ArchiveI = UpdateArchiveByUtility( ...
-        Problem,ArchiveI,BoundaryInfeasible,FeasibleObj,Model,W,HardNegativeArchive,ArchiveIMax);
+        Problem,ArchiveI,BoundaryInfeasible,FeasibleObj,Model,W,HardNegativeArchive,ArchiveIMax,RuntimeOptions);
 end
 
-function Archive = UpdateArchiveByUtility(Problem,Archive,NewSolutions,FeasibleObj,Model,W,HardNegativeArchive,MaxSize)
+function Archive = UpdateArchiveByUtility(Problem,Archive,NewSolutions,FeasibleObj,Model,W,HardNegativeArchive,MaxSize,RuntimeOptions)
     if MaxSize <= 0
         Archive = [];
         return;
@@ -45,6 +48,20 @@ function Archive = UpdateArchiveByUtility(Problem,Archive,NewSolutions,FeasibleO
 
     Detail = ScoreBoundaryCandidates( ...
         Problem,Pool.decs,Pool.objs,FeasibleObj,Model,W,HardNegativeArchive);
-    [~,Rank] = sort(Detail.utility(:),'descend');
+    Score = ResolveArchiveScore(Detail,RuntimeOptions);
+    [~,Rank] = sort(Score(:),'descend');
     Archive = Pool(Rank(1:min(MaxSize,length(Rank))));
+end
+
+function Score = ResolveArchiveScore(Detail,RuntimeOptions)
+    SelectionMode = 1;
+    if isstruct(RuntimeOptions) && isfield(RuntimeOptions,'ArchiveSelectionMode') && ~isempty(RuntimeOptions.ArchiveSelectionMode)
+        SelectionMode = max(1,min(3,round(RuntimeOptions.ArchiveSelectionMode)));
+    end
+    switch SelectionMode
+        case 2
+            Score = Detail.uncertaintyUtility(:);
+        otherwise
+            Score = Detail.utility(:);
+    end
 end
