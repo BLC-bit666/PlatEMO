@@ -39,8 +39,9 @@ function Summary = SummarizeCalibrationProbabilities(Prob,Label,BinCount)
     Summary.reliabilityY      = Summary.bin.feasibleRate(ValidBins);
     Summary.reliabilityWeight = Summary.bin.weight(ValidBins);
 
-    NearMask = Prob>=0.4 & Prob<=0.6;
+    NearMask = Prob>=0.45 & Prob<=0.55;
     Summary.nearCount = sum(NearMask);
+    Summary.nearBand  = [0.45,0.55];
     if Summary.nearCount > 0
         Summary.nearMeanProb     = mean(Prob(NearMask));
         Summary.nearFeasibleRate = mean(Label(NearMask));
@@ -61,6 +62,7 @@ function Summary = InitCalibrationSummary(Edges)
     Summary.nearMeanProb     = NaN;
     Summary.nearFeasibleRate = NaN;
     Summary.nearGap          = NaN;
+    Summary.nearBand         = [0.45,0.55];
     Summary.binEdges         = Edges(:)';
     Summary.prob             = zeros(0,1);
     Summary.label            = zeros(0,1);

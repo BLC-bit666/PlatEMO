@@ -1,25 +1,19 @@
 classdef PRBCCMO < ALGORITHM
 % <2026> <multi> <real/integer/label/binary/permutation> <constrained>
 % Pareto-relevant boundary CCMO
-% type     --- 1    --- Type of operator (1. GA 2. DE)
 % bRho     --- 0.2  --- Boundary evaluation ratio relative to N
-% afRho    --- 0.5  --- Feasible boundary archive size ratio
-% aiRho    --- 0.5  --- Infeasible boundary archive size ratio
-% trainRho --- 4    --- Training archive size ratio
+% trainRho --- 2    --- Training archive size ratio
 % hidden   --- 20   --- Hidden units of the boundary MLP
 % epoch    --- 25   --- Training epochs of the boundary MLP
 % lr       --- 0.01 --- Learning rate of the boundary MLP
-% xRho     --- 0.5  --- Candidate ratio from bridge source
-% lsRho    --- 0.5  --- Candidate ratio from label-aware local source
-% mRho     --- 0.5  --- Seed-query ratio within each boundary budget
+% mRho     --- 0.4  --- Seed-query ratio within each boundary budget
 % ensK     --- 3    --- Committee size of shallow boundary MLPs
-% calMode  --- 2    --- Calibration mode (1 raw, 2 temperature, 3 sigmoid)
+% calMode  --- 2    --- Calibration mode (1 raw, 2 auto temp/beta, 3 beta)
 % dLambda  --- 1    --- Committee disagreement weight in boundary utility
 % pairM    --- 0.05 --- Margin for tight bracket pair loss
 % lPair    --- 1    --- Weight of bracket pair loss
 % lMid     --- 1    --- Weight of midpoint-to-0.5 loss
-% lHard    --- 1    --- Weight of hard-negative loss
-% selMode  --- 1    --- Section B seed selection mode (1. full 2. uncertain-only 3. random-boundary)
+% selMode  --- 1    --- Section B seed selection mode (1. trusted-query 2. uncertain-only 3. random-bridge)
 % localMode--- 1    --- Section B local search mode (1. label-aware 2. isotropic)
 % traceOn  --- 0    --- Enable Section B audit trace recording
 
@@ -36,16 +30,11 @@ classdef PRBCCMO < ALGORITHM
         function main(Algorithm,Problem)
             %% Parameter setting
             Params = ResolvePRBCCMOParameters(Algorithm.parameter);
-            type      = Params.type;
             bRho      = Params.bRho;
-            afRho     = Params.afRho;
-            aiRho     = Params.aiRho;
             trainRho  = Params.trainRho;
             hidden    = Params.hidden;
             epoch     = Params.epoch;
             lr        = Params.lr;
-            xRho      = Params.xRho;
-            lsRho     = Params.lsRho;
             mRho      = Params.mRho;
             ensK      = Params.ensK;
             calMode   = Params.calMode;
@@ -53,48 +42,33 @@ classdef PRBCCMO < ALGORITHM
             pairM     = Params.pairM;
             lPair     = Params.lPair;
             lMid      = Params.lMid;
-            lHard     = Params.lHard;
             selMode   = Params.selMode;
             localMode = Params.localMode;
             traceOn   = Params.traceOn;
             RuntimeOptions = BuildBoundaryRuntimeOptions(selMode,localMode,traceOn);
 
             BoundaryBudget = max(0,floor(bRho*Problem.N));
-            ArchiveFMax    = max(0,round(afRho*Problem.N));
-            ArchiveIMax    = max(0,round(aiRho*Problem.N));
-            TrainMax       = max(0,round(trainRho*Problem.N));
-            CalibMax       = max(20,ceil(0.25*TrainMax));
-            TestMax        = max(20,ceil(0.25*TrainMax));
-            ProtectedMax   = max(20,ceil(0.25*TrainMax));
-            ProtectedBracketMax = max(10,floor(0.5*ProtectedMax));
-            ProtectedOtherMax   = max(10,ProtectedMax-ProtectedBracketMax);
-            BracketMax     = max(1,floor(0.5*ProtectedBracketMax));
+            TrainMax       = max(1,round(trainRho*Problem.N));
+            CalibMax       = max(1,Problem.N);
+            TestMax        = max(1,Problem.N);
+            BracketMax     = max(1,Problem.N);
             HardNegMax     = max(20,ceil(0.25*TrainMax));
-            RatioSum       = max(xRho+lsRho,1e-12);
-            PoolSize       = max(0,4*BoundaryBudget);
-            NumBridge      = max(0,round(PoolSize*xRho/RatioSum));
-            NumLocal       = max(0,PoolSize-NumBridge);
-            SeedRatio      = min(max(mRho,0.25),0.75);
+            SeedRatio      = min(max(mRho,0),1);
             [W,~]          = UniformPoint(max(Problem.N,2),Problem.M);
             UpdateGap      = 5;
             RestartGap     = 25;
             WarmEpoch      = min(epoch,max(5,round(epoch/3)));
-            TriggerCount   = max(20,ceil(0.1*TrainMax));
+            TriggerCount   = max(1,ceil(0.1*TrainMax));
+            TightGap       = 0.03;
 
             %% Generate random populations
             PopulationC = Problem.Initialization();
             PopulationU = Problem.Initialization();
-            FitnessC    = CalFitness(PopulationC.objs,PopulationC.cons);
-            FitnessU    = CalFitness(PopulationU.objs);
 
             %% Initialize boundary memories
-            ArchiveF = [];
-            ArchiveI = [];
             BracketArchive = EmptyBracketArchive(Problem.D);
             HardNegativeArchive.Dec    = zeros(0,Problem.D);
             HardNegativeArchive.Radius = zeros(0,1);
-            ProtectedOtherDec   = zeros(0,Problem.D);
-            ProtectedOtherLabel = zeros(0,1);
             InitSolutions = [PopulationC,PopulationU];
             [InitTrain,~,InitCalib,InitCalibInfo,InitTest,InitTestInfo] = SplitHeldOutBatch( ...
                 InitSolutions,NormalizeBoundaryInfo([],Problem.M),CalibMax,TestMax,Problem.M);
@@ -108,9 +82,10 @@ classdef PRBCCMO < ALGORITHM
             [TestDec,TestLabel,TestNear] = UpdateCalibrationBuffer( ...
                 [],[],[],InitTest,InitTestInfo,TestMax);
             TrainOptions = BuildBoundaryTrainingOptions( ...
-                BracketArchive,HardNegativeArchive,ensK,calMode,dLambda,pairM,lPair,lMid,lHard,Problem.D);
+                BracketArchive,ensK,calMode,dLambda,pairM,lPair,lMid,Problem.D,TightGap);
             Model = TrainBoundaryMLP( ...
                 TrainDec,TrainLabel,hidden,epoch,lr,[],CalibDec,CalibLabel,TrainOptions);
+            Model = RefreshBoundaryTrust(Model,TestDec,TestLabel);
             LastCalMetric = EvaluateBoundaryCalibration(Model,TestDec,TestLabel);
             PendingLabels = 0;
             Generation    = 0;
@@ -127,10 +102,10 @@ classdef PRBCCMO < ALGORITHM
                 Generation = Generation + 1;
 
                 [OffspringC,OffspringU] = GenerateRegularOffspring( ...
-                    Problem,PopulationC,PopulationU,FitnessC,FitnessU,type);
+                    Problem,PopulationC,PopulationU);
 
                 CandidatePool = GenerateBoundaryCandidates( ...
-                    Problem,PopulationC,PopulationU,ArchiveF,ArchiveI,type,W,NumBridge,NumLocal,RuntimeOptions);
+                    Problem,PopulationC,PopulationU,W,RuntimeOptions);
 
                 BoundaryBudgetNow = min(BoundaryBudget,max(0,Problem.maxFE-Problem.FE));
                 SeedBudget = min(BoundaryBudgetNow,max(0,round(SeedRatio*BoundaryBudgetNow)));
@@ -141,28 +116,21 @@ classdef PRBCCMO < ALGORITHM
                     Problem,CandidatePool,PopulationC,Model,W,HardNegativeArchive,SeedBudget,RuntimeOptions);
 
                 WorkerBudget = max(0,BoundaryBudgetNow-numel(BoundarySeeds));
-                [WorkerOffspring,WorkerInfo,MigrationPool,BracketBatch,HardNegBatch,WorkerAudit] = ...
+                [WorkerOffspring,WorkerInfo,WorkerFeasiblePool,BracketBatch,HardNegBatch,WorkerAudit] = ...
                     RefineBoundaryWorkers( ...
-                        Problem,BoundarySeeds,SeedInfo,PopulationC,PopulationU, ...
-                        ArchiveF,ArchiveI,Model,W,HardNegativeArchive,WorkerBudget,RuntimeOptions);
+                        Problem,BoundarySeeds,SeedInfo,PopulationC,Model,W, ...
+                        HardNegativeArchive,WorkerBudget,RuntimeOptions);
                 [BoundaryOffspring,BoundaryInfo] = MergeBoundaryResults( ...
                     BoundarySeeds,SeedInfo,WorkerOffspring,WorkerInfo,Problem.M);
+                MigrationPool = ScreenBoundaryMigrants( ...
+                    PopulationC,BoundarySeeds,WorkerFeasiblePool,W,RuntimeOptions);
 
                 HardNegativeArchive = UpdateHardNegativeArchive(HardNegativeArchive,HardNegBatch,HardNegMax);
-                BracketArchive = UpdateBracketArchive(BracketArchive,BracketBatch,BracketMax,Problem.D);
+                BracketArchive = UpdateBracketArchive(BracketArchive,BracketBatch,BracketMax,Problem.D,TightGap);
 
-                ConstrainedBase = KeepUniquePopulation( ...
-                    ApplySectorMigration([PopulationC,OffspringC],MigrationPool,W));
-                BoundaryFeasible = FilterFeasiblePopulation(BoundaryOffspring);
-                ConstrainedPool  = KeepUniquePopulation([ConstrainedBase,BoundaryFeasible]);
-                [PopulationC,FitnessC] = EnvironmentalSelectionC( ...
-                    ConstrainedPool,Problem.N);
-                [PopulationU,FitnessU] = EnvironmentalSelectionU( ...
-                    KeepUniquePopulation([PopulationU,OffspringU]),Problem.N);
-
-                [ArchiveF,ArchiveI] = UpdateBoundaryArchives( ...
-                    Problem,ArchiveF,ArchiveI,BoundaryOffspring,PopulationC,Model,W, ...
-                    HardNegativeArchive,ArchiveFMax,ArchiveIMax,RuntimeOptions);
+                ConstrainedBase = KeepUniquePopulation([PopulationC,OffspringC]);
+                PopulationC = EnvironmentalSelectionC(ConstrainedBase,Problem.N,MigrationPool,W);
+                PopulationU = EnvironmentalSelectionU(KeepUniquePopulation([PopulationU,OffspringU]),Problem.N);
 
                 [ExternalArchive,BoundaryGain,BoundaryAdded] = UpdateSectionBExternalArchive( ...
                     ExternalArchive,OffspringC,OffspringU,BoundaryOffspring);
@@ -175,23 +143,15 @@ classdef PRBCCMO < ALGORITHM
                 Algorithm.metric.sectionB.externalArchiveCount = numel(ExternalArchive);
                 Algorithm.metric.sectionB.totalBoundaryGain = Algorithm.metric.sectionB.totalBoundaryGain + BoundaryGain;
 
-                [TrainBatch,TrainInfo,CalibBatch,CalibInfo,TestBatch,TestInfo] = SplitHeldOutBatch( ...
+                [TrainBatch,~,CalibBatch,CalibInfo,TestBatch,TestInfo] = SplitHeldOutBatch( ...
                     BoundaryOffspring,BoundaryInfo,CalibMax,TestMax,Problem.M);
                 HoldoutDec = [CalibDec;TestDec; ...
                     SolutionDecs(CalibBatch,Problem.D);SolutionDecs(TestBatch,Problem.D)];
                 [ProtectedBracketDec,ProtectedBracketLabel] = BuildBracketProtectedBuffer(BracketArchive,Problem.D);
                 [ProtectedBracketDec,ProtectedBracketLabel] = ExcludeLabeledRows( ...
                     ProtectedBracketDec,ProtectedBracketLabel,HoldoutDec);
-                [ProtectedOtherAddDec,ProtectedOtherAddLabel] = CollectOtherProtectedCases( ...
-                    TrainBatch,TrainInfo,HardNegBatch,Problem.D);
-                [ProtectedOtherAddDec,ProtectedOtherAddLabel] = ExcludeLabeledRows( ...
-                    ProtectedOtherAddDec,ProtectedOtherAddLabel,HoldoutDec);
-                [ProtectedOtherDec,ProtectedOtherLabel] = UpdateProtectedBuffer( ...
-                    ProtectedOtherDec,ProtectedOtherLabel,ProtectedOtherAddDec,ProtectedOtherAddLabel,ProtectedOtherMax);
-                [ProtectedOtherDec,ProtectedOtherLabel] = ExcludeLabeledRows( ...
-                    ProtectedOtherDec,ProtectedOtherLabel,HoldoutDec);
-                ProtectedDec   = [ProtectedBracketDec;ProtectedOtherDec];
-                ProtectedLabel = [ProtectedBracketLabel;ProtectedOtherLabel];
+                ProtectedDec   = ProtectedBracketDec;
+                ProtectedLabel = ProtectedBracketLabel;
                 [TrainDec,TrainLabel] = UpdateTrainingArchive( ...
                     TrainDec,TrainLabel,ProtectedDec,ProtectedLabel,TrainBatch,HoldoutDec,TrainMax);
                 [CalibDec,CalibLabel,CalibNear] = UpdateCalibrationBuffer( ...
@@ -201,7 +161,7 @@ classdef PRBCCMO < ALGORITHM
 
                 PendingLabels = PendingLabels + numel(BoundaryOffspring);
                 TrainOptions = BuildBoundaryTrainingOptions( ...
-                    BracketArchive,HardNegativeArchive,ensK,calMode,dLambda,pairM,lPair,lMid,lHard,Problem.D);
+                    BracketArchive,ensK,calMode,dLambda,pairM,lPair,lMid,Problem.D,TightGap);
                 [Model,PendingLabels,LastCalMetric] = UpdateBoundaryModel( ...
                     Model,TrainDec,TrainLabel,CalibDec,CalibLabel,TestDec,TestLabel, ...
                     hidden,epoch,WarmEpoch,lr,Generation,PendingLabels,TriggerCount, ...
@@ -217,20 +177,9 @@ classdef PRBCCMO < ALGORITHM
     end
 end
 
-function [OffspringC,OffspringU] = GenerateRegularOffspring(Problem,PopulationC,PopulationU,FitnessC,FitnessU,type)
-    if type == 1
-        MatingPoolC = TournamentSelection(2,Problem.N,FitnessC);
-        MatingPoolU = TournamentSelection(2,Problem.N,FitnessU);
-        OffspringC  = OperatorGAhalf(Problem,PopulationC(MatingPoolC));
-        OffspringU  = OperatorGAhalf(Problem,PopulationU(MatingPoolU));
-    else
-        MatingPoolC = TournamentSelection(2,2*Problem.N,FitnessC);
-        MatingPoolU = TournamentSelection(2,2*Problem.N,FitnessU);
-        OffspringC  = OperatorDE(Problem,PopulationC, ...
-            PopulationC(MatingPoolC(1:end/2)),PopulationC(MatingPoolC(end/2+1:end)));
-        OffspringU  = OperatorDE(Problem,PopulationU, ...
-            PopulationU(MatingPoolU(1:end/2)),PopulationU(MatingPoolU(end/2+1:end)));
-    end
+function [OffspringC,OffspringU] = GenerateRegularOffspring(Problem,PopulationC,PopulationU)
+    OffspringC = Problem.Evaluation(OperatorDE_current_rand_1(Problem,PopulationC.decs));
+    OffspringU = Problem.Evaluation(OperatorDE_current_rand_1(Problem,PopulationU.decs));
 end
 
 function Population = KeepUniquePopulation(Population)
@@ -337,17 +286,27 @@ end
 
 function Info = DefaultBoundaryInfo(Solutions,M)
     Count = numel(Solutions);
-    Info = NormalizeBoundaryInfo([],M);
-    Info.source    = zeros(Count,1);
-    Info.score     = zeros(Count,1);
-    Info.prob      = 0.5*ones(Count,1);
-    Info.entropy   = zeros(Count,1);
-    Info.hvGain    = zeros(Count,1);
-    Info.novelty   = zeros(Count,1);
-    Info.penalty   = ones(Count,1);
-    Info.utility   = zeros(Count,1);
-    Info.sector    = zeros(Count,1);
-    Info.proxyObjs = Solutions.objs;
+    D = 0;
+    if Count > 0
+        D = size(Solutions.decs,2);
+    end
+    Info = NormalizeBoundaryInfo([],M,D);
+    Info.source        = zeros(Count,1);
+    Info.score         = zeros(Count,1);
+    Info.prob          = 0.5*ones(Count,1);
+    Info.queryScore    = zeros(Count,1);
+    Info.disagreement  = zeros(Count,1);
+    Info.paretoValue   = zeros(Count,1);
+    Info.reliability   = zeros(Count,1);
+    Info.boundaryTrust = zeros(Count,1);
+    Info.utility       = zeros(Count,1);
+    Info.sector        = zeros(Count,1);
+    Info.eligible      = true(Count,1);
+    Info.proxyObjs     = Solutions.objs;
+    Info.anchorDec     = zeros(Count,D);
+    Info.anchorObj     = zeros(Count,M);
+    Info.helperDec     = zeros(Count,D);
+    Info.helperObj     = zeros(Count,M);
 end
 
 function [Dec,Label] = ExcludeLabeledRows(Dec,Label,ExcludeDec)
@@ -367,23 +326,6 @@ function Dec = SolutionDecs(Solutions,D)
     Dec = Solutions.decs;
 end
 
-function [ProtectedDec,ProtectedLabel] = CollectOtherProtectedCases(BoundaryOffspring,BoundaryInfo,HardNegBatch,D)
-    ProtectedDec = zeros(0,D);
-    ProtectedLabel = zeros(0,1);
-    if ~isempty(BoundaryOffspring)
-        Label = double(all(BoundaryOffspring.cons<=0,2));
-        NearMask = abs(BoundaryInfo.prob(:)-0.5) <= 0.1;
-        MisMask  = (BoundaryInfo.prob(:)>=0.5) ~= logical(Label);
-        KeepMask = NearMask & MisMask;
-        ProtectedDec = [ProtectedDec;BoundaryOffspring(KeepMask).decs];
-        ProtectedLabel = [ProtectedLabel;Label(KeepMask)];
-    end
-    if ~isempty(HardNegBatch.Dec)
-        ProtectedDec = [ProtectedDec;HardNegBatch.Dec];
-        ProtectedLabel = [ProtectedLabel;zeros(size(HardNegBatch.Dec,1),1)];
-    end
-end
-
 function [ProtectedDec,ProtectedLabel] = BuildBracketProtectedBuffer(BracketArchive,D)
     ProtectedDec = zeros(0,D);
     ProtectedLabel = zeros(0,1);
@@ -400,13 +342,16 @@ function Archive = EmptyBracketArchive(D)
     Archive.Gap           = zeros(0,1);
 end
 
-function Archive = UpdateBracketArchive(Archive,NewPairs,MaxPairs,D)
+function Archive = UpdateBracketArchive(Archive,NewPairs,MaxPairs,D,TightGap)
     if nargin < 1 || isempty(Archive)
         Archive = EmptyBracketArchive(D);
     end
     if nargin < 3 || MaxPairs <= 0
         Archive = EmptyBracketArchive(D);
         return;
+    end
+    if nargin < 5 || isempty(TightGap)
+        TightGap = 0.03;
     end
 
     NewF = zeros(0,D);
@@ -421,6 +366,10 @@ function Archive = UpdateBracketArchive(Archive,NewPairs,MaxPairs,D)
     AllF = [Archive.FeasibleDec;NewF];
     AllI = [Archive.InfeasibleDec;NewI];
     AllG = [Archive.Gap(:);NewG];
+    KeepTight = isfinite(AllG) & AllG <= TightGap;
+    AllF = AllF(KeepTight,:);
+    AllI = AllI(KeepTight,:);
+    AllG = AllG(KeepTight);
     if isempty(AllF)
         Archive = EmptyBracketArchive(D);
         return;
@@ -439,42 +388,47 @@ function Archive = UpdateBracketArchive(Archive,NewPairs,MaxPairs,D)
 end
 
 function Options = BuildBoundaryTrainingOptions( ...
-    BracketArchive,HardNegativeArchive,EnsembleSize,CalMode,DisagreementWeight, ...
-    PairMargin,LambdaPair,LambdaMid,LambdaHard,D)
+    BracketArchive,EnsembleSize,CalMode,DisagreementWeight,PairMargin,LambdaPair,LambdaMid,D,TightGap)
 
     Options = struct();
     Options.EnsembleSize       = EnsembleSize;
-    Options.Calibrator         = DecodeCalibrationMode(CalMode);
+    Options.CalibratorCandidates = DecodeCalibrationMode(CalMode);
     Options.DisagreementWeight = max(DisagreementWeight,0);
     Options.PairMargin         = max(PairMargin,0);
+    Options.LambdaBrier        = 0.5;
     Options.LambdaPair         = max(LambdaPair,0);
     Options.LambdaMid          = max(LambdaMid,0);
-    Options.LambdaHardNeg      = max(LambdaHard,0);
     Options.PairFeasibleDec    = zeros(0,D);
     Options.PairInfeasibleDec  = zeros(0,D);
     Options.MidDec             = zeros(0,D);
-    Options.HardNegDec         = zeros(0,D);
+    if nargin < 9 || isempty(TightGap)
+        TightGap = 0.03;
+    end
 
     if ~isempty(BracketArchive) && ~isempty(BracketArchive.FeasibleDec)
         Options.PairFeasibleDec   = BracketArchive.FeasibleDec;
         Options.PairInfeasibleDec = BracketArchive.InfeasibleDec;
-        Options.MidDec = 0.5*(BracketArchive.FeasibleDec + BracketArchive.InfeasibleDec);
-    end
-    if ~isempty(HardNegativeArchive) && isfield(HardNegativeArchive,'Dec') && ~isempty(HardNegativeArchive.Dec)
-        Options.HardNegDec = HardNegativeArchive.Dec;
+        TightMask = true(size(BracketArchive.FeasibleDec,1),1);
+        if isfield(BracketArchive,'Gap') && numel(BracketArchive.Gap) == size(BracketArchive.FeasibleDec,1)
+            TightMask = isfinite(BracketArchive.Gap(:)) & BracketArchive.Gap(:) <= TightGap;
+        end
+        if any(TightMask)
+            Options.MidDec = 0.5*(BracketArchive.FeasibleDec(TightMask,:) + ...
+                BracketArchive.InfeasibleDec(TightMask,:));
+        end
     end
 end
 
 function Type = DecodeCalibrationMode(CalMode)
     switch round(CalMode)
         case 1
-            Type = 'raw';
+            Type = {'raw'};
         case 2
-            Type = 'temperature';
+            Type = {'temperature','beta'};
         case 3
-            Type = 'sigmoid';
+            Type = {'beta'};
         otherwise
-            Type = 'temperature';
+            Type = {'temperature','beta'};
     end
 end
 
@@ -507,8 +461,46 @@ function [Model,PendingLabels,LastCalMetric] = UpdateBoundaryModel( ...
     Model = TrainBoundaryMLP( ...
         TrainDec,TrainLabel,Hidden,TrainEpoch,LR,PrevModel,CalibDec,CalibLabel, ...
         TrainOptions);
+    Model = RefreshBoundaryTrust(Model,TestDec,TestLabel);
     PendingLabels = 0;
     LastCalMetric = EvaluateBoundaryCalibration(Model,TestDec,TestLabel);
+end
+
+function Model = RefreshBoundaryTrust(Model,TestDec,TestLabel)
+    if isempty(Model)
+        return;
+    end
+
+    Metric = EvaluateBoundaryCalibration(Model,TestDec,TestLabel);
+    TrustGate = isfinite(Metric.ece) && Metric.ece <= 0.05 ...
+        && isfinite(Metric.nearGap) && Metric.nearGap <= 0.05 ...
+        && Metric.nearCount >= 20;
+    Model.TrustGate = TrustGate;
+    Model.TrustMetric = Metric;
+    if isfield(Metric,'binEdges') && isfield(Metric,'bin') && isfield(Metric.bin,'count')
+        Model.ReliabilityBinEdges = Metric.binEdges;
+        Reliability = zeros(numel(Metric.bin.count),1);
+        Valid = Metric.bin.count > 0 & isfinite(Metric.bin.feasibleRate);
+        Reliability(Valid) = max(0,1 - 2*abs(Metric.bin.feasibleRate(Valid)-0.5));
+        if any(Valid)
+            Reliability = FillReliabilityGaps(Reliability,Valid);
+        end
+        Model.ReliabilityScore = Reliability;
+    else
+        Model.ReliabilityBinEdges = linspace(0,1,11);
+        Model.ReliabilityScore = zeros(10,1);
+    end
+end
+
+function Reliability = FillReliabilityGaps(Reliability,Valid)
+    ValidIdx = find(Valid);
+    for i = 1 : numel(Reliability)
+        if Valid(i)
+            continue;
+        end
+        [~,Best] = min(abs(ValidIdx-i));
+        Reliability(i) = Reliability(ValidIdx(Best));
+    end
 end
 
 function flag = IsCalibrationDrifting(CurrentMetric,LastMetric)
@@ -558,88 +550,194 @@ function [AllOffspring,AllInfo] = MergeBoundaryResults(Primary,PrimaryInfo,Extra
     end
 
     AllOffspring = [Primary,Extra];
-    PrimaryInfo = NormalizeBoundaryInfo(PrimaryInfo,M);
-    ExtraInfo   = NormalizeBoundaryInfo(ExtraInfo,M);
-    AllInfo.source    = [PrimaryInfo.source;ExtraInfo.source];
-    AllInfo.score     = [PrimaryInfo.score;ExtraInfo.score];
-    AllInfo.prob      = [PrimaryInfo.prob;ExtraInfo.prob];
-    AllInfo.entropy   = [PrimaryInfo.entropy;ExtraInfo.entropy];
-    AllInfo.hvGain    = [PrimaryInfo.hvGain;ExtraInfo.hvGain];
-    AllInfo.novelty   = [PrimaryInfo.novelty;ExtraInfo.novelty];
-    AllInfo.penalty   = [PrimaryInfo.penalty;ExtraInfo.penalty];
-    AllInfo.utility   = [PrimaryInfo.utility;ExtraInfo.utility];
-    AllInfo.sector    = [PrimaryInfo.sector;ExtraInfo.sector];
-    AllInfo.proxyObjs = [PrimaryInfo.proxyObjs;ExtraInfo.proxyObjs];
+    D = max(ResolveBoundaryInfoDecisionWidth(PrimaryInfo),ResolveBoundaryInfoDecisionWidth(ExtraInfo));
+    PrimaryInfo = NormalizeBoundaryInfo(PrimaryInfo,M,D);
+    ExtraInfo   = NormalizeBoundaryInfo(ExtraInfo,M,D);
+    AllInfo     = NormalizeBoundaryInfo([],M,D);
+    VectorFields = BoundaryInfoVectorFields();
+    for i = 1 : numel(VectorFields)
+        Field = VectorFields{i};
+        AllInfo.(Field) = [PrimaryInfo.(Field);ExtraInfo.(Field)];
+    end
+    MatrixFields = BoundaryInfoMatrixFields();
+    for i = 1 : numel(MatrixFields)
+        Field = MatrixFields{i};
+        AllInfo.(Field) = [PrimaryInfo.(Field);ExtraInfo.(Field)];
+    end
 end
 
-function Info = NormalizeBoundaryInfo(Info,M)
+function Info = NormalizeBoundaryInfo(Info,M,D)
     if nargin < 2
         M = 0;
     end
+    if nargin < 3 || isempty(D)
+        D = ResolveBoundaryInfoDecisionWidth(Info);
+    end
+    Count = ResolveBoundaryInfoCount(Info);
     if isempty(Info)
-        Info.source    = zeros(0,1);
-        Info.score     = zeros(0,1);
-        Info.prob      = zeros(0,1);
-        Info.entropy   = zeros(0,1);
-        Info.hvGain    = zeros(0,1);
-        Info.novelty   = zeros(0,1);
-        Info.penalty   = zeros(0,1);
-        Info.utility   = zeros(0,1);
-        Info.sector    = zeros(0,1);
-        Info.proxyObjs = zeros(0,M);
-        return;
+        Info = struct();
     end
-    Fields = {'source','score','prob','entropy','hvGain','novelty','penalty','utility','sector'};
-    for i = 1 : numel(Fields)
-        if ~isfield(Info,Fields{i}) || isempty(Info.(Fields{i}))
-            Info.(Fields{i}) = zeros(0,1);
-        end
+
+    Info.source        = ResolveBoundaryVector(Info,'source',Count,0);
+    Info.score         = ResolveBoundaryVector(Info,'score',Count,0);
+    Info.prob          = ResolveBoundaryVector(Info,'prob',Count,0);
+    Info.queryScore    = ResolveBoundaryVector(Info,'queryScore',Count,0);
+    Info.disagreement  = ResolveBoundaryVector(Info,'disagreement',Count,0);
+    Info.paretoValue   = ResolveBoundaryVector(Info,'paretoValue',Count,0);
+    Info.reliability   = ResolveBoundaryVector(Info,'reliability',Count,0);
+    Info.boundaryTrust = ResolveBoundaryVector(Info,'boundaryTrust',Count,[]);
+    if isempty(Info.boundaryTrust)
+        Info.boundaryTrust = Info.reliability .* Info.queryScore;
     end
-    if ~isfield(Info,'proxyObjs') || isempty(Info.proxyObjs)
-        Info.proxyObjs = zeros(0,M);
+    Info.utility       = ResolveBoundaryVector(Info,'utility',Count,[]);
+    if isempty(Info.utility)
+        Info.utility = Info.score;
     end
+    Info.sector        = ResolveBoundaryVector(Info,'sector',Count,0);
+    Info.eligible      = ResolveBoundaryEligible(Info,Count);
+    Info.proxyObjs     = ResolveBoundaryMatrix(Info,'proxyObjs',Count,M);
+    Info.anchorDec     = ResolveBoundaryMatrix(Info,'anchorDec',Count,D);
+    Info.anchorObj     = ResolveBoundaryMatrix(Info,'anchorObj',Count,M);
+    Info.helperDec     = ResolveBoundaryMatrix(Info,'helperDec',Count,D);
+    Info.helperObj     = ResolveBoundaryMatrix(Info,'helperObj',Count,M);
 end
 
 function Info = SliceBoundaryInfo(Info,Idx,M)
-    Info = NormalizeBoundaryInfo(Info,M);
+    D = ResolveBoundaryInfoDecisionWidth(Info);
+    Info = NormalizeBoundaryInfo(Info,M,D);
     if isempty(Idx)
-        Info = NormalizeBoundaryInfo([],M);
+        Info = NormalizeBoundaryInfo([],M,D);
         return;
     end
-    Info.source    = Info.source(Idx);
-    Info.score     = Info.score(Idx);
-    Info.prob      = Info.prob(Idx);
-    Info.entropy   = Info.entropy(Idx);
-    Info.hvGain    = Info.hvGain(Idx);
-    Info.novelty   = Info.novelty(Idx);
-    Info.penalty   = Info.penalty(Idx);
-    Info.utility   = Info.utility(Idx);
-    Info.sector    = Info.sector(Idx);
-    Info.proxyObjs = Info.proxyObjs(Idx,:);
+    VectorFields = BoundaryInfoVectorFields();
+    for i = 1 : numel(VectorFields)
+        Field = VectorFields{i};
+        Info.(Field) = Info.(Field)(Idx);
+    end
+    MatrixFields = BoundaryInfoMatrixFields();
+    for i = 1 : numel(MatrixFields)
+        Field = MatrixFields{i};
+        Info.(Field) = Info.(Field)(Idx,:);
+    end
+end
+
+function Fields = BoundaryInfoVectorFields()
+    Fields = {'source','score','prob','queryScore','disagreement','paretoValue', ...
+        'reliability','boundaryTrust','utility','sector','eligible'};
+end
+
+function Fields = BoundaryInfoMatrixFields()
+    Fields = {'proxyObjs','anchorDec','anchorObj','helperDec','helperObj'};
+end
+
+function Count = ResolveBoundaryInfoCount(Info)
+    Count = 0;
+    if ~isstruct(Info)
+        return;
+    end
+    VectorFields = BoundaryInfoVectorFields();
+    for i = 1 : numel(VectorFields)
+        Field = VectorFields{i};
+        if isfield(Info,Field) && ~isempty(Info.(Field))
+            Count = numel(Info.(Field));
+            return;
+        end
+    end
+    MatrixFields = BoundaryInfoMatrixFields();
+    for i = 1 : numel(MatrixFields)
+        Field = MatrixFields{i};
+        if isfield(Info,Field) && ~isempty(Info.(Field))
+            Count = size(Info.(Field),1);
+            return;
+        end
+    end
+end
+
+function D = ResolveBoundaryInfoDecisionWidth(Info)
+    D = 0;
+    if ~isstruct(Info)
+        return;
+    end
+    if isfield(Info,'anchorDec') && ~isempty(Info.anchorDec)
+        D = size(Info.anchorDec,2);
+        return;
+    end
+    if isfield(Info,'helperDec') && ~isempty(Info.helperDec)
+        D = size(Info.helperDec,2);
+    end
+end
+
+function Value = ResolveBoundaryVector(Info,Field,Count,Default)
+    if nargin < 4
+        Default = 0;
+    end
+    if isstruct(Info) && isfield(Info,Field) && ~isempty(Info.(Field))
+        Value = Info.(Field)(:);
+        return;
+    end
+    if isempty(Default)
+        Value = [];
+    else
+        Value = repmat(Default,Count,1);
+    end
+end
+
+function Value = ResolveBoundaryEligible(Info,Count)
+    if isstruct(Info) && isfield(Info,'eligible') && ~isempty(Info.eligible)
+        Value = logical(Info.eligible(:));
+        return;
+    end
+    Value = true(Count,1);
+end
+
+function Value = ResolveBoundaryMatrix(Info,Field,Count,Width)
+    if nargin < 4
+        Width = 0;
+    end
+    if isstruct(Info) && isfield(Info,Field) && ~isempty(Info.(Field))
+        Value = Info.(Field);
+        return;
+    end
+    Value = zeros(Count,Width);
 end
 
 function Params = ResolvePRBCCMOParameters(ParameterCell)
-    Defaults = {1,0.2,0.5,0.5,4,20,25,0.01,0.5,0.5,0.5, ...
-        3,2,1,0.05,1,1,1,1,1,0};
-    Names = {'type','bRho','afRho','aiRho','trainRho','hidden','epoch','lr', ...
-        'xRho','lsRho','mRho','ensK','calMode','dLambda','pairM','lPair', ...
-        'lMid','lHard','selMode','localMode','traceOn'};
-    Values = Defaults;
     if nargin >= 1 && ~isempty(ParameterCell)
         if ~iscell(ParameterCell)
             ParameterCell = {ParameterCell};
         end
-        Limit = min(numel(ParameterCell),numel(Defaults));
-        for i = 1 : Limit
-            if ~isempty(ParameterCell{i})
-                Values{i} = ParameterCell{i};
-            end
-        end
+    else
+        ParameterCell = {};
     end
 
-    Params = struct();
-    for i = 1 : numel(Names)
-        Params.(Names{i}) = Values{i};
+    LegacyDefaults = {1,0.2,0.5,0.5,2,20,25,0.01,0.5,0.5,0.4, ...
+        3,2,1,0.05,1,1,1,1,1,0};
+    LegacyMap = struct( ...
+        'bRho',2,'trainRho',5,'hidden',6,'epoch',7,'lr',8,'mRho',11, ...
+        'ensK',12,'calMode',13,'dLambda',14,'pairM',15,'lPair',16, ...
+        'lMid',17,'selMode',19,'localMode',20,'traceOn',21);
+    ActiveNames = {'bRho','trainRho','hidden','epoch','lr','mRho','ensK', ...
+        'calMode','dLambda','pairM','lPair','lMid','selMode','localMode','traceOn'};
+    ActiveDefaults = {0.2,2,20,25,0.01,0.4,3,2,1,0.05,1,1,1,1,0};
+
+    Params = cell2struct(ActiveDefaults,ActiveNames,2);
+    if numel(ParameterCell) >= numel(LegacyDefaults)
+        for i = 1 : numel(ActiveNames)
+            Index = LegacyMap.(ActiveNames{i});
+            if numel(ParameterCell) >= Index && ~isempty(ParameterCell{Index})
+                Params.(ActiveNames{i}) = ParameterCell{Index};
+            elseif ~isempty(LegacyDefaults{Index})
+                Params.(ActiveNames{i}) = LegacyDefaults{Index};
+            end
+        end
+        return;
+    end
+
+    Limit = min(numel(ParameterCell),numel(ActiveNames));
+    for i = 1 : Limit
+        if ~isempty(ParameterCell{i})
+            Params.(ActiveNames{i}) = ParameterCell{i};
+        end
     end
 end
 
@@ -656,7 +754,7 @@ function Metric = InitSectionBMetric(D,RuntimeOptions,ExternalArchive)
 
     Metric = struct();
     Metric.selectionMode = SafeRuntimeOption(RuntimeOptions,'SelectionMode',1);
-    Metric.selectionName = SafeRuntimeOption(RuntimeOptions,'SelectionName','full');
+    Metric.selectionName = SafeRuntimeOption(RuntimeOptions,'SelectionName','trusted_query');
     Metric.localMode     = SafeRuntimeOption(RuntimeOptions,'LocalMode',1);
     Metric.localName     = SafeRuntimeOption(RuntimeOptions,'LocalName','label_aware');
     Metric.traceFlag     = logical(SafeRuntimeOption(RuntimeOptions,'TraceFlag',false));
@@ -682,10 +780,12 @@ function Row = InitBoundarySeedAuditRow(D)
         'source',NaN, ...
         'seedFeasible',false, ...
         'prob',NaN, ...
-        'entropy',NaN, ...
-        'hvGain',NaN, ...
-        'novelty',NaN, ...
-        'penalty',NaN, ...
+        'queryScore',NaN, ...
+        'disagreement',NaN, ...
+        'paretoValue',NaN, ...
+        'reliability',NaN, ...
+        'boundaryTrust',NaN, ...
+        'eligible',false, ...
         'utility',NaN, ...
         'localEvalCount',0, ...
         'frrSuccess',false, ...
@@ -719,10 +819,12 @@ function Rows = AppendBoundarySeedAuditRows(Rows,BoundarySeeds,SeedInfo,WorkerAu
         AddRows(i).source     = SafeInfoValue(SeedInfo,'source',i,NaN);
         AddRows(i).seedFeasible = all(BoundarySeeds(i).cons<=0,2);
         AddRows(i).prob       = SafeInfoValue(SeedInfo,'prob',i,NaN);
-        AddRows(i).entropy    = SafeInfoValue(SeedInfo,'entropy',i,NaN);
-        AddRows(i).hvGain     = SafeInfoValue(SeedInfo,'hvGain',i,NaN);
-        AddRows(i).novelty    = SafeInfoValue(SeedInfo,'novelty',i,NaN);
-        AddRows(i).penalty    = SafeInfoValue(SeedInfo,'penalty',i,NaN);
+        AddRows(i).queryScore = SafeInfoValue(SeedInfo,'queryScore',i,NaN);
+        AddRows(i).disagreement = SafeInfoValue(SeedInfo,'disagreement',i,NaN);
+        AddRows(i).paretoValue = SafeInfoValue(SeedInfo,'paretoValue',i,NaN);
+        AddRows(i).reliability = SafeInfoValue(SeedInfo,'reliability',i,NaN);
+        AddRows(i).boundaryTrust = SafeInfoValue(SeedInfo,'boundaryTrust',i,NaN);
+        AddRows(i).eligible   = logical(SafeInfoValue(SeedInfo,'eligible',i,false));
         AddRows(i).utility    = SafeInfoValue(SeedInfo,'utility',i,NaN);
         AddRows(i).seedDec    = BoundarySeeds(i).dec;
         if nargin >= 4 && numel(WorkerAudit) >= i
@@ -799,7 +901,7 @@ function Trace = AppendBoundaryGainTrace(Trace,Generation,FE,BoundaryGain,Bounda
     end
     Row.boundaryAddedCount = BoundaryAddedCount;
     Row.externalArchiveCount = ExternalArchiveCount;
-    Trace(end+1,1) = Row; %#ok<AGROW>
+    Trace(end+1,1) = Row;
 end
 
 function [ExternalArchive,BoundaryGain,BoundaryAdded] = UpdateSectionBExternalArchive(ExternalArchive,OffspringC,OffspringU,BoundaryOffspring)
@@ -883,7 +985,7 @@ function Metric = AppendSectionBCalibrationTrace(Metric,CalMetric)
     Row.calibration_near_count = FieldOrDefaultMetric(CalMetric,'calibrationNearCount',NaN);
     Row.test_count = FieldOrDefaultMetric(CalMetric,'testCount',NaN);
     Row.test_near_count = FieldOrDefaultMetric(CalMetric,'testNearCount',NaN);
-    Trace(end+1,1) = Row; %#ok<AGROW>
+    Trace(end+1,1) = Row;
     Metric.calibrationTrace = Trace;
 end
 

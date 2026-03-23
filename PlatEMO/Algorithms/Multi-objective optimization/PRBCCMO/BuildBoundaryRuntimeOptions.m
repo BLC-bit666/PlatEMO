@@ -1,5 +1,5 @@
 function Options = BuildBoundaryRuntimeOptions(SelectionMode,LocalMode,TraceFlag)
-% Build runtime options for Section B experiment variants.
+% Build runtime options for trust-aware Pareto-bridge querying.
 
     if nargin < 1 || isempty(SelectionMode)
         SelectionMode = 1;
@@ -20,22 +20,21 @@ function Options = BuildBoundaryRuntimeOptions(SelectionMode,LocalMode,TraceFlag
     Options.TraceFlag     = logical(TraceFlag);
     Options.SelectionName = ResolveSelectionName(SelectionMode);
     Options.LocalName     = ResolveLocalName(LocalMode);
-    Options.ArchiveSelectionMode = SelectionMode;
-    if SelectionMode == 3
-        Options.ArchiveSelectionMode = 1;
-    end
+    Options.BridgeActivationGap = 0.01;
+    Options.MigrationGap        = 0;
+    Options.BridgeScanLambda    = [0.20,0.35,0.50,0.65,0.80];
 end
 
 function Name = ResolveSelectionName(SelectionMode)
     switch SelectionMode
         case 1
-            Name = 'full';
+            Name = 'trusted_query';
         case 2
             Name = 'uncertain_only';
         case 3
-            Name = 'random_boundary';
+            Name = 'random_bridge';
         otherwise
-            Name = 'full';
+            Name = 'trusted_query';
     end
 end
 

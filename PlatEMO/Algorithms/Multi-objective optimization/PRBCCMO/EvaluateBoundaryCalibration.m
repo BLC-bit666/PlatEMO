@@ -10,6 +10,8 @@ function Metric = EvaluateBoundaryCalibration(Model,CalDec,CalLabel,BinCount)
     Metric.ece       = inf;
     Metric.nearGap   = inf;
     Metric.nearCount = 0;
+    Metric.trustGate = false;
+    Metric.calibrator = 'raw';
     if isempty(CalDec) || isempty(CalLabel) || isempty(Model)
         return;
     end
@@ -21,4 +23,10 @@ function Metric = EvaluateBoundaryCalibration(Model,CalDec,CalLabel,BinCount)
 
     Prob = PredictBoundaryMLP(Model,CalDec);
     Metric = SummarizeCalibrationProbabilities(Prob,CalLabel,BinCount);
+    if isfield(Model,'TrustGate') && ~isempty(Model.TrustGate)
+        Metric.trustGate = logical(Model.TrustGate);
+    end
+    if isfield(Model,'CalibratorType') && ~isempty(Model.CalibratorType)
+        Metric.calibrator = Model.CalibratorType;
+    end
 end
