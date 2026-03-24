@@ -18,6 +18,7 @@ function Options = BuildBoundaryRuntimeOptions(SelectionMode,LocalMode,TraceFlag
     Options.SelectionMode = SelectionMode;
     Options.LocalMode     = LocalMode;
     Options.TraceFlag     = logical(TraceFlag);
+    Options.TraceProbLabel = false;
     Options.SelectionName = ResolveSelectionName(SelectionMode);
     Options.LocalName     = ResolveLocalName(LocalMode);
     Options.BridgeActivationGap = 0.01;

@@ -12,7 +12,7 @@ function Detail = ScoreBoundaryCandidates(Problem,CandidateDec,CandidateObj,Feas
     Disagreement = PredictStats.std(:);
     [ParetoValue,Sector] = ComputeParetoRelevance(CandidateObj,FeasibleObj,W);
     Reliability = ResolveReliability(Model,Prob);
-    Eligible    = ~IsInsideHardNegativeRegion(Problem,CandidateDec,HardNegativeArchive);
+    Eligible    = IsOutsideHardNegativeRegion(Problem,CandidateDec,HardNegativeArchive);
     TrustGate   = ResolveTrustGate(Model);
     LambdaSigma = ResolveDisagreementWeight(Model);
 
@@ -125,7 +125,7 @@ function Reliability = ResolveReliability(Model,Prob)
     end
 end
 
-function Eligible = IsInsideHardNegativeRegion(Problem,CandidateDec,HardNegativeArchive)
+function Eligible = IsOutsideHardNegativeRegion(Problem,CandidateDec,HardNegativeArchive)
     Total = size(CandidateDec,1);
     Eligible = true(Total,1);
     if Total == 0 || isempty(HardNegativeArchive) || ~isfield(HardNegativeArchive,'Dec') ...

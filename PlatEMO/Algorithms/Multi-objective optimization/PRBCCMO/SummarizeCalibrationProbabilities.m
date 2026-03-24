@@ -24,6 +24,8 @@ function Summary = SummarizeCalibrationProbabilities(Prob,Label,BinCount)
     Prob = min(max(Prob,0),1);
     Summary.valid        = true;
     Summary.count        = numel(Label);
+    Summary.classCount   = numel(unique(Label));
+    Summary.singleClass  = Summary.classCount < 2;
     Summary.feasibleRate = mean(Label);
     Summary.meanProb     = mean(Prob);
     Summary.brier        = mean((Prob-Label).^2);
@@ -39,14 +41,19 @@ function Summary = SummarizeCalibrationProbabilities(Prob,Label,BinCount)
     Summary.reliabilityY      = Summary.bin.feasibleRate(ValidBins);
     Summary.reliabilityWeight = Summary.bin.weight(ValidBins);
 
-    NearMask = Prob>=0.45 & Prob<=0.55;
-    Summary.nearCount = sum(NearMask);
-    Summary.nearBand  = [0.45,0.55];
-    if Summary.nearCount > 0
-        Summary.nearMeanProb     = mean(Prob(NearMask));
-        Summary.nearFeasibleRate = mean(Label(NearMask));
-        Summary.nearGap          = abs(Summary.nearFeasibleRate - 0.5);
-    end
+    [Summary.coreNearCount,Summary.coreNearMeanProb, ...
+        Summary.coreNearFeasibleRate,Summary.coreNearGap] = ...
+        SummarizeNearBand(Prob,Label,[0.45,0.55]);
+    [Summary.relaxedNearCount,Summary.relaxedNearMeanProb, ...
+        Summary.relaxedNearFeasibleRate,Summary.relaxedNearGap] = ...
+        SummarizeNearBand(Prob,Label,[0.40,0.60]);
+
+    % Keep the legacy near-band fields mapped to the core band.
+    Summary.nearBand         = Summary.coreNearBand;
+    Summary.nearCount        = Summary.coreNearCount;
+    Summary.nearMeanProb     = Summary.coreNearMeanProb;
+    Summary.nearFeasibleRate = Summary.coreNearFeasibleRate;
+    Summary.nearGap          = Summary.coreNearGap;
 end
 
 function Summary = InitCalibrationSummary(Edges)
@@ -63,6 +70,19 @@ function Summary = InitCalibrationSummary(Edges)
     Summary.nearFeasibleRate = NaN;
     Summary.nearGap          = NaN;
     Summary.nearBand         = [0.45,0.55];
+    Summary.coreNearCount        = 0;
+    Summary.coreNearMeanProb     = NaN;
+    Summary.coreNearFeasibleRate = NaN;
+    Summary.coreNearGap          = NaN;
+    Summary.coreNearBand         = [0.45,0.55];
+    Summary.relaxedNearCount        = 0;
+    Summary.relaxedNearMeanProb     = NaN;
+    Summary.relaxedNearFeasibleRate = NaN;
+    Summary.relaxedNearGap          = NaN;
+    Summary.relaxedNearBand         = [0.40,0.60];
+    Summary.classCount              = 0;
+    Summary.singleClass             = false;
+    Summary.invalidReason           = '';
     Summary.binEdges         = Edges(:)';
     Summary.prob             = zeros(0,1);
     Summary.label            = zeros(0,1);
@@ -74,6 +94,8 @@ function Summary = InitCalibrationSummary(Edges)
     Summary.bin.center       = 0.5*(Summary.bin.left + Summary.bin.right);
     Summary.bin.count        = zeros(BinCount,1);
     Summary.bin.weight       = zeros(BinCount,1);
+    Summary.bin.probSum      = zeros(BinCount,1);
+    Summary.bin.labelSum     = zeros(BinCount,1);
     Summary.bin.meanProb     = NaN(BinCount,1);
     Summary.bin.feasibleRate = NaN(BinCount,1);
     Summary.bin.gap          = NaN(BinCount,1);
@@ -94,6 +116,8 @@ function Bin = SummarizeBins(Prob,Label,Edges)
         if Count == 0
             continue;
         end
+        Bin.probSum(i)      = sum(Prob(Mask));
+        Bin.labelSum(i)     = sum(Label(Mask));
         Bin.meanProb(i)     = mean(Prob(Mask));
         Bin.feasibleRate(i) = mean(Label(Mask));
         Bin.gap(i)          = Bin.feasibleRate(i) - Bin.meanProb(i);
@@ -116,4 +140,24 @@ function ECE = ComputeECE(Prob,Label,Edges)
         Conf = mean(Prob(Mask));
         ECE  = ECE + (sum(Mask)/Total)*abs(Acc-Conf);
     end
+end
+
+function [Count,MeanProb,FeasibleRate,Gap] = SummarizeNearBand(Prob,Label,Band)
+    Count = 0;
+    MeanProb = NaN;
+    FeasibleRate = NaN;
+    Gap = NaN;
+    if isempty(Prob) || isempty(Label)
+        return;
+    end
+
+    Mask = Prob >= Band(1) & Prob <= Band(2);
+    Count = sum(Mask);
+    if Count == 0
+        return;
+    end
+
+    MeanProb     = mean(Prob(Mask));
+    FeasibleRate = mean(Label(Mask));
+    Gap          = abs(FeasibleRate - 0.5);
 end

@@ -1,29 +1,32 @@
-function [Offspring,Info] = SelectBoundaryCandidates(Problem,Pool,PopulationC,Model,W,HardNegativeArchive,Budget,RuntimeOptions)
+function [Offspring,Info,Diag] = SelectBoundaryCandidates(Problem,Pool,FeasibleObj,Model,W,HardNegativeArchive,Budget,RuntimeOptions)
 % Select and evaluate Pareto-bridge boundary queries with trusted semantics.
 
     Offspring = [];
     Info = InitBoundarySeedInfo(Problem);
+    Diag = InitBoundarySelectionDiag();
 
     if nargin < 8 || ~isstruct(RuntimeOptions)
         RuntimeOptions = struct();
     end
+    Diag.selectionMode = ResolveSelectionMode(RuntimeOptions);
+    Diag.budget = max(0,Budget);
+    Diag.hasModel = ~isempty(Model);
     if Budget <= 0 || isempty(Pool.sector)
+        Diag.candidateCount = numel(Pool.sector);
         return;
     end
 
     [CandidateDec,ProxySel] = ResolveBridgePlacement(Problem,Pool,Model,RuntimeOptions);
-    FeasibleC = PopulationC(all(PopulationC.cons<=0,2));
-    if isempty(FeasibleC)
+    if nargin < 3 || isempty(FeasibleObj)
         FeasibleObj = zeros(0,Problem.M);
-    else
-        FeasibleObj = FeasibleC.objs;
     end
 
     Detail = ScoreBoundaryCandidates( ...
         Problem,CandidateDec,ProxySel,FeasibleObj,Model,W,HardNegativeArchive);
-    SelectionMode = ResolveSelectionMode(RuntimeOptions);
+    SelectionMode = Diag.selectionMode;
     RankScore = ResolveSelectionScore(Detail,SelectionMode);
     Valid = Detail.eligible(:) & isfinite(RankScore(:));
+    Diag = UpdateBoundarySelectionDiag(Diag,Detail,RankScore,Valid);
     if ~any(Valid)
         return;
     end
@@ -39,6 +42,7 @@ function [Offspring,Info] = SelectBoundaryCandidates(Problem,Pool,PopulationC,Mo
     if isempty(Accept)
         return;
     end
+    Diag.selectedCount = numel(Accept);
 
     DecsSel   = CandidateDec(Accept,:);
     ProxySel  = ProxySel(Accept,:);
@@ -61,6 +65,51 @@ function [Offspring,Info] = SelectBoundaryCandidates(Problem,Pool,PopulationC,Mo
     Info.anchorObj     = Pool.anchorObj(Accept,:);
     Info.helperDec     = Pool.helperDec(Accept,:);
     Info.helperObj     = Pool.helperObj(Accept,:);
+end
+
+function Diag = InitBoundarySelectionDiag()
+    Diag = struct( ...
+        'budget',0, ...
+        'selectionMode',1, ...
+        'hasModel',false, ...
+        'candidateCount',0, ...
+        'eligibleCount',0, ...
+        'ineligibleCount',0, ...
+        'finiteScoreCount',0, ...
+        'validCount',0, ...
+        'selectedCount',0, ...
+        'positiveParetoCount',0, ...
+        'trustGate',false, ...
+        'maxRankScore',NaN, ...
+        'maxParetoValue',NaN, ...
+        'maxQueryScore',NaN, ...
+        'maxBoundaryTrust',NaN);
+end
+
+function Diag = UpdateBoundarySelectionDiag(Diag,Detail,RankScore,Valid)
+    Diag.candidateCount = numel(Detail.eligible);
+    Diag.eligibleCount = sum(Detail.eligible(:));
+    Diag.ineligibleCount = Diag.candidateCount - Diag.eligibleCount;
+    Diag.finiteScoreCount = sum(isfinite(RankScore(:)));
+    Diag.validCount = sum(Valid(:));
+    Diag.positiveParetoCount = nnz(Detail.paretoValue(:) > 0);
+    Diag.trustGate = any(Detail.trustGate(:));
+    Diag.maxRankScore = SafeFiniteMax(RankScore);
+    Diag.maxParetoValue = SafeFiniteMax(Detail.paretoValue);
+    Diag.maxQueryScore = SafeFiniteMax(Detail.queryScore);
+    Diag.maxBoundaryTrust = SafeFiniteMax(Detail.boundaryTrust);
+end
+
+function Value = SafeFiniteMax(Data)
+    Value = NaN;
+    if isempty(Data)
+        return;
+    end
+    Data = Data(isfinite(Data));
+    if isempty(Data)
+        return;
+    end
+    Value = max(Data);
 end
 
 function Info = InitBoundarySeedInfo(Problem)

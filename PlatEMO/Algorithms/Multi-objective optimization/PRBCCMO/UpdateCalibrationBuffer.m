@@ -1,4 +1,4 @@
-function [CalDec,CalLabel,CalNear] = UpdateCalibrationBuffer(CalDec,CalLabel,CalNear,NewSolutions,NewInfo,MaxCal)
+function [CalDec,CalLabel,CalNear,Status] = UpdateCalibrationBuffer(CalDec,CalLabel,CalNear,NewSolutions,NewInfo,MaxCal)
 % Update a held-out labeled buffer used for calibration or evaluation.
 
     if nargin < 1 || isempty(CalDec)
@@ -10,10 +10,12 @@ function [CalDec,CalLabel,CalNear] = UpdateCalibrationBuffer(CalDec,CalLabel,Cal
         CalDec = [];
         CalLabel = [];
         CalNear = [];
+        Status = InitCalibrationBufferStatus(CalLabel,CalNear,MaxCal);
         return;
     end
     if isempty(NewSolutions)
         [CalDec,CalLabel,CalNear] = TrimCalibrationBuffer(CalDec,CalLabel,CalNear,MaxCal);
+        Status = InitCalibrationBufferStatus(CalLabel,CalNear,MaxCal);
         return;
     end
 
@@ -33,41 +35,108 @@ function [CalDec,CalLabel,CalNear] = UpdateCalibrationBuffer(CalDec,CalLabel,Cal
     AllNear = AllNear(Keep);
 
     [CalDec,CalLabel,CalNear] = TrimCalibrationBuffer(AllDec,AllLab,AllNear,MaxCal);
+    Status = InitCalibrationBufferStatus(CalLabel,CalNear,MaxCal);
 end
 
 function [Dec,Lab,Near] = TrimCalibrationBuffer(Dec,Lab,Near,MaxCal)
     Total = numel(Lab);
     Lab  = double(Lab(:));
     Near = logical(Near(:));
-    if Total <= MaxCal
+    if Total > MaxCal
+        Keep = SelectBalancedCalibrationRows(Lab,Near,MaxCal);
+        Keep = sort(Keep);
+        Dec  = Dec(Keep,:);
+        Lab  = Lab(Keep);
+        Near = Near(Keep);
+    end
+end
+
+function Keep = SelectBalancedCalibrationRows(Lab,Near,MaxCal)
+    Total = numel(Lab);
+    MaxCal = min(MaxCal,Total);
+    Keep = zeros(0,1);
+    ClassValues = [1,0];
+
+    % Reserve the newest sample from each class when both classes exist.
+    for i = 1 : numel(ClassValues)
+        ClassIdx = find(Lab == ClassValues(i));
+        if ~isempty(ClassIdx)
+            Keep(end+1,1) = ClassIdx(end); %#ok<AGROW>
+        end
+    end
+    Keep = unique(Keep,'stable');
+    if numel(Keep) >= MaxCal
+        Keep = Keep(end-MaxCal+1:end);
         return;
     end
 
-    NearQuota = min(sum(Near),floor(0.5*MaxCal));
-    KeepNear  = find(Near);
-    KeepNear  = KeepNear(max(1,end-NearQuota+1):end);
-
-    RemainMask = true(Total,1);
-    RemainMask(KeepNear) = false;
-    Space = MaxCal - numel(KeepNear);
-    Feasible   = find(Lab==1 & RemainMask);
-    Infeasible = find(Lab==0 & RemainMask);
-    Quota = floor(Space/2);
-    KeepF = Feasible(max(1,end-Quota+1):end);
-    KeepI = Infeasible(max(1,end-Quota+1):end);
-    Keep  = [KeepNear(:);KeepF(:);KeepI(:)];
-
-    if numel(Keep) < MaxCal
-        ExtraNeed = MaxCal - numel(Keep);
-        Remain = setdiff(find(RemainMask),[KeepF(:);KeepI(:)],'stable');
-        Extra  = Remain(max(1,end-ExtraNeed+1):end);
-        Keep   = [Keep;Extra(:)];
-    elseif numel(Keep) > MaxCal
-        Keep = Keep(end-MaxCal+1:end);
+    Remaining = setdiff((1:Total)',Keep,'stable');
+    NearQuota = min(sum(Near(Remaining)),max(0,floor(0.5*MaxCal)));
+    NearIdx = Remaining(Near(Remaining));
+    if NearQuota > 0
+        TakeNear = min(NearQuota,numel(NearIdx));
+        Keep = [Keep;NearIdx(max(1,end-TakeNear+1):end)];
+        Keep = unique(Keep,'stable');
     end
 
-    Keep = sort(Keep);
-    Dec  = Dec(Keep,:);
-    Lab  = Lab(Keep);
-    Near = Near(Keep);
+    Remaining = setdiff((1:Total)',Keep,'stable');
+    SlotsLeft = MaxCal - numel(Keep);
+    if SlotsLeft <= 0
+        Keep = Keep(end-MaxCal+1:end);
+        return;
+    end
+
+    ClassFillCell = cell(numel(ClassValues),1);
+    TargetPerClass = floor(SlotsLeft/2);
+    for i = 1 : numel(ClassValues)
+        ClassIdx = Remaining(Lab(Remaining) == ClassValues(i));
+        Take = min(numel(ClassIdx),TargetPerClass);
+        if Take > 0
+            ClassFillCell{i} = ClassIdx(max(1,end-Take+1):end);
+        end
+    end
+    ClassFill = vertcat(ClassFillCell{:});
+    Keep = unique([Keep;ClassFill],'stable');
+
+    Remaining = setdiff((1:Total)',Keep,'stable');
+    SlotsLeft = MaxCal - numel(Keep);
+    if SlotsLeft > 0
+        Keep = [Keep;Remaining(max(1,end-SlotsLeft+1):end)];
+    end
+    Keep = unique(Keep,'stable');
+    if numel(Keep) > MaxCal
+        Keep = Keep(end-MaxCal+1:end);
+    end
+end
+
+function Status = InitCalibrationBufferStatus(Label,Near,MaxCal)
+    Label = double(Label(:));
+    Near = logical(Near(:));
+    ClassValues = unique(Label);
+    ClassValues = ClassValues(isfinite(ClassValues));
+    FeasibleCount = sum(Label > 0);
+    InfeasibleCount = sum(Label <= 0);
+
+    Status = struct();
+    Status.count = numel(Label);
+    Status.nearCount = sum(Near);
+    Status.maxCount = MaxCal;
+    Status.feasibleCount = FeasibleCount;
+    Status.infeasibleCount = InfeasibleCount;
+    Status.classCount = numel(ClassValues);
+    Status.valid = false;
+    Status.singleClass = false;
+    Status.status = 'invalid_empty';
+    if Status.count == 0
+        return;
+    end
+
+    if Status.classCount < 2
+        Status.singleClass = true;
+        Status.status = 'invalid_single_class';
+        return;
+    end
+
+    Status.valid = true;
+    Status.status = 'valid_dual_class';
 end

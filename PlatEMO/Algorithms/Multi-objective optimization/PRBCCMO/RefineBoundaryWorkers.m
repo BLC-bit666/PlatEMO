@@ -1,5 +1,5 @@
 function [Offspring,Info,FeasiblePool,BracketPairs,HardNegativeBatch,WorkerAudit] = RefineBoundaryWorkers( ...
-    Problem,BoundarySeeds,BoundaryInfo,PopulationC,Model,W,HardNegativeArchive,Budget,RuntimeOptions)
+    Problem,BoundarySeeds,BoundaryInfo,FeasibleObj,Model,W,HardNegativeArchive,Budget,RuntimeOptions)
 % Execute label-aware local refinement around real-evaluated bridge seeds.
 
     if nargin < 9 || ~isstruct(RuntimeOptions)
@@ -21,11 +21,8 @@ function [Offspring,Info,FeasiblePool,BracketPairs,HardNegativeBatch,WorkerAudit
     OffspringCell = cell(1,numel(BoundarySeeds));
     FeasibleCell  = cell(1,numel(BoundarySeeds));
     InfoCell      = cell(1,numel(BoundarySeeds));
-    FeasibleRef = PopulationC(all(PopulationC.cons<=0,2));
-    if isempty(FeasibleRef)
+    if nargin < 4 || isempty(FeasibleObj)
         FeasibleObj = zeros(0,Problem.M);
-    else
-        FeasibleObj = FeasibleRef.objs;
     end
     WorkerAudit = repmat(InitWorkerAudit(Problem.D),numel(BoundarySeeds),1);
 
