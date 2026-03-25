@@ -1,9 +1,10 @@
-function [Offspring,Info,Diag] = SelectBoundaryCandidates(Problem,Pool,FeasibleObj,Model,W,HardNegativeArchive,Budget,RuntimeOptions)
+function [Offspring,Info,Diag,CandidateAudit] = SelectBoundaryCandidates(Problem,Pool,FeasibleObj,Model,W,HardNegativeArchive,Budget,RuntimeOptions)
 % Select and evaluate Pareto-bridge boundary queries with trusted semantics.
 
     Offspring = [];
     Info = InitBoundarySeedInfo(Problem);
     Diag = InitBoundarySelectionDiag();
+    CandidateAudit = repmat(InitBoundaryCandidateAuditRow(Problem),0,1);
 
     if nargin < 8 || ~isstruct(RuntimeOptions)
         RuntimeOptions = struct();
@@ -26,6 +27,7 @@ function [Offspring,Info,Diag] = SelectBoundaryCandidates(Problem,Pool,FeasibleO
     SelectionMode = Diag.selectionMode;
     RankScore = ResolveSelectionScore(Detail,SelectionMode);
     Valid = Detail.eligible(:) & isfinite(RankScore(:));
+    CandidateAudit = BuildBoundaryCandidateAudit(Problem,Pool,CandidateDec,Detail,SelectionMode,[]);
     Diag = UpdateBoundarySelectionDiag(Diag,Detail,RankScore,Valid);
     if ~any(Valid)
         return;
@@ -42,6 +44,7 @@ function [Offspring,Info,Diag] = SelectBoundaryCandidates(Problem,Pool,FeasibleO
     if isempty(Accept)
         return;
     end
+    CandidateAudit = BuildBoundaryCandidateAudit(Problem,Pool,CandidateDec,Detail,SelectionMode,Accept);
     Diag.selectedCount = numel(Accept);
 
     DecsSel   = CandidateDec(Accept,:);
@@ -132,28 +135,80 @@ function Info = InitBoundarySeedInfo(Problem)
     Info.helperObj     = zeros(0,Problem.M);
 end
 
+function Row = InitBoundaryCandidateAuditRow(Problem)
+    Row = struct( ...
+        'generation',NaN, ...
+        'FE',NaN, ...
+        'source',NaN, ...
+        'selectionMode',1, ...
+        'sector',NaN, ...
+        'eligible',false, ...
+        'selected',false, ...
+        'prob',NaN, ...
+        'queryScore',NaN, ...
+        'disagreement',NaN, ...
+        'reliability',NaN, ...
+        'paretoValue',NaN, ...
+        'boundaryTrust',NaN, ...
+        'utility',NaN, ...
+        'candidateDec',zeros(1,Problem.D), ...
+        'anchorDec',zeros(1,Problem.D), ...
+        'helperDec',zeros(1,Problem.D));
+end
+
+function Rows = BuildBoundaryCandidateAudit(Problem,Pool,CandidateDec,Detail,SelectionMode,Accept)
+    Count = size(CandidateDec,1);
+    Rows = repmat(InitBoundaryCandidateAuditRow(Problem),Count,1);
+    Selected = false(Count,1);
+    if nargin >= 6 && ~isempty(Accept)
+        Selected(Accept) = true;
+    end
+    for i = 1 : Count
+        Rows(i).source = SafeVectorValue(Pool.source,i,NaN);
+        Rows(i).selectionMode = SelectionMode;
+        Rows(i).sector = SafeVectorValue(Detail.sector,i,NaN);
+        Rows(i).eligible = logical(SafeVectorValue(Detail.eligible,i,false));
+        Rows(i).selected = Selected(i);
+        Rows(i).prob = SafeVectorValue(Detail.prob,i,NaN);
+        Rows(i).queryScore = SafeVectorValue(Detail.queryScore,i,NaN);
+        Rows(i).disagreement = SafeVectorValue(Detail.disagreement,i,NaN);
+        Rows(i).reliability = SafeVectorValue(Detail.reliability,i,NaN);
+        Rows(i).paretoValue = SafeVectorValue(Detail.paretoValue,i,NaN);
+        Rows(i).boundaryTrust = SafeVectorValue(Detail.boundaryTrust,i,NaN);
+        Rows(i).utility = SafeVectorValue(ResolveSelectionScore(Detail,SelectionMode),i,NaN);
+        Rows(i).candidateDec = CandidateDec(i,:);
+        if isfield(Pool,'anchorDec') && size(Pool.anchorDec,1) >= i
+            Rows(i).anchorDec = Pool.anchorDec(i,:);
+        end
+        if isfield(Pool,'helperDec') && size(Pool.helperDec,1) >= i
+            Rows(i).helperDec = Pool.helperDec(i,:);
+        end
+    end
+end
+
+function Value = SafeVectorValue(Data,Index,Default)
+    Value = Default;
+    if isempty(Data) || numel(Data) < Index
+        return;
+    end
+    Value = Data(Index);
+end
+
 function SelectionMode = ResolveSelectionMode(RuntimeOptions)
     SelectionMode = 1;
     if isstruct(RuntimeOptions) && isfield(RuntimeOptions,'SelectionMode') && ~isempty(RuntimeOptions.SelectionMode)
-        SelectionMode = max(1,min(3,round(RuntimeOptions.SelectionMode)));
+        SelectionMode = max(1,min(4,round(RuntimeOptions.SelectionMode)));
     end
 end
 
 function Score = ResolveSelectionScore(Detail,SelectionMode)
-    TrustGate = any(Detail.trustGate);
     switch SelectionMode
         case 2
-            if TrustGate
-                Score = Detail.uncertaintyUtility(:);
-            else
-                Score = Detail.utilityGateOff(:);
-            end
+            Score = Detail.uncertaintyUtility(:);
+        case 4
+            Score = Detail.highProbUtility(:);
         otherwise
-            if TrustGate
-                Score = Detail.utility(:);
-            else
-                Score = Detail.utilityGateOff(:);
-            end
+            Score = Detail.utility(:);
     end
 end
 
@@ -164,7 +219,8 @@ function [Decs,ProxyObjs] = ResolveBridgePlacement(Problem,Pool,Model,RuntimeOpt
     for i = 1 : Total
         Decs(i,:) = InterpolateBridgePoint(Problem,Pool.anchorDec(i,:),Pool.helperDec(i,:),0.5);
     end
-    if Total == 0 || isempty(Model) || ~HasTrustGate(Model) || ResolveSelectionMode(RuntimeOptions) == 3
+    SelectionMode = ResolveSelectionMode(RuntimeOptions);
+    if Total == 0 || isempty(Model) || ~HasTrustSignal(Model) || SelectionMode == 3
         return;
     end
 
@@ -182,9 +238,14 @@ function [Decs,ProxyObjs] = ResolveBridgePlacement(Problem,Pool,Model,RuntimeOpt
     end
 
     Prob = PredictBoundaryMLP(Model,ScanDec);
-    Diff = reshape(abs(Prob(:)-0.5),ScanCount,Total)';
+    Prob = reshape(Prob(:),ScanCount,Total)';
     for i = 1 : Total
-        [~,Best] = min(Diff(i,:));
+        switch SelectionMode
+            case 4
+                [~,Best] = max(Prob(i,:));
+            otherwise
+                [~,Best] = min(abs(Prob(i,:)-0.5));
+        end
         Decs(i,:)      = ScanDec((i-1)*ScanCount + Best,:);
         ProxyObjs(i,:) = ScanProxy((i-1)*ScanCount + Best,:);
     end
@@ -198,10 +259,10 @@ function LambdaSet = ResolveBridgeScanLambda(RuntimeOptions)
     end
 end
 
-function Flag = HasTrustGate(Model)
+function Flag = HasTrustSignal(Model)
     Flag = false;
-    if ~isempty(Model) && isfield(Model,'TrustGate') && ~isempty(Model.TrustGate)
-        Flag = logical(Model.TrustGate);
+    if ~isempty(Model) && isfield(Model,'TrustWeight') && ~isempty(Model.TrustWeight)
+        Flag = Model.TrustWeight > 0;
     end
 end
 

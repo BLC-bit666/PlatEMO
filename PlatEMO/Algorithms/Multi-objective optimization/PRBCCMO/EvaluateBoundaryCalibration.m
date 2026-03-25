@@ -15,6 +15,10 @@ function Metric = EvaluateBoundaryCalibration(Model,CalDec,CalLabel,BinCount)
     Metric.relaxedNearGap   = inf;
     Metric.relaxedNearCount = 0;
     Metric.trustGate = false;
+    Metric.trustAuditPass = false;
+    Metric.trustPassStreak = 0;
+    Metric.trustWeight = 0;
+    Metric.trustWeightRaw = 0;
     Metric.calibrator = 'raw';
     Metric.classCount = 0;
     Metric.singleClass = false;
@@ -30,6 +34,9 @@ function Metric = EvaluateBoundaryCalibration(Model,CalDec,CalLabel,BinCount)
     CalLabel = double(CalLabel(:));
     Prob = PredictBoundaryMLP(Model,CalDec);
     Metric = SummarizeCalibrationProbabilities(Prob,CalLabel,BinCount);
+    Metric.trustGate = false;
+    Metric.trustWeight = 0;
+    Metric.calibrator = 'raw';
     Metric.classCount = numel(unique(CalLabel));
     Metric.singleClass = Metric.classCount < 2;
     Metric.invalidReason = '';
@@ -39,6 +46,18 @@ function Metric = EvaluateBoundaryCalibration(Model,CalDec,CalLabel,BinCount)
     end
     if isfield(Model,'TrustGate') && ~isempty(Model.TrustGate)
         Metric.trustGate = logical(Model.TrustGate);
+    end
+    if isfield(Model,'TrustAuditPass') && ~isempty(Model.TrustAuditPass)
+        Metric.trustAuditPass = logical(Model.TrustAuditPass);
+    end
+    if isfield(Model,'TrustPassStreak') && ~isempty(Model.TrustPassStreak)
+        Metric.trustPassStreak = Model.TrustPassStreak;
+    end
+    if isfield(Model,'TrustWeight') && ~isempty(Model.TrustWeight)
+        Metric.trustWeight = Model.TrustWeight;
+    end
+    if isfield(Model,'TrustWeightRaw') && ~isempty(Model.TrustWeightRaw)
+        Metric.trustWeightRaw = Model.TrustWeightRaw;
     end
     if isfield(Model,'CalibratorType') && ~isempty(Model.CalibratorType)
         Metric.calibrator = Model.CalibratorType;

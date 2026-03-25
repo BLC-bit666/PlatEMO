@@ -1,5 +1,5 @@
 function Model = TrainBoundaryMLP(X,Y,Hidden,Epoch,LR,PrevModel,CalDec,CalLabel,Options)
-% Train a shallow committee and select the best online calibrator on held-out data.
+% Train a shallow committee with boundary-semantics losses on held-out data.
 
     if nargin < 6
         PrevModel = [];
@@ -35,7 +35,7 @@ function Model = TrainBoundaryMLP(X,Y,Hidden,Epoch,LR,PrevModel,CalDec,CalLabel,
     Members = cell(1,EnsembleSize);
     for k = 1 : EnsembleSize
         PrevMember = ExtractPreviousMember(PrevModel,k);
-        [BootX,BootY] = BootstrapTrainingSubset(X,Y);
+        [BootX,BootY] = BootstrapTrainingSubset(X,Y,Options);
         MemberOptions = Options;
         MemberOptions.EnsembleSize = 1;
         MemberOptions.MemberIndex  = k;
@@ -104,7 +104,9 @@ function Model = TrainSingleBoundaryModel(X,Y,Hidden,Epoch,LR,PrevModel,CalDec,C
     end
 
     Xn = (XTrain-Mu)./Sigma;
-    [Weight,NormWeight] = BuildClassWeights(YTrain);
+    SampleBoost = BuildBracketSampleBoost(XTrain,PairFeasible,PairInfeasible, ...
+        max(1,GetOption(Options,'BracketOversampleFactor',3)));
+    [Weight,NormWeight] = BuildClassWeights(YTrain,SampleBoost);
     NT = size(Xn,1);
 
     for e = 1 : Epoch
@@ -120,7 +122,7 @@ function Model = TrainSingleBoundaryModel(X,Y,Hidden,Epoch,LR,PrevModel,CalDec,C
         db1 = sum(D1,1);
 
         if LambdaBrier > 0
-            DeltaBrier = (2*(P-YTrain).*(P.*(1-P)))./max(NT,1);
+            DeltaBrier = Weight.*(2*(P-YTrain).*(P.*(1-P)))./NormWeight;
             dW2 = dW2 + LambdaBrier*(H'*DeltaBrier);
             db2 = db2 + LambdaBrier*sum(DeltaBrier);
             D1B = (DeltaBrier*W2').*(1-H.^2);
@@ -408,7 +410,7 @@ function PrevMember = ExtractPreviousMember(PrevModel,Index)
     end
 end
 
-function [BootX,BootY] = BootstrapTrainingSubset(X,Y)
+function [BootX,BootY] = BootstrapTrainingSubset(X,Y,Options)
     BootX = double(X);
     BootY = double(Y(:) > 0);
     N = size(BootX,1);
@@ -416,8 +418,13 @@ function [BootX,BootY] = BootstrapTrainingSubset(X,Y)
         return;
     end
 
+    PairFeasible = NormalizeDecisionMatrix(GetOption(Options,'PairFeasibleDec',[]),size(BootX,2));
+    PairInfeasible = NormalizeDecisionMatrix(GetOption(Options,'PairInfeasibleDec',[]),size(BootX,2));
+    SampleBoost = BuildBracketSampleBoost(BootX,PairFeasible,PairInfeasible, ...
+        max(1,GetOption(Options,'BracketOversampleFactor',3)));
+    SampleProb = SampleBoost./max(sum(SampleBoost),1);
     for iter = 1 : 5
-        Idx = randi(N,N,1);
+        Idx = SampleWeightedRows(SampleProb,N);
         CandidateY = BootY(Idx);
         if numel(unique(CandidateY)) >= 2
             BootX = BootX(Idx,:);
@@ -444,14 +451,56 @@ function [TrainIdx,CalIdx] = SplitCalibrationData(Y)
     end
 end
 
-function [Weight,NormWeight] = BuildClassWeights(Y)
+function [Weight,NormWeight] = BuildClassWeights(Y,ExtraWeight)
     N = numel(Y);
     Pos = sum(Y==1);
     Neg = N - Pos;
     WPos = N/(2*max(1,Pos));
     WNeg = N/(2*max(1,Neg));
-    Weight = WNeg + (WPos-WNeg).*Y;
+    if nargin < 2 || isempty(ExtraWeight)
+        ExtraWeight = ones(N,1);
+    else
+        ExtraWeight = max(double(ExtraWeight(:)),1);
+        ExtraWeight = ExtraWeight./max(mean(ExtraWeight),1e-12);
+    end
+    Weight = (WNeg + (WPos-WNeg).*Y).*ExtraWeight;
     NormWeight = max(sum(Weight),1);
+end
+
+function Boost = BuildBracketSampleBoost(X,PairFeasible,PairInfeasible,Factor)
+    Boost = ones(size(X,1),1);
+    if nargin < 4 || Factor <= 1 || isempty(X)
+        return;
+    end
+
+    TightDec = [PairFeasible;PairInfeasible];
+    if isempty(TightDec)
+        return;
+    end
+    TightDec = unique(double(TightDec),'rows','stable');
+    Match = ismember(double(X),TightDec,'rows');
+    Boost(Match) = Factor;
+end
+
+function Idx = SampleWeightedRows(Prob,Count)
+    if isempty(Prob)
+        Idx = zeros(0,1);
+        return;
+    end
+    Prob = double(Prob(:));
+    Prob(~isfinite(Prob) | Prob < 0) = 0;
+    if sum(Prob) <= 0
+        Prob = ones(size(Prob))/numel(Prob);
+    else
+        Prob = Prob/sum(Prob);
+    end
+    CDF = cumsum(Prob);
+    CDF(end) = 1;
+    R = rand(Count,1);
+    Idx = zeros(Count,1);
+    for i = 1 : Count
+        Idx(i) = find(CDF >= R(i),1,'first');
+    end
 end
 
 function Value = GetOption(Options,Name,Default)

@@ -13,9 +13,20 @@ classdef PRBCCMO < ALGORITHM
 % pairM    --- 0.05 --- Margin for tight bracket pair loss
 % lPair    --- 1    --- Weight of bracket pair loss
 % lMid     --- 1    --- Weight of midpoint-to-0.5 loss
-% selMode  --- 1    --- Section B seed selection mode (1. trusted-query 2. uncertain-only 3. random-bridge)
+% selMode  --- 1    --- Section B seed selection mode (1. full 2. uncertain-only 3. random-bridge 4. highprob-boundary)
 % localMode--- 1    --- Section B local search mode (1. label-aware 2. isotropic)
 % traceOn  --- 0    --- Enable Section B audit trace recording
+% pairMode --- 2    --- Bridge pairing mode (1. current-pair 2. topk-pair)
+% pairTopK --- 3    --- Top-K anchors/helpers per sector for topk-pair
+% pairKeepM--- 2    --- Number of candidate pairs retained per active sector for topk-pair
+% pairLd   --- 0.05 --- Decision-distance penalty in topk-pair scoring
+% gateMode --- 1    --- Activation gate mode (1. two-stage 2. strict-only)
+% traceProb--- 0    --- Save per-update calibration probabilities/labels into trace
+% trustTauE--- 0.10 --- ECE threshold for trust admission
+% trustTauN--- 0.10 --- CoreNearGap threshold for trust admission
+% trustCore--- 20   --- Minimum core-near sample count for trust admission
+% trustK   --- 3    --- Consecutive audit passes required before trusting q(x) at full weight
+% trustCap --- 0.25 --- Max trust weight before admission streak requirement is satisfied
 
 %------------------------------- Copyright --------------------------------
 % Copyright (c) 2026 BIMK Group. You are free to use the PlatEMO for
@@ -45,7 +56,20 @@ classdef PRBCCMO < ALGORITHM
             selMode   = Params.selMode;
             localMode = Params.localMode;
             traceOn   = Params.traceOn;
-            RuntimeOptions = BuildBoundaryRuntimeOptions(selMode,localMode,traceOn);
+            pairMode  = Params.pairMode;
+            pairTopK  = Params.pairTopK;
+            pairKeepM = Params.pairKeepM;
+            pairLd    = Params.pairLd;
+            gateMode  = Params.gateMode;
+            traceProbLabel = Params.traceProbLabel;
+            trustTauE = Params.trustTauE;
+            trustTauN = Params.trustTauN;
+            trustMinCoreCount = Params.trustMinCoreCount;
+            trustAdmissionStreak = Params.trustAdmissionStreak;
+            trustFallbackCap = Params.trustFallbackCap;
+            RuntimeOptions = BuildBoundaryRuntimeOptions( ...
+                selMode,localMode,traceOn,pairMode,pairTopK,pairLd,gateMode,traceProbLabel, ...
+                pairKeepM,trustTauE,trustTauN,trustMinCoreCount,trustAdmissionStreak,trustFallbackCap);
 
             BoundaryBudget = max(0,floor(bRho*Problem.N));
             TrainMax       = max(1,round(trainRho*Problem.N));
@@ -86,7 +110,7 @@ classdef PRBCCMO < ALGORITHM
                 BracketArchive,ensK,calMode,dLambda,pairM,lPair,lMid,Problem.D,TightGap);
             Model = TrainBoundaryMLP( ...
                 TrainDec,TrainLabel,hidden,epoch,lr,[],CalibDec,CalibLabel,TrainOptions);
-            Model = RefreshBoundaryTrust(Model,TestDec,TestLabel);
+            Model = RefreshBoundaryTrust(Model,TestDec,TestLabel,RuntimeOptions,[]);
             LastCalMetric = EvaluateBoundaryCalibration(Model,TestDec,TestLabel);
             PendingLabels = 0;
             Generation    = 0;
@@ -123,7 +147,7 @@ classdef PRBCCMO < ALGORITHM
                 if BoundaryBudgetNow > 0 && SeedBudget == 0
                     SeedBudget = 1;
                 end
-                [BoundarySeeds,SeedInfo,SelectionDiag] = SelectBoundaryCandidates( ...
+                [BoundarySeeds,SeedInfo,SelectionDiag,CandidateAudit] = SelectBoundaryCandidates( ...
                     Problem,CandidatePool,FeasibleAnchorObj,Model,W,HardNegativeArchive,SeedBudget,RuntimeOptions);
 
                 WorkerBudget = max(0,BoundaryBudgetNow-numel(BoundarySeeds));
@@ -133,7 +157,8 @@ classdef PRBCCMO < ALGORITHM
                         HardNegativeArchive,WorkerBudget,RuntimeOptions);
                 [BoundaryOffspring,BoundaryInfo] = MergeBoundaryResults( ...
                     BoundarySeeds,SeedInfo,WorkerOffspring,WorkerInfo,Problem.M);
-                BoundaryAuditStarted = BoundaryAuditStarted || ~isempty(BoundaryOffspring);
+                BoundaryBatchCount = max(numel(BoundarySeeds),numel(BoundaryOffspring));
+                BoundaryAuditStarted = BoundaryAuditStarted || BoundaryBatchCount > 0;
                 MigrationPool = ScreenBoundaryMigrants( ...
                     PopulationC,BoundarySeeds,WorkerFeasiblePool,W,RuntimeOptions);
 
@@ -144,11 +169,16 @@ classdef PRBCCMO < ALGORITHM
                 PopulationC = EnvironmentalSelectionC(ConstrainedBase,Problem.N,MigrationPool,W);
                 PopulationU = EnvironmentalSelectionU(KeepUniquePopulation([PopulationU,OffspringU]),Problem.N);
 
-                [ExternalArchive,BoundaryGain,BoundaryAdded] = UpdateSectionBExternalArchive( ...
-                    ExternalArchive,OffspringC,OffspringU,BoundaryOffspring);
+                [ExternalArchive,BoundaryGain,BoundaryAdded,ArchiveEvents] = UpdateSectionBExternalArchive( ...
+                    ExternalArchive,OffspringC,OffspringU,BoundaryOffspring,Generation,Problem.FE);
+                Algorithm.metric.sectionB.candidateAudit = AppendBoundaryCandidateAuditRows( ...
+                    Algorithm.metric.sectionB.candidateAudit,CandidateAudit,Generation,Problem.FE);
                 Algorithm.metric.sectionB.seedAudit = AppendBoundarySeedAuditRows( ...
                     Algorithm.metric.sectionB.seedAudit,BoundarySeeds,SeedInfo,WorkerAudit, ...
                     BoundaryAdded,Generation,Problem.FE,Problem.D);
+                Algorithm.metric.sectionB.boundaryLineage = AppendBoundaryLineageRows( ...
+                    Algorithm.metric.sectionB.boundaryLineage,BoundarySeeds,SeedInfo,WorkerAudit, ...
+                    RuntimeOptions,Generation,Problem.FE,Problem.D);
                 Algorithm.metric.sectionB.selectionTrace = AppendBoundarySelectionTrace( ...
                     Algorithm.metric.sectionB.selectionTrace,Generation,Problem.FE,SelectionDiag);
                 Algorithm.metric.sectionB.bridgeTrace = AppendBoundaryBridgeTrace( ...
@@ -156,6 +186,8 @@ classdef PRBCCMO < ALGORITHM
                 Algorithm.metric.sectionB.boundaryGainTrace = AppendBoundaryGainTrace( ...
                     Algorithm.metric.sectionB.boundaryGainTrace,Generation,Problem.FE, ...
                     BoundaryGain,numel(BoundaryAdded),numel(ExternalArchive));
+                Algorithm.metric.sectionB.archiveEvent = AppendBoundaryArchiveEventRows( ...
+                    Algorithm.metric.sectionB.archiveEvent,ArchiveEvents);
                 Algorithm.metric.sectionB.activationTrace = AppendBoundaryActivationTrace( ...
                     Algorithm.metric.sectionB.activationTrace,Generation,Problem.FE, ...
                     numel(RegularFeasible),numel(ExternalArchive),numel(FeasibleAnchorPool), ...
@@ -168,19 +200,23 @@ classdef PRBCCMO < ALGORITHM
                     Problem.M,BoundaryAuditStarted,ColdStartCap);
                 [TrainBatch,~,CalibBatch,CalibInfo,TestBatch,TestInfo] = SplitHeldOutBatch( ...
                     HoldoutSolutions,HoldoutInfo,CalibMax,TestMax,Problem.M);
-                HoldoutDec = [CalibDec;TestDec; ...
-                    SolutionDecs(CalibBatch,Problem.D);SolutionDecs(TestBatch,Problem.D)];
                 [ProtectedBracketDec,ProtectedBracketLabel] = BuildBracketProtectedBuffer(BracketArchive,Problem.D);
+                [CalibFallbackDec,CalibFallbackLabel,TestFallbackDec,TestFallbackLabel] = ...
+                    BuildAuditFallbackPools(ProtectedBracketDec,ProtectedBracketLabel);
+                [CalibDec,CalibLabel,CalibNear,CalibStatus] = UpdateCalibrationBuffer( ...
+                    CalibDec,CalibLabel,CalibNear,CalibBatch,CalibInfo,CalibMax, ...
+                    CalibFallbackDec,CalibFallbackLabel);
+                [TestDec,TestLabel,TestNear,TestStatus] = UpdateCalibrationBuffer( ...
+                    TestDec,TestLabel,TestNear,TestBatch,TestInfo,TestMax, ...
+                    TestFallbackDec,TestFallbackLabel);
+                HoldoutDec = [CalibDec;TestDec];
                 [ProtectedBracketDec,ProtectedBracketLabel] = ExcludeLabeledRows( ...
-                    ProtectedBracketDec,ProtectedBracketLabel,HoldoutDec);
+                    ProtectedBracketDec,ProtectedBracketLabel, ...
+                    [CalibFallbackDec;TestFallbackDec;HoldoutDec]);
                 ProtectedDec   = ProtectedBracketDec;
                 ProtectedLabel = ProtectedBracketLabel;
                 [TrainDec,TrainLabel] = UpdateTrainingArchive( ...
                     TrainDec,TrainLabel,ProtectedDec,ProtectedLabel,TrainBatch,HoldoutDec,TrainMax);
-                [CalibDec,CalibLabel,CalibNear,CalibStatus] = UpdateCalibrationBuffer( ...
-                    CalibDec,CalibLabel,CalibNear,CalibBatch,CalibInfo,CalibMax);
-                [TestDec,TestLabel,TestNear,TestStatus] = UpdateCalibrationBuffer( ...
-                    TestDec,TestLabel,TestNear,TestBatch,TestInfo,TestMax);
 
                 PendingLabels = PendingLabels + numel(HoldoutSolutions);
                 TrainOptions = BuildBoundaryTrainingOptions( ...
@@ -188,10 +224,10 @@ classdef PRBCCMO < ALGORITHM
                 [Model,PendingLabels,LastCalMetric] = UpdateBoundaryModel( ...
                     Model,TrainDec,TrainLabel,CalibDec,CalibLabel,TestDec,TestLabel, ...
                     hidden,epoch,WarmEpoch,lr,Generation,PendingLabels,TriggerCount, ...
-                    UpdateGap,RestartGap,LastCalMetric,TrainOptions);
+                    UpdateGap,RestartGap,LastCalMetric,TrainOptions,RuntimeOptions);
                 AuditState = BuildBoundaryAuditState( ...
                     CalibStatus,TestStatus,ColdStartActive,ColdStartBatchCount, ...
-                    numel(BoundaryOffspring),BoundaryAuditStarted);
+                    BoundaryBatchCount,BoundaryAuditStarted);
                 Algorithm.metric.boundaryCalibration = AttachCalibrationContext( ...
                     EvaluateBoundaryCalibration(Model,TestDec,TestLabel), ...
                     Generation,Problem.FE,size(TrainDec,1),size(CalibDec,1), ...
@@ -263,9 +299,8 @@ function [HoldoutSolutions,HoldoutInfo,ColdStartActive,ColdStartBatchCount] = Pr
 end
 
 function Flag = ShouldUseColdStartHoldout(BoundaryOffspring,CalibStatus,TestStatus,BoundaryAuditStarted)
-    Flag = isempty(BoundaryOffspring) && ...
-        ~logical(BoundaryAuditStarted) && ...
-        (~SafeBufferValid(CalibStatus) || ~SafeBufferValid(TestStatus));
+    %#ok<INUSD>
+    Flag = ~SafeBufferValid(CalibStatus) || ~SafeBufferValid(TestStatus);
 end
 
 function Flag = SafeBufferValid(Status)
@@ -502,6 +537,44 @@ function [ProtectedDec,ProtectedLabel] = BuildBracketProtectedBuffer(BracketArch
     ProtectedLabel = [ones(size(BracketArchive.FeasibleDec,1),1);zeros(size(BracketArchive.InfeasibleDec,1),1)];
 end
 
+function [CalibDec,CalibLabel,TestDec,TestLabel] = BuildAuditFallbackPools(ProtectedDec,ProtectedLabel)
+    if nargin < 2
+        ProtectedLabel = zeros(0,1);
+    end
+    D = 0;
+    if ~isempty(ProtectedDec)
+        D = size(ProtectedDec,2);
+    end
+    CalibDec = zeros(0,D);
+    CalibLabel = zeros(0,1);
+    TestDec = zeros(0,D);
+    TestLabel = zeros(0,1);
+    if isempty(ProtectedDec)
+        return;
+    end
+
+    PerClassPerPool = 2;
+    for ClassValue = [1,0]
+        ClassIdx = find(ProtectedLabel == ClassValue);
+        if isempty(ClassIdx)
+            continue;
+        end
+        ClassIdx = flipud(ClassIdx(:));
+        CalTake = ClassIdx(1:2:min(numel(ClassIdx),2*PerClassPerPool));
+        TestTake = ClassIdx(2:2:min(numel(ClassIdx),2*PerClassPerPool));
+        CalTake = sort(CalTake,'ascend');
+        TestTake = sort(TestTake,'ascend');
+        if ~isempty(CalTake)
+            CalibDec = [CalibDec;ProtectedDec(CalTake,:)]; %#ok<AGROW>
+            CalibLabel = [CalibLabel;ProtectedLabel(CalTake)]; %#ok<AGROW>
+        end
+        if ~isempty(TestTake)
+            TestDec = [TestDec;ProtectedDec(TestTake,:)]; %#ok<AGROW>
+            TestLabel = [TestLabel;ProtectedLabel(TestTake)]; %#ok<AGROW>
+        end
+    end
+end
+
 function Archive = EmptyBracketArchive(D)
     Archive.FeasibleDec   = zeros(0,D);
     Archive.InfeasibleDec = zeros(0,D);
@@ -564,6 +637,7 @@ function Options = BuildBoundaryTrainingOptions( ...
     Options.LambdaBrier        = 0.5;
     Options.LambdaPair         = max(LambdaPair,0);
     Options.LambdaMid          = max(LambdaMid,0);
+    Options.BracketOversampleFactor = 3;
     Options.PairFeasibleDec    = zeros(0,D);
     Options.PairInfeasibleDec  = zeros(0,D);
     Options.MidDec             = zeros(0,D);
@@ -572,13 +646,13 @@ function Options = BuildBoundaryTrainingOptions( ...
     end
 
     if ~isempty(BracketArchive) && ~isempty(BracketArchive.FeasibleDec)
-        Options.PairFeasibleDec   = BracketArchive.FeasibleDec;
-        Options.PairInfeasibleDec = BracketArchive.InfeasibleDec;
         TightMask = true(size(BracketArchive.FeasibleDec,1),1);
         if isfield(BracketArchive,'Gap') && numel(BracketArchive.Gap) == size(BracketArchive.FeasibleDec,1)
             TightMask = isfinite(BracketArchive.Gap(:)) & BracketArchive.Gap(:) <= TightGap;
         end
         if any(TightMask)
+            Options.PairFeasibleDec = BracketArchive.FeasibleDec(TightMask,:);
+            Options.PairInfeasibleDec = BracketArchive.InfeasibleDec(TightMask,:);
             Options.MidDec = 0.5*(BracketArchive.FeasibleDec(TightMask,:) + ...
                 BracketArchive.InfeasibleDec(TightMask,:));
         end
@@ -603,7 +677,7 @@ end
 function [Model,PendingLabels,LastCalMetric] = UpdateBoundaryModel( ...
     Model,TrainDec,TrainLabel,CalibDec,CalibLabel,TestDec,TestLabel, ...
     Hidden,Epoch,WarmEpoch,LR,Generation,PendingLabels,TriggerCount, ...
-    UpdateGap,RestartGap,LastCalMetric,TrainOptions)
+    UpdateGap,RestartGap,LastCalMetric,TrainOptions,RuntimeOptions)
 
     CurrentMetric = EvaluateBoundaryCalibration(Model,TestDec,TestLabel);
     NeedUpdate = isempty(Model) || ...
@@ -626,24 +700,67 @@ function [Model,PendingLabels,LastCalMetric] = UpdateBoundaryModel( ...
         TrainOptions = struct();
     end
     TrainOptions.WarmStart = UseWarmStart;
-    Model = TrainBoundaryMLP( ...
+    UpdatedModel = TrainBoundaryMLP( ...
         TrainDec,TrainLabel,Hidden,TrainEpoch,LR,PrevModel,CalibDec,CalibLabel, ...
         TrainOptions);
-    Model = RefreshBoundaryTrust(Model,TestDec,TestLabel);
+    if isempty(UpdatedModel)
+        LastCalMetric = CurrentMetric;
+        return;
+    end
+    Model = RefreshBoundaryTrust(UpdatedModel,TestDec,TestLabel,RuntimeOptions,PrevModel);
     PendingLabels = 0;
     LastCalMetric = EvaluateBoundaryCalibration(Model,TestDec,TestLabel);
 end
 
-function Model = RefreshBoundaryTrust(Model,TestDec,TestLabel)
+function Model = RefreshBoundaryTrust(Model,TestDec,TestLabel,RuntimeOptions,PrevModel)
     if isempty(Model)
         return;
     end
 
     Metric = EvaluateBoundaryCalibration(Model,TestDec,TestLabel);
-    TrustGate = logical(FieldOrDefaultMetric(Metric,'valid',false)) ...
-        && isfinite(Metric.ece) && Metric.ece <= 0.05 ...
-        && isfinite(Metric.nearGap) && Metric.nearGap <= 0.05 ...
-        && Metric.nearCount >= 20;
+    if nargin < 4 || ~isstruct(RuntimeOptions)
+        RuntimeOptions = struct();
+    end
+    if nargin < 5
+        PrevModel = [];
+    end
+    TauE = SafeRuntimeOption(RuntimeOptions,'TrustTauE',0.10);
+    TauN = SafeRuntimeOption(RuntimeOptions,'TrustTauN',0.10);
+    MinCoreCount = SafeRuntimeOption(RuntimeOptions,'TrustMinCoreCount',20);
+    RequiredStreak = SafeRuntimeOption(RuntimeOptions,'TrustAdmissionStreak',3);
+    FallbackCap = SafeRuntimeOption(RuntimeOptions,'TrustFallbackCap',0.25);
+    CoreNearGap = FieldOrDefaultMetric(Metric,'coreNearGap',FieldOrDefaultMetric(Metric,'nearGap',inf));
+    RawTrustWeight = 0;
+    if logical(FieldOrDefaultMetric(Metric,'valid',false)) ...
+            && isfinite(Metric.ece) && isfinite(CoreNearGap)
+        RawTrustWeight = max(0,1-Metric.ece/TauE) * max(0,1-CoreNearGap/TauN);
+        RawTrustWeight = min(max(RawTrustWeight,0),1);
+    end
+    AuditPass = logical(FieldOrDefaultMetric(Metric,'valid',false)) ...
+        && isfinite(Metric.ece) && Metric.ece <= TauE ...
+        && isfinite(CoreNearGap) && CoreNearGap <= TauN ...
+        && FieldOrDefaultMetric(Metric,'coreNearCount',0) >= MinCoreCount;
+    PrevStreak = 0;
+    if isstruct(PrevModel) && isfield(PrevModel,'TrustPassStreak') && ~isempty(PrevModel.TrustPassStreak)
+        PrevStreak = PrevModel.TrustPassStreak;
+    end
+    if AuditPass
+        TrustPassStreak = PrevStreak + 1;
+    else
+        TrustPassStreak = 0;
+    end
+    TrustGate = TrustPassStreak >= RequiredStreak;
+    if TrustGate
+        TrustWeight = RawTrustWeight;
+    else
+        TrustWeight = min(RawTrustWeight,FallbackCap);
+    end
+    Model.TrustWeightRaw = RawTrustWeight;
+    Model.TrustWeight = TrustWeight;
+    Model.TrustAuditPass = AuditPass;
+    Model.TrustPassStreak = TrustPassStreak;
+    Model.TrustAdmissionStreak = RequiredStreak;
+    Model.TrustMinCoreCount = MinCoreCount;
     Model.TrustGate = TrustGate;
     Model.TrustMetric = Metric;
     if isfield(Metric,'binEdges') && isfield(Metric,'bin') && isfield(Metric.bin,'count')
@@ -749,6 +866,10 @@ function Metric = AttachCalibrationContext( ...
         elseif isempty(FieldOrDefaultMetric(Metric,'invalidReason',''))
             Metric.invalidReason = 'invalid_test_buffer';
         end
+    end
+    Metric.auditReady = Metric.auditReady && logical(FieldOrDefaultMetric(Metric,'valid',false));
+    if ~Metric.auditReady && strcmp(FieldOrDefaultMetric(Metric,'auditPhase',''), 'boundary_auditable')
+        Metric.auditPhase = 'boundary_invalid';
     end
 end
 
@@ -940,17 +1061,38 @@ function Params = ResolvePRBCCMOParameters(ParameterCell)
         'ensK',12,'calMode',13,'dLambda',14,'pairM',15,'lPair',16, ...
         'lMid',17,'selMode',19,'localMode',20,'traceOn',21);
     ActiveNames = {'bRho','trainRho','hidden','epoch','lr','mRho','ensK', ...
-        'calMode','dLambda','pairM','lPair','lMid','selMode','localMode','traceOn'};
-    ActiveDefaults = {0.2,2,20,25,0.01,0.4,3,2,1,0.05,1,1,1,1,0};
+        'calMode','dLambda','pairM','lPair','lMid','selMode','localMode','traceOn', ...
+        'pairMode','pairTopK','pairKeepM','pairLd','gateMode','traceProbLabel', ...
+        'trustTauE','trustTauN','trustMinCoreCount','trustAdmissionStreak','trustFallbackCap'};
+    ActiveDefaults = {0.2,2,20,25,0.01,0.4,3,2,1,0.05,1,1,1,1,0,2,3,2,0.05,1,0,0.10,0.10,20,3,0.25};
+    ExtraNames = {'pairMode','pairTopK','pairKeepM','pairLd','gateMode','traceProbLabel', ...
+        'trustTauE','trustTauN','trustMinCoreCount','trustAdmissionStreak','trustFallbackCap'};
 
     Params = cell2struct(ActiveDefaults,ActiveNames,2);
+    if numel(ParameterCell) >= numel(ActiveNames)
+        for i = 1 : numel(ActiveNames)
+            if ~isempty(ParameterCell{i})
+                Params.(ActiveNames{i}) = ParameterCell{i};
+            end
+        end
+        return;
+    end
     if numel(ParameterCell) >= numel(LegacyDefaults)
         for i = 1 : numel(ActiveNames)
-            Index = LegacyMap.(ActiveNames{i});
+            Name = ActiveNames{i};
+            if isfield(LegacyMap,Name)
+                Index = LegacyMap.(Name);
+                if numel(ParameterCell) >= Index && ~isempty(ParameterCell{Index})
+                    Params.(Name) = ParameterCell{Index};
+                elseif ~isempty(LegacyDefaults{Index})
+                    Params.(Name) = LegacyDefaults{Index};
+                end
+            end
+        end
+        for i = 1 : numel(ExtraNames)
+            Index = numel(LegacyDefaults) + i;
             if numel(ParameterCell) >= Index && ~isempty(ParameterCell{Index})
-                Params.(ActiveNames{i}) = ParameterCell{Index};
-            elseif ~isempty(LegacyDefaults{Index})
-                Params.(ActiveNames{i}) = LegacyDefaults{Index};
+                Params.(ExtraNames{i}) = ParameterCell{Index};
             end
         end
         return;
@@ -980,16 +1122,44 @@ function Metric = InitSectionBMetric(D,RuntimeOptions,ExternalArchive)
     Metric.selectionName = SafeRuntimeOption(RuntimeOptions,'SelectionName','trusted_query');
     Metric.localMode     = SafeRuntimeOption(RuntimeOptions,'LocalMode',1);
     Metric.localName     = SafeRuntimeOption(RuntimeOptions,'LocalName','label_aware');
+    Metric.pairMode      = SafeRuntimeOption(RuntimeOptions,'PairMode',2);
+    Metric.pairName      = SafeRuntimeOption(RuntimeOptions,'PairName','topk_pair');
+    Metric.gateMode      = SafeRuntimeOption(RuntimeOptions,'GateMode',1);
+    Metric.gateName      = SafeRuntimeOption(RuntimeOptions,'GateName','two_stage');
     Metric.traceFlag     = logical(SafeRuntimeOption(RuntimeOptions,'TraceFlag',false));
     Metric.traceProbLabel = logical(SafeRuntimeOption(RuntimeOptions,'TraceProbLabel',false));
+    Metric.candidateAudit = repmat(InitBoundaryCandidateAuditRow(D),0,1);
     Metric.seedAudit = repmat(InitBoundarySeedAuditRow(D),0,1);
+    Metric.boundaryLineage = repmat(InitBoundaryLineageRow(D),0,1);
     Metric.selectionTrace = repmat(InitBoundarySelectionTraceRow(),0,1);
     Metric.bridgeTrace = repmat(InitBoundaryBridgeTraceRow(),0,1);
     Metric.boundaryGainTrace = repmat(InitBoundaryGainTraceRow(),0,1);
+    Metric.archiveEvent = repmat(InitBoundaryArchiveEventRow(D,0),0,1);
     Metric.activationTrace = repmat(InitBoundaryActivationTraceRow(),0,1);
     Metric.calibrationTrace = repmat(InitSectionBCalibrationTraceRow(),0,1);
     Metric.totalBoundaryGain = 0;
     Metric.externalArchiveCount = numel(ExternalArchive);
+end
+
+function Row = InitBoundaryCandidateAuditRow(D)
+    Row = struct( ...
+        'generation',NaN, ...
+        'FE',NaN, ...
+        'source',NaN, ...
+        'selectionMode',1, ...
+        'sector',NaN, ...
+        'eligible',false, ...
+        'selected',false, ...
+        'prob',NaN, ...
+        'queryScore',NaN, ...
+        'disagreement',NaN, ...
+        'reliability',NaN, ...
+        'paretoValue',NaN, ...
+        'boundaryTrust',NaN, ...
+        'utility',NaN, ...
+        'candidateDec',zeros(1,D), ...
+        'anchorDec',zeros(1,D), ...
+        'helperDec',zeros(1,D));
 end
 
 function Value = SafeRuntimeOption(RuntimeOptions,Field,Default)
@@ -1056,6 +1226,9 @@ function Row = InitBoundaryBridgeTraceRow()
         'activeSectorCount',0, ...
         'strictActiveSectorCount',0, ...
         'weakActiveSectorCount',0, ...
+        'positiveMarginPairCount',0, ...
+        'strictPositivePairCount',0, ...
+        'gatePassedPairCount',0, ...
         'usedWeakGate',false, ...
         'deltaG',0, ...
         'minRawMargin',NaN, ...
@@ -1113,6 +1286,9 @@ function Trace = AppendBoundaryBridgeTrace(Trace,Generation,FE,Diag)
         Row.activeSectorCount = BoundaryDiagValue(Diag,'activeSectorCount',0);
         Row.strictActiveSectorCount = BoundaryDiagValue(Diag,'strictActiveSectorCount',0);
         Row.weakActiveSectorCount = BoundaryDiagValue(Diag,'weakActiveSectorCount',0);
+        Row.positiveMarginPairCount = BoundaryDiagValue(Diag,'positiveMarginPairCount',0);
+        Row.strictPositivePairCount = BoundaryDiagValue(Diag,'strictPositivePairCount',0);
+        Row.gatePassedPairCount = BoundaryDiagValue(Diag,'gatePassedPairCount',0);
         Row.usedWeakGate = logical(BoundaryDiagValue(Diag,'usedWeakGate',false));
         Row.deltaG = BoundaryDiagValue(Diag,'deltaG',0);
         Row.minRawMargin = BoundaryDiagValue(Diag,'minRawMargin',NaN);
@@ -1180,6 +1356,77 @@ function Rows = AppendBoundarySeedAuditRows(Rows,BoundarySeeds,SeedInfo,WorkerAu
         end
     end
 
+    if isempty(Rows)
+        Rows = AddRows;
+    else
+        Rows = [Rows;AddRows];
+    end
+end
+
+function Rows = AppendBoundaryCandidateAuditRows(Rows,CandidateAudit,Generation,FE)
+    if isempty(CandidateAudit)
+        return;
+    end
+    AddRows = CandidateAudit;
+    for i = 1 : numel(AddRows)
+        AddRows(i).generation = Generation;
+        AddRows(i).FE = FE;
+    end
+    if isempty(Rows)
+        Rows = AddRows;
+    else
+        Rows = [Rows;AddRows];
+    end
+end
+
+function Row = InitBoundaryLineageRow(D)
+    Row = struct( ...
+        'generation',NaN, ...
+        'FE',NaN, ...
+        'seedIndex',0, ...
+        'source',NaN, ...
+        'workerMode','label_aware', ...
+        'seedFeasible',false, ...
+        'seedProb',NaN, ...
+        'seedUtility',NaN, ...
+        'seedDec',zeros(1,D), ...
+        'descendantDec',zeros(0,D), ...
+        'descendantLabel',zeros(0,1), ...
+        'feasibleDescendantDec',zeros(0,D), ...
+        'localEvalCount',0, ...
+        'frrSuccess',false, ...
+        'bracketGap',NaN, ...
+        'hardNegativeConfirmed',false);
+end
+
+function Rows = AppendBoundaryLineageRows(Rows,BoundarySeeds,SeedInfo,WorkerAudit,RuntimeOptions,Generation,FE,D)
+    if nargin < 8 || isempty(D)
+        D = 0;
+    end
+    if isempty(BoundarySeeds)
+        return;
+    end
+    AddRows = repmat(InitBoundaryLineageRow(D),numel(BoundarySeeds),1);
+    for i = 1 : numel(BoundarySeeds)
+        AddRows(i).generation = Generation;
+        AddRows(i).FE = FE;
+        AddRows(i).seedIndex = i;
+        AddRows(i).source = SafeInfoValue(SeedInfo,'source',i,NaN);
+        AddRows(i).workerMode = SafeRuntimeOption(RuntimeOptions,'LocalName','label_aware');
+        AddRows(i).seedFeasible = all(BoundarySeeds(i).cons<=0,2);
+        AddRows(i).seedProb = SafeInfoValue(SeedInfo,'prob',i,NaN);
+        AddRows(i).seedUtility = SafeInfoValue(SeedInfo,'utility',i,NaN);
+        AddRows(i).seedDec = BoundarySeeds(i).dec;
+        if numel(WorkerAudit) >= i
+            AddRows(i).descendantDec = FieldOrDefaultMetric(WorkerAudit(i),'lineageDescDec',zeros(0,D));
+            AddRows(i).descendantLabel = FieldOrDefaultMetric(WorkerAudit(i),'lineageDescLabel',zeros(0,1));
+            AddRows(i).feasibleDescendantDec = FieldOrDefaultMetric(WorkerAudit(i),'lineageFeasibleDec',zeros(0,D));
+            AddRows(i).localEvalCount = FieldOrDefaultMetric(WorkerAudit(i),'localEvalCount',0);
+            AddRows(i).frrSuccess = logical(FieldOrDefaultMetric(WorkerAudit(i),'frrSuccess',false));
+            AddRows(i).bracketGap = FieldOrDefaultMetric(WorkerAudit(i),'bracketGap',NaN);
+            AddRows(i).hardNegativeConfirmed = logical(FieldOrDefaultMetric(WorkerAudit(i),'hardNegativeConfirmed',false));
+        end
+    end
     if isempty(Rows)
         Rows = AddRows;
     else
@@ -1287,7 +1534,34 @@ function Trace = AppendBoundaryActivationTrace( ...
     Trace(end+1,1) = Row;
 end
 
-function [ExternalArchive,BoundaryGain,BoundaryAdded] = UpdateSectionBExternalArchive(ExternalArchive,OffspringC,OffspringU,BoundaryOffspring)
+function Row = InitBoundaryArchiveEventRow(D,M)
+    if nargin < 1
+        D = 0;
+    end
+    if nargin < 2
+        M = 0;
+    end
+    Row = struct( ...
+        'generation',NaN, ...
+        'FE',NaN, ...
+        'hvGain',0, ...
+        'solutionDec',zeros(1,D), ...
+        'solutionObj',zeros(1,M));
+end
+
+function Rows = AppendBoundaryArchiveEventRows(Rows,AddRows)
+    if isempty(AddRows)
+        return;
+    end
+    if isempty(Rows)
+        Rows = AddRows;
+    else
+        Rows = [Rows;AddRows];
+    end
+end
+
+function [ExternalArchive,BoundaryGain,BoundaryAdded,ArchiveEvents] = UpdateSectionBExternalArchive( ...
+    ExternalArchive,OffspringC,OffspringU,BoundaryOffspring,Generation,FE)
     if nargin < 1 || isempty(ExternalArchive)
         ExternalArchive = [];
     end
@@ -1300,11 +1574,42 @@ function [ExternalArchive,BoundaryGain,BoundaryAdded] = UpdateSectionBExternalAr
     if nargin < 4 || isempty(BoundaryOffspring)
         BoundaryOffspring = [];
     end
+    if nargin < 5
+        Generation = NaN;
+    end
+    if nargin < 6
+        FE = NaN;
+    end
 
     [ExternalArchive,~] = UpdateExternalArchive(ExternalArchive,[OffspringC,OffspringU]);
     BaseArchive = ExternalArchive;
     [ExternalArchive,BoundaryAdded] = UpdateExternalArchive(ExternalArchive,BoundaryOffspring);
     BoundaryGain = EstimateArchiveHVGain(BaseArchive,BoundaryAdded);
+    ArchiveEvents = BuildBoundaryArchiveEvents(BaseArchive,BoundaryAdded,Generation,FE);
+end
+
+function Rows = BuildBoundaryArchiveEvents(BaseArchive,BoundaryAdded,Generation,FE)
+    D = 0;
+    M = 0;
+    if ~isempty(BoundaryAdded)
+        D = size(BoundaryAdded.decs,2);
+        M = size(BoundaryAdded.objs,2);
+    end
+    Rows = repmat(InitBoundaryArchiveEventRow(D,M),0,1);
+    if isempty(BoundaryAdded)
+        return;
+    end
+
+    RunningArchive = BaseArchive;
+    Rows = repmat(InitBoundaryArchiveEventRow(D,M),numel(BoundaryAdded),1);
+    for i = 1 : numel(BoundaryAdded)
+        Rows(i).generation = Generation;
+        Rows(i).FE = FE;
+        Rows(i).solutionDec = BoundaryAdded(i).dec;
+        Rows(i).solutionObj = BoundaryAdded(i).obj;
+        Rows(i).hvGain = EstimateArchiveHVGain(RunningArchive,BoundaryAdded(i));
+        [RunningArchive,~] = UpdateExternalArchive(RunningArchive,BoundaryAdded(i));
+    end
 end
 
 function Gain = EstimateArchiveHVGain(Archive,Added)
@@ -1377,6 +1682,10 @@ function Metric = AppendSectionBCalibrationTrace(Metric,CalMetric)
     Row.single_class = logical(FieldOrDefaultMetric(CalMetric,'singleClass',false));
     Row.class_count = FieldOrDefaultMetric(CalMetric,'classCount',0);
     Row.trust_gate = logical(FieldOrDefaultMetric(CalMetric,'trustGate',false));
+    Row.trust_audit_pass = logical(FieldOrDefaultMetric(CalMetric,'trustAuditPass',false));
+    Row.trust_pass_streak = FieldOrDefaultMetric(CalMetric,'trustPassStreak',0);
+    Row.trust_weight = FieldOrDefaultMetric(CalMetric,'trustWeight',NaN);
+    Row.trust_weight_raw = FieldOrDefaultMetric(CalMetric,'trustWeightRaw',NaN);
     Row.calibrator = FieldOrDefaultMetric(CalMetric,'calibrator','raw');
     Row.training_count = FieldOrDefaultMetric(CalMetric,'trainingCount',NaN);
     Row.calibration_count = FieldOrDefaultMetric(CalMetric,'calibrationCount',NaN);
@@ -1436,6 +1745,10 @@ function Row = InitSectionBCalibrationTraceRow()
         'single_class',false, ...
         'class_count',0, ...
         'trust_gate',false, ...
+        'trust_audit_pass',false, ...
+        'trust_pass_streak',0, ...
+        'trust_weight',NaN, ...
+        'trust_weight_raw',NaN, ...
         'calibrator','raw', ...
         'training_count',NaN, ...
         'calibration_count',NaN, ...

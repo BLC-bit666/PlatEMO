@@ -70,6 +70,8 @@ function [Offspring,Info,FeasiblePool,BracketPairs,HardNegativeBatch,WorkerAudit
         WorkerAudit(i).hardNegativeConfirmed = ~isempty(NewHardNeg.Dec);
         WorkerAudit(i).frrSuccess = ~all(Seed.cons<=0,2) && any(all(Desc.cons<=0,2));
         WorkerAudit(i).lineageFeasibleDec = GetSeedLineageFeasibleDec(Seed,Desc);
+        WorkerAudit(i).lineageDescDec = SolutionDecMatrix(Desc,Problem.D);
+        WorkerAudit(i).lineageDescLabel = double(all(Desc.cons<=0,2));
 
         BracketPairs = MergeBracketPairs(BracketPairs,NewBracket);
         HardNegativeBatch = MergeHardNegBatch(HardNegativeBatch,NewHardNeg);
@@ -435,7 +437,17 @@ function Audit = InitWorkerAudit(D)
         'frrSuccess',false, ...
         'bracketGap',NaN, ...
         'hardNegativeConfirmed',false, ...
-        'lineageFeasibleDec',zeros(0,D));
+        'lineageFeasibleDec',zeros(0,D), ...
+        'lineageDescDec',zeros(0,D), ...
+        'lineageDescLabel',zeros(0,1));
+end
+
+function Dec = SolutionDecMatrix(Solutions,D)
+    if isempty(Solutions)
+        Dec = zeros(0,D);
+        return;
+    end
+    Dec = Solutions.decs;
 end
 
 function FeasibleDec = GetSeedLineageFeasibleDec(Seed,Desc)

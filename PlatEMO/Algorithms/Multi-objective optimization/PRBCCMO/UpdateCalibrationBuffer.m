@@ -1,10 +1,15 @@
-function [CalDec,CalLabel,CalNear,Status] = UpdateCalibrationBuffer(CalDec,CalLabel,CalNear,NewSolutions,NewInfo,MaxCal)
+function [CalDec,CalLabel,CalNear,Status] = UpdateCalibrationBuffer( ...
+    CalDec,CalLabel,CalNear,NewSolutions,NewInfo,MaxCal,FallbackDec,FallbackLabel)
 % Update a held-out labeled buffer used for calibration or evaluation.
 
     if nargin < 1 || isempty(CalDec)
         CalDec = [];
         CalLabel = [];
         CalNear = [];
+    end
+    if nargin < 7 || isempty(FallbackDec)
+        FallbackDec = zeros(0,size(CalDec,2));
+        FallbackLabel = zeros(0,1);
     end
     if nargin < 6 || MaxCal <= 0
         CalDec = [];
@@ -35,6 +40,8 @@ function [CalDec,CalLabel,CalNear,Status] = UpdateCalibrationBuffer(CalDec,CalLa
     AllNear = AllNear(Keep);
 
     [CalDec,CalLabel,CalNear] = TrimCalibrationBuffer(AllDec,AllLab,AllNear,MaxCal);
+    [CalDec,CalLabel,CalNear] = RepairCalibrationBuffer( ...
+        CalDec,CalLabel,CalNear,FallbackDec,FallbackLabel,MaxCal);
     Status = InitCalibrationBufferStatus(CalLabel,CalNear,MaxCal);
 end
 
@@ -107,6 +114,43 @@ function Keep = SelectBalancedCalibrationRows(Lab,Near,MaxCal)
     if numel(Keep) > MaxCal
         Keep = Keep(end-MaxCal+1:end);
     end
+end
+
+function [Dec,Lab,Near] = RepairCalibrationBuffer(Dec,Lab,Near,FallbackDec,FallbackLabel,MaxCal)
+    if isempty(FallbackDec) || isempty(FallbackLabel)
+        return;
+    end
+    Status = InitCalibrationBufferStatus(Lab,Near,MaxCal);
+    if Status.valid
+        return;
+    end
+
+    FallbackLabel = double(FallbackLabel(:) > 0);
+    PresentClass = unique(double(Lab(:) > 0));
+    NeededClass = setdiff([1;0],PresentClass,'stable');
+    if isempty(Lab)
+        NeededClass = [1;0];
+    end
+
+    AddIdx = zeros(0,1);
+    for i = 1 : numel(NeededClass)
+        ClassIdx = find(FallbackLabel == NeededClass(i));
+        if ~isempty(ClassIdx)
+            AddIdx(end+1,1) = ClassIdx(end); %#ok<AGROW>
+        end
+    end
+    if isempty(AddIdx)
+        return;
+    end
+
+    Dec = [Dec;FallbackDec(AddIdx,:)];
+    Lab = [double(Lab(:) > 0);FallbackLabel(AddIdx)];
+    Near = [logical(Near(:));false(numel(AddIdx),1)];
+    Keep = KeepLatestDecisionRows(Dec);
+    Dec = Dec(Keep,:);
+    Lab = Lab(Keep);
+    Near = Near(Keep);
+    [Dec,Lab,Near] = TrimCalibrationBuffer(Dec,Lab,Near,MaxCal);
 end
 
 function Status = InitCalibrationBufferStatus(Label,Near,MaxCal)

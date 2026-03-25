@@ -1,5 +1,5 @@
 function Detail = ScoreBoundaryCandidates(Problem,CandidateDec,CandidateObj,FeasibleObj,Model,W,HardNegativeArchive)
-% Compute lean trusted-query scores for Pareto-bridge boundary candidates.
+% Compute lean soft-trust scores for Pareto-bridge boundary candidates.
 
     Total = size(CandidateDec,1);
     Detail = InitBoundaryCandidateDetail(Total);
@@ -14,21 +14,18 @@ function Detail = ScoreBoundaryCandidates(Problem,CandidateDec,CandidateObj,Feas
     Reliability = ResolveReliability(Model,Prob);
     Eligible    = IsOutsideHardNegativeRegion(Problem,CandidateDec,HardNegativeArchive);
     TrustGate   = ResolveTrustGate(Model);
+    TrustWeight = ResolveTrustWeight(Model);
     LambdaSigma = ResolveDisagreementWeight(Model);
 
     BoundaryTrust = Reliability .* QueryScore .* (1 + LambdaSigma*Disagreement);
-    Utility       = ParetoValue(:);
-    if TrustGate
-        Utility = BoundaryTrust .* (1e-6 + ParetoValue(:));
-    end
-
-    UncertainOnly = QueryScore;
-    if TrustGate
-        UncertainOnly = BoundaryTrust;
-    end
+    SoftWeight    = max(0,(1-TrustWeight) + TrustWeight.*BoundaryTrust);
+    Utility       = (1e-6 + ParetoValue(:)) .* SoftWeight;
+    UncertainOnly = QueryScore(:);
+    HighProb      = Prob(:);
 
     Utility(~Eligible)       = -inf;
     UncertainOnly(~Eligible) = -inf;
+    HighProb(~Eligible)      = -inf;
     QueryScore(~Eligible)    = -inf;
     ParetoValue(~Eligible)   = -inf;
     BoundaryTrust(~Eligible) = 0;
@@ -40,6 +37,7 @@ function Detail = ScoreBoundaryCandidates(Problem,CandidateDec,CandidateObj,Feas
     Detail.reliability        = Reliability(:);
     Detail.boundaryTrust      = BoundaryTrust(:);
     Detail.uncertaintyUtility = UncertainOnly(:);
+    Detail.highProbUtility    = HighProb(:);
     Detail.utility            = Utility(:);
     Detail.utilityGateOff     = ParetoValue(:);
     Detail.sector             = Sector(:);
@@ -56,6 +54,7 @@ function Detail = InitBoundaryCandidateDetail(Total)
     Detail.reliability        = ones(Total,1);
     Detail.boundaryTrust      = zeros(Total,1);
     Detail.uncertaintyUtility = zeros(Total,1);
+    Detail.highProbUtility    = zeros(Total,1);
     Detail.utility            = zeros(Total,1);
     Detail.utilityGateOff     = zeros(Total,1);
     Detail.sector             = zeros(Total,1);
@@ -99,7 +98,7 @@ end
 
 function Reliability = ResolveReliability(Model,Prob)
     Reliability = ones(numel(Prob),1);
-    if isempty(Model) || ~ResolveTrustGate(Model)
+    if isempty(Model)
         return;
     end
     if ~isfield(Model,'ReliabilityBinEdges') || isempty(Model.ReliabilityBinEdges) ...
@@ -150,6 +149,16 @@ function Flag = ResolveTrustGate(Model)
     end
     if isfield(Model,'TrustGate') && ~isempty(Model.TrustGate)
         Flag = logical(Model.TrustGate);
+    end
+end
+
+function Weight = ResolveTrustWeight(Model)
+    Weight = 0;
+    if isempty(Model)
+        return;
+    end
+    if isfield(Model,'TrustWeight') && ~isempty(Model.TrustWeight)
+        Weight = min(max(Model.TrustWeight,0),1);
     end
 end
 
