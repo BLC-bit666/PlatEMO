@@ -1,0 +1,9 @@
+problem,baseVariant,compareVariant,metric,pairCount,baseMedian,compareMedian,medianDiff,signrankP
+DASCMOP5_BC,MainBridge,RandSectorPair,SAR,1,NaN,NaN,NaN,NaN
+DASCMOP5_BC,MainBridge,RandSectorPair,GPR,1,NaN,NaN,NaN,NaN
+DASCMOP5_BC,MainBridge,RandSectorPair,FDR,1,NaN,NaN,NaN,NaN
+DASCMOP5_BC,MainBridge,RandSectorPair,FSG,1,Inf,Inf,NaN,NaN
+DASCMOP5_BC,MainBridge,TopKPair,SAR,1,NaN,NaN,NaN,NaN
+DASCMOP5_BC,MainBridge,TopKPair,GPR,1,NaN,NaN,NaN,NaN
+DASCMOP5_BC,MainBridge,TopKPair,FDR,1,NaN,NaN,NaN,NaN
+DASCMOP5_BC,MainBridge,TopKPair,FSG,1,Inf,Inf,NaN,NaN

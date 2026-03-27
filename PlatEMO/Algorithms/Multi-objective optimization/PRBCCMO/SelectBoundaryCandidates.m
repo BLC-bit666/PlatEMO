@@ -9,10 +9,9 @@ function [Offspring,Info,Diag,CandidateAudit] = SelectBoundaryCandidates(Problem
     if nargin < 8 || ~isstruct(RuntimeOptions)
         RuntimeOptions = struct();
     end
-    Diag.selectionMode = ResolveSelectionMode(RuntimeOptions);
     Diag.budget = max(0,Budget);
     Diag.hasModel = ~isempty(Model);
-    if Budget <= 0 || isempty(Pool.sector)
+    if isempty(Pool.sector)
         Diag.candidateCount = numel(Pool.sector);
         return;
     end
@@ -23,24 +22,23 @@ function [Offspring,Info,Diag,CandidateAudit] = SelectBoundaryCandidates(Problem
     end
 
     Detail = ScoreBoundaryCandidates( ...
-        Problem,CandidateDec,ProxySel,FeasibleObj,Model,W,HardNegativeArchive);
-    SelectionMode = Diag.selectionMode;
-    RankScore = ResolveSelectionScore(Detail,SelectionMode);
-    Valid = Detail.eligible(:) & isfinite(RankScore(:));
+        Problem,CandidateDec,ProxySel,FeasibleObj,Model,W,HardNegativeArchive,RuntimeOptions);
+    Detail = PopulateFullV2Utility(Detail,Diag.budget,RuntimeOptions);
+    [SelectionMode,RankScore,Valid,Detail] = ResolveBoundarySelectionScores( ...
+        Detail,Diag.budget,RuntimeOptions);
+    Diag.selectionMode = SelectionMode;
     CandidateAudit = BuildBoundaryCandidateAudit(Problem,Pool,CandidateDec,Detail,SelectionMode,[]);
     Diag = UpdateBoundarySelectionDiag(Diag,Detail,RankScore,Valid);
+    if Budget <= 0
+        return;
+    end
     if ~any(Valid)
         return;
     end
 
     ValidIdx = find(Valid);
-    switch SelectionMode
-        case 3
-            Accept = ValidIdx(randperm(numel(ValidIdx),min(Budget,numel(ValidIdx))));
-        otherwise
-            [~,Order] = sort(RankScore(ValidIdx),'descend');
-            Accept = ValidIdx(Order(1:min(Budget,numel(Order))));
-    end
+    [~,Order] = sort(RankScore(ValidIdx),'descend');
+    Accept = ValidIdx(Order(1:min(Budget,numel(Order))));
     if isempty(Accept)
         return;
     end
@@ -150,7 +148,10 @@ function Row = InitBoundaryCandidateAuditRow(Problem)
         'reliability',NaN, ...
         'paretoValue',NaN, ...
         'boundaryTrust',NaN, ...
+        'trustWeight',NaN, ...
         'utility',NaN, ...
+        'fullV2Utility',NaN, ...
+        'fullV2Shortlisted',false, ...
         'candidateDec',zeros(1,Problem.D), ...
         'anchorDec',zeros(1,Problem.D), ...
         'helperDec',zeros(1,Problem.D));
@@ -175,7 +176,10 @@ function Rows = BuildBoundaryCandidateAudit(Problem,Pool,CandidateDec,Detail,Sel
         Rows(i).reliability = SafeVectorValue(Detail.reliability,i,NaN);
         Rows(i).paretoValue = SafeVectorValue(Detail.paretoValue,i,NaN);
         Rows(i).boundaryTrust = SafeVectorValue(Detail.boundaryTrust,i,NaN);
-        Rows(i).utility = SafeVectorValue(ResolveSelectionScore(Detail,SelectionMode),i,NaN);
+        Rows(i).trustWeight = SafeVectorValue(Detail.trustWeight,i,NaN);
+        Rows(i).utility = SafeVectorValue(Detail.utility,i,NaN);
+        Rows(i).fullV2Utility = SafeVectorValue(Detail.fullV2Utility,i,NaN);
+        Rows(i).fullV2Shortlisted = logical(SafeVectorValue(Detail.fullV2Shortlisted,i,false));
         Rows(i).candidateDec = CandidateDec(i,:);
         if isfield(Pool,'anchorDec') && size(Pool.anchorDec,1) >= i
             Rows(i).anchorDec = Pool.anchorDec(i,:);
@@ -194,24 +198,6 @@ function Value = SafeVectorValue(Data,Index,Default)
     Value = Data(Index);
 end
 
-function SelectionMode = ResolveSelectionMode(RuntimeOptions)
-    SelectionMode = 1;
-    if isstruct(RuntimeOptions) && isfield(RuntimeOptions,'SelectionMode') && ~isempty(RuntimeOptions.SelectionMode)
-        SelectionMode = max(1,min(4,round(RuntimeOptions.SelectionMode)));
-    end
-end
-
-function Score = ResolveSelectionScore(Detail,SelectionMode)
-    switch SelectionMode
-        case 2
-            Score = Detail.uncertaintyUtility(:);
-        case 4
-            Score = Detail.highProbUtility(:);
-        otherwise
-            Score = Detail.utility(:);
-    end
-end
-
 function [Decs,ProxyObjs] = ResolveBridgePlacement(Problem,Pool,Model,RuntimeOptions)
     Total = size(Pool.anchorDec,1);
     Decs      = zeros(Total,Problem.D);
@@ -219,8 +205,7 @@ function [Decs,ProxyObjs] = ResolveBridgePlacement(Problem,Pool,Model,RuntimeOpt
     for i = 1 : Total
         Decs(i,:) = InterpolateBridgePoint(Problem,Pool.anchorDec(i,:),Pool.helperDec(i,:),0.5);
     end
-    SelectionMode = ResolveSelectionMode(RuntimeOptions);
-    if Total == 0 || isempty(Model) || ~HasTrustSignal(Model) || SelectionMode == 3
+    if Total == 0 || isempty(Model) || ~HasTrustedBridgeScan(Model,RuntimeOptions)
         return;
     end
 
@@ -240,29 +225,95 @@ function [Decs,ProxyObjs] = ResolveBridgePlacement(Problem,Pool,Model,RuntimeOpt
     Prob = PredictBoundaryMLP(Model,ScanDec);
     Prob = reshape(Prob(:),ScanCount,Total)';
     for i = 1 : Total
-        switch SelectionMode
-            case 4
-                [~,Best] = max(Prob(i,:));
-            otherwise
-                [~,Best] = min(abs(Prob(i,:)-0.5));
-        end
+        [~,Best] = min(abs(Prob(i,:)-0.5));
         Decs(i,:)      = ScanDec((i-1)*ScanCount + Best,:);
         ProxyObjs(i,:) = ScanProxy((i-1)*ScanCount + Best,:);
     end
 end
 
 function LambdaSet = ResolveBridgeScanLambda(RuntimeOptions)
-    LambdaSet = [0.20,0.35,0.50,0.65,0.80];
+    LambdaSet = [0.25,0.50,0.75];
     if isstruct(RuntimeOptions) && isfield(RuntimeOptions,'BridgeScanLambda') ...
             && ~isempty(RuntimeOptions.BridgeScanLambda)
         LambdaSet = RuntimeOptions.BridgeScanLambda(:)';
     end
 end
 
-function Flag = HasTrustSignal(Model)
+function Flag = HasTrustedBridgeScan(Model,RuntimeOptions)
     Flag = false;
-    if ~isempty(Model) && isfield(Model,'TrustWeight') && ~isempty(Model.TrustWeight)
-        Flag = Model.TrustWeight > 0;
+    if nargin >= 2 && isstruct(RuntimeOptions) && isfield(RuntimeOptions,'DisableBridgeScan') ...
+            && logical(RuntimeOptions.DisableBridgeScan)
+        return;
+    end
+    if ~isempty(Model) && isfield(Model,'TrustGate') && ~isempty(Model.TrustGate)
+        Flag = logical(Model.TrustGate);
+    end
+end
+
+function Detail = PopulateFullV2Utility(Detail,Budget,RuntimeOptions)
+    [Score,Meta] = ComputeBoundarySelectorUtility('FullV2',Detail,struct(),Budget,RuntimeOptions);
+    Detail.fullV2Utility = Score(:);
+    Detail.fullV2Shortlisted = Meta.shortlisted(:);
+end
+
+function [SelectionMode,RankScore,Valid,Detail] = ResolveBoundarySelectionScores(Detail,Budget,RuntimeOptions)
+    SelectionName = ResolveSelectionName(RuntimeOptions);
+    SelectionMode = ResolveSelectionModeId(SelectionName);
+
+    switch SelectionName
+        case 'pareto_only'
+            RankScore = Detail.paretoValue(:);
+            Valid = Detail.eligible(:) & isfinite(RankScore(:));
+        case 'full_v2'
+            RankScore = Detail.fullV2Utility(:);
+            Valid = Detail.eligible(:) & isfinite(RankScore(:));
+        case 'bridge_only'
+            Count = numel(Detail.eligible);
+            RankScore = (Count:-1:1)';
+            Valid = Detail.eligible(:);
+        otherwise
+            error('PRBCCMO:UnsupportedSelectionMode', ...
+                'Unsupported SelectionName ''%s''.',SelectionName);
+    end
+    if nargin >= 2 && Budget <= 0 && ~strcmp(SelectionName,'bridge_only')
+        Valid(:) = false;
+    end
+    Detail.utility = RankScore(:);
+end
+
+function Name = ResolveSelectionName(RuntimeOptions)
+    Name = 'pareto_only';
+    if nargin >= 1 && isstruct(RuntimeOptions) && isfield(RuntimeOptions,'SelectionName') ...
+            && ~isempty(RuntimeOptions.SelectionName)
+        Name = CanonicalSelectionName(RuntimeOptions.SelectionName);
+    end
+end
+
+function Mode = ResolveSelectionModeId(Name)
+    switch CanonicalSelectionName(Name)
+        case 'pareto_only'
+            Mode = 1;
+        case 'full_v2'
+            Mode = 2;
+        case 'bridge_only'
+            Mode = 3;
+        otherwise
+            Mode = 1;
+    end
+end
+
+function Name = CanonicalSelectionName(Name)
+    Name = lower(strtrim(char(Name)));
+    switch Name
+        case {'paretoonly','pareto_only','pareto-only'}
+            Name = 'pareto_only';
+        case {'full','fullv2','full_v2','full-v2'}
+            Name = 'full_v2';
+        case 'bridge_only'
+            Name = 'bridge_only';
+        otherwise
+            error('PRBCCMO:UnsupportedSelectionMode', ...
+                'Unsupported SelectionName ''%s''.',char(Name));
     end
 end
 

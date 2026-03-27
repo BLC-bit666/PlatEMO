@@ -13,7 +13,20 @@ function [Offspring,Info,FeasiblePool,BracketPairs,HardNegativeBatch,WorkerAudit
     HardNegativeBatch.Radius = zeros(0,1);
     Info = EmptyBoundaryInfo(Problem.M);
     WorkerAudit = repmat(InitWorkerAudit(Problem.D),0,1);
-    if Budget <= 0 || isempty(BoundarySeeds)
+    if isempty(BoundarySeeds)
+        return;
+    end
+    if IsSeedOnlyMode(RuntimeOptions)
+        WorkerAudit = repmat(InitWorkerAudit(Problem.D),numel(BoundarySeeds),1);
+        for i = 1 : numel(BoundarySeeds)
+            WorkerAudit(i) = InitWorkerAudit(Problem.D);
+            WorkerAudit(i).seedIndex = i;
+            WorkerAudit(i).seedFeasible = all(BoundarySeeds(i).cons<=0,2);
+            WorkerAudit(i).lineageFeasibleDec = GetSeedLineageFeasibleDec(BoundarySeeds(i),[]);
+        end
+        return;
+    end
+    if Budget <= 0
         return;
     end
 
@@ -40,25 +53,14 @@ function [Offspring,Info,FeasiblePool,BracketPairs,HardNegativeBatch,WorkerAudit
         Anchor = ResolveEndpoint(BoundaryInfo,'anchor',i);
         Helper = ResolveEndpoint(BoundaryInfo,'helper',i);
 
-        if UseIsotropicLocal(RuntimeOptions)
-            if all(Seed.cons<=0,2)
-                [Desc,FeasibleAdd] = HandlePlainFeasibleSeed(Problem,Seed,Remaining);
-            else
-                [Desc,FeasibleAdd] = HandlePlainInfeasibleSeed(Problem,Seed,Remaining);
-            end
+        if all(Seed.cons<=0,2)
+            [Desc,FeasibleAdd] = HandleFeasibleSeed(Problem,Seed,Anchor,Helper,Remaining);
             NewBracket = EmptyBracketPairs();
             NewHardNeg.Dec    = zeros(0,Problem.D);
             NewHardNeg.Radius = zeros(0,1);
         else
-            if all(Seed.cons<=0,2)
-                [Desc,FeasibleAdd] = HandleFeasibleSeed(Problem,Seed,Anchor,Helper,Remaining);
-                NewBracket = EmptyBracketPairs();
-                NewHardNeg.Dec    = zeros(0,Problem.D);
-                NewHardNeg.Radius = zeros(0,1);
-            else
-                [Desc,FeasibleAdd,NewBracket,NewHardNeg] = HandleInfeasibleSeed( ...
-                    Problem,Seed,Anchor,Helper,Remaining);
-            end
+            [Desc,FeasibleAdd,NewBracket,NewHardNeg] = HandleInfeasibleSeed( ...
+                Problem,Seed,Anchor,Helper,Remaining);
         end
 
         Remaining = Remaining - numel(Desc);
@@ -82,7 +84,8 @@ function [Offspring,Info,FeasiblePool,BracketPairs,HardNegativeBatch,WorkerAudit
         OffspringCell{i} = Desc;
         FeasibleCell{i}  = FeasibleAdd;
         InfoCell{i} = AppendWorkerInfo( ...
-            Problem,EmptyBoundaryInfo(Problem.M),Desc,Source,FeasibleObj,Model,W,HardNegativeArchive);
+            Problem,EmptyBoundaryInfo(Problem.M),Desc,Source,FeasibleObj, ...
+            Model,W,HardNegativeArchive,RuntimeOptions);
     end
 
     Offspring    = MergePopulationCells(OffspringCell);
@@ -167,38 +170,6 @@ function [Desc,FeasiblePool,BracketPairs,HardNegativeBatch] = HandleInfeasibleSe
     FeasiblePool = [FeasiblePool,HardFeasible];
 end
 
-function [Desc,FeasiblePool] = HandlePlainFeasibleSeed(Problem,Seed,Remaining)
-    Desc = [];
-    FeasiblePool = [];
-    if Remaining <= 0
-        return;
-    end
-
-    QueryCount = min(2,Remaining);
-    Decs = zeros(QueryCount,Problem.D);
-    for j = 1 : QueryCount
-        Decs(j,:) = GenerateIsotropicLocalSample(Problem,Seed,0.10 + 0.06*(j-1));
-    end
-    Desc = Problem.Evaluation(Decs);
-    FeasiblePool = Desc(all(Desc.cons<=0,2));
-end
-
-function [Desc,FeasiblePool] = HandlePlainInfeasibleSeed(Problem,Seed,Remaining)
-    Desc = [];
-    FeasiblePool = [];
-    if Remaining <= 0
-        return;
-    end
-
-    QueryCount = min(2,Remaining);
-    Decs = zeros(QueryCount,Problem.D);
-    for j = 1 : QueryCount
-        Decs(j,:) = GenerateIsotropicLocalSample(Problem,Seed,0.06 + 0.04*(j-1));
-    end
-    Desc = Problem.Evaluation(Decs);
-    FeasiblePool = Desc(all(Desc.cons<=0,2));
-end
-
 function [Desc,FeasiblePool,HardNegativeBatch] = ConfirmHardNegative(Problem,Seed,Anchor,Remaining)
     Desc = [];
     FeasiblePool = [];
@@ -226,8 +197,10 @@ function [Desc,FeasiblePool,HardNegativeBatch] = ConfirmHardNegative(Problem,See
     end
 end
 
-function Info = AppendWorkerInfo(Problem,Info,Desc,Source,FeasibleObj,Model,W,HardNegativeArchive)
-    Detail = ScoreBoundaryCandidates(Problem,Desc.decs,Desc.objs,FeasibleObj,Model,W,HardNegativeArchive);
+function Info = AppendWorkerInfo( ...
+    Problem,Info,Desc,Source,FeasibleObj,Model,W,HardNegativeArchive,RuntimeOptions)
+    Detail = ScoreBoundaryCandidates( ...
+        Problem,Desc.decs,Desc.objs,FeasibleObj,Model,W,HardNegativeArchive,RuntimeOptions);
     Count = numel(Desc);
     Info.source        = [Info.source;repmat(Source,Count,1)];
     Info.score         = [Info.score;Detail.utility(:)];
@@ -346,21 +319,6 @@ function Dec = GenerateHardNegativeSample(Problem,Seed,Anchor,Radius)
     Dec = Problem.CalDec(Dec);
 end
 
-function Dec = GenerateIsotropicLocalSample(Problem,Seed,StepScale)
-    Parent = [Seed.dec;Seed.dec];
-    Dec = OperatorGAhalf(Problem,Parent,{0,20,1,20});
-    Dec = Dec(1,:);
-    RealIdx = find(Problem.encoding<=2);
-    if ~isempty(RealIdx)
-        Range = Problem.upper(RealIdx) - Problem.lower(RealIdx);
-        Range(Range<1e-12) = 1;
-        Noise = randn(1,numel(RealIdx));
-        Noise = Noise./max(norm(Noise),1e-12);
-        Dec(RealIdx) = Seed.dec(RealIdx) + StepScale*Noise.*Range;
-    end
-    Dec = Problem.CalDec(Dec);
-end
-
 function Gap = ComputeDecisionGap(Problem,Dec1,Dec2)
     Range = Problem.upper - Problem.lower;
     Range(Range<1e-12) = 1;
@@ -469,9 +427,10 @@ function FeasibleDec = GetSeedLineageFeasibleDec(Seed,Desc)
     FeasibleDec = FeasibleDec(Keep,:);
 end
 
-function Flag = UseIsotropicLocal(RuntimeOptions)
+function Flag = IsSeedOnlyMode(RuntimeOptions)
     Flag = false;
-    if isstruct(RuntimeOptions) && isfield(RuntimeOptions,'LocalMode') && ~isempty(RuntimeOptions.LocalMode)
-        Flag = round(RuntimeOptions.LocalMode) == 2;
+    if isstruct(RuntimeOptions) && isfield(RuntimeOptions,'LocalName') ...
+            && ~isempty(RuntimeOptions.LocalName)
+        Flag = strcmpi(char(RuntimeOptions.LocalName),'seed_only');
     end
 end

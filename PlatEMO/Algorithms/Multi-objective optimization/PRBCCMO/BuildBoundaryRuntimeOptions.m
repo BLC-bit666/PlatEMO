@@ -1,124 +1,85 @@
-function Options = BuildBoundaryRuntimeOptions( ...
-    SelectionMode,LocalMode,TraceFlag,PairMode,PairTopK,PairDistanceWeight,GateMode,TraceProbLabel, ...
-    PairKeepM,TrustTauE,TrustTauN,TrustMinCoreCount,TrustAdmissionStreak,TrustFallbackCap)
-% Build runtime options for trust-aware Pareto-bridge querying.
-
-    if nargin < 1 || isempty(SelectionMode)
-        SelectionMode = 1;
-    end
-    if nargin < 2 || isempty(LocalMode)
-        LocalMode = 1;
-    end
-    if nargin < 3 || isempty(TraceFlag)
-        TraceFlag = false;
-    end
-    if nargin < 4 || isempty(PairMode)
-        PairMode = 2;
-    end
-    if nargin < 5 || isempty(PairTopK)
-        PairTopK = 3;
-    end
-    if nargin < 6 || isempty(PairDistanceWeight)
-        PairDistanceWeight = 0.05;
-    end
-    if nargin < 7 || isempty(GateMode)
-        GateMode = 1;
-    end
-    if nargin < 8 || isempty(TraceProbLabel)
-        TraceProbLabel = false;
-    end
-    if nargin < 9 || isempty(PairKeepM)
-        PairKeepM = 2;
-    end
-    if nargin < 10 || isempty(TrustTauE)
-        TrustTauE = 0.10;
-    end
-    if nargin < 11 || isempty(TrustTauN)
-        TrustTauN = 0.10;
-    end
-    if nargin < 12 || isempty(TrustMinCoreCount)
-        TrustMinCoreCount = 20;
-    end
-    if nargin < 13 || isempty(TrustAdmissionStreak)
-        TrustAdmissionStreak = 3;
-    end
-    if nargin < 14 || isempty(TrustFallbackCap)
-        TrustFallbackCap = 0.25;
-    end
-
-    SelectionMode = max(1,min(4,round(SelectionMode)));
-    LocalMode     = max(1,min(2,round(LocalMode)));
-    PairMode      = max(1,min(2,round(PairMode)));
-    GateMode      = max(1,min(2,round(GateMode)));
+function Options = BuildBoundaryRuntimeOptions(varargin)
+% Build fixed PRBCCMO-Lite runtime options with TopKPair and midpoint probes.
 
     Options = struct();
-    Options.SelectionMode = SelectionMode;
-    Options.LocalMode     = LocalMode;
-    Options.PairMode      = PairMode;
-    Options.GateMode      = GateMode;
-    Options.TraceFlag     = logical(TraceFlag);
-    Options.TraceProbLabel = logical(TraceProbLabel);
-    Options.SelectionName = ResolveSelectionName(SelectionMode);
-    Options.LocalName     = ResolveLocalName(LocalMode);
-    Options.PairName      = ResolvePairName(PairMode);
-    Options.GateName      = ResolveGateName(GateMode);
+    Options.SelectionMode = 1;
+    Options.LocalMode     = 1;
+    Options.GateMode      = 1;
+    Options.TraceFlag     = false;
+    Options.TraceProbLabel = false;
+    Options.SelectionName = 'pareto_only';
+    Options.LocalName     = 'label_aware';
+    Options.BridgeName    = 'topk_pair';
+    Options.GateName      = 'two_stage';
     Options.BridgeActivationGap = 0.01;
-    Options.BridgePairTopK      = max(1,round(PairTopK));
-    Options.BridgePairKeepM     = max(1,round(PairKeepM));
-    Options.BridgePairDistanceWeight = max(PairDistanceWeight,0);
+    Options.BridgeScanLambda    = [0.25,0.50,0.75];
+    Options.BridgeTopK          = 5;
+    Options.FullShortlistFactor = 3;
+    Options.FullTrustTau        = 0.10;
+    Options.FullAlphaMax        = 0.50;
+    Options.FullAlphaLowMax     = 0.15;
+    Options.FullAlphaHighMax    = 0.35;
     Options.MigrationGap        = 0;
-    Options.BridgeScanLambda    = [0.20,0.35,0.50,0.65,0.80];
-    Options.TrustTauE           = max(TrustTauE,0);
-    Options.TrustTauN           = max(TrustTauN,0);
-    Options.TrustMinCoreCount   = max(1,round(TrustMinCoreCount));
-    Options.TrustAdmissionStreak = max(1,round(TrustAdmissionStreak));
-    Options.TrustFallbackCap    = min(max(TrustFallbackCap,0),1);
-end
+    Options.TrustTauE           = 0.10;
+    Options.TrustTauN           = 0.10;
+    Options.TrustMinCoreCount   = 20;
+    Options.TrustAdmissionStreak = 3;
+    Options.TrustFallbackCap    = 0.25;
+    Options.DisableTrust        = false;
+    Options.DisableBridgeScan   = true;
+    Options.CalibratorCandidates = {};
+    Options.Calibrator         = [];
 
-function Name = ResolveSelectionName(SelectionMode)
-    switch SelectionMode
-        case 1
-            Name = 'trusted_query';
-        case 2
-            Name = 'uncertain_only';
-        case 3
-            Name = 'random_bridge';
-        case 4
-            Name = 'highprob_boundary';
-        otherwise
-            Name = 'trusted_query';
+    if nargin == 0
+        return;
+    end
+
+    Override = struct();
+    if all(cellfun(@isstruct,varargin))
+        for i = 1 : nargin
+            Fields = fieldnames(varargin{i});
+            for j = 1 : numel(Fields)
+                Field = Fields{j};
+                Value = varargin{i}.(Field);
+                if isempty(Value)
+                    continue;
+                end
+                Override.(Field) = Value;
+            end
+        end
+    else
+        if mod(nargin,2) ~= 0
+            error('PRBCCMO:RuntimeOptionsInput', ...
+                'Runtime overrides must be a struct or name-value pairs.');
+        end
+        for i = 1 : 2 : nargin
+            Name = varargin{i};
+            if ~(ischar(Name) || (isstring(Name) && isscalar(Name)))
+                error('PRBCCMO:RuntimeOptionsInput', ...
+                    'Runtime override names must be character vectors or scalars.');
+            end
+            Override.(char(Name)) = varargin{i+1};
+        end
+    end
+    Override = FilterRuntimeOverrides(Override,fieldnames(Options));
+
+    Fields = fieldnames(Override);
+    for i = 1 : numel(Fields)
+        Field = Fields{i};
+        Value = Override.(Field);
+        if isempty(Value)
+            continue;
+        end
+        Options.(Field) = Value;
     end
 end
 
-function Name = ResolvePairName(PairMode)
-    switch PairMode
-        case 1
-            Name = 'current_pair';
-        case 2
-            Name = 'topk_pair';
-        otherwise
-            Name = 'topk_pair';
-    end
-end
-
-function Name = ResolveGateName(GateMode)
-    switch GateMode
-        case 1
-            Name = 'two_stage';
-        case 2
-            Name = 'strict_only';
-        otherwise
-            Name = 'two_stage';
-    end
-end
-
-function Name = ResolveLocalName(LocalMode)
-    switch LocalMode
-        case 1
-            Name = 'label_aware';
-        case 2
-            Name = 'isotropic';
-        otherwise
-            Name = 'label_aware';
+function Override = FilterRuntimeOverrides(Override,AllowedFields)
+    Fields = fieldnames(Override);
+    for i = numel(Fields) : -1 : 1
+        Field = Fields{i};
+        if ~any(strcmp(Field,AllowedFields))
+            Override = rmfield(Override,Field);
+        end
     end
 end

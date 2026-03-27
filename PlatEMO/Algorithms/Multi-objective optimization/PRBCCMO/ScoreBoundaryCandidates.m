@@ -1,5 +1,10 @@
-function Detail = ScoreBoundaryCandidates(Problem,CandidateDec,CandidateObj,FeasibleObj,Model,W,HardNegativeArchive)
-% Compute lean soft-trust scores for Pareto-bridge boundary candidates.
+function Detail = ScoreBoundaryCandidates( ...
+    Problem,CandidateDec,CandidateObj,FeasibleObj,Model,W,HardNegativeArchive,RuntimeOptions)
+% Compute Pareto and boundary audit scores for bridge candidates.
+
+    if nargin < 8 || ~isstruct(RuntimeOptions)
+        RuntimeOptions = struct();
+    end
 
     Total = size(CandidateDec,1);
     Detail = InitBoundaryCandidateDetail(Total);
@@ -13,13 +18,14 @@ function Detail = ScoreBoundaryCandidates(Problem,CandidateDec,CandidateObj,Feas
     [ParetoValue,Sector] = ComputeParetoRelevance(CandidateObj,FeasibleObj,W);
     Reliability = ResolveReliability(Model,Prob);
     Eligible    = IsOutsideHardNegativeRegion(Problem,CandidateDec,HardNegativeArchive);
-    TrustGate   = ResolveTrustGate(Model);
-    TrustWeight = ResolveTrustWeight(Model);
+    TrustGate   = ResolveTrustGate(Model,RuntimeOptions);
+    TrustWeight = ResolveTrustWeight(Model,RuntimeOptions);
+    TrustECE    = ResolveTrustMetric(Model,'ece',inf);
+    TrustCoreNearGap = ResolveTrustMetric(Model,'coreNearGap',ResolveTrustMetric(Model,'nearGap',inf));
     LambdaSigma = ResolveDisagreementWeight(Model);
 
     BoundaryTrust = Reliability .* QueryScore .* (1 + LambdaSigma*Disagreement);
-    SoftWeight    = max(0,(1-TrustWeight) + TrustWeight.*BoundaryTrust);
-    Utility       = (1e-6 + ParetoValue(:)) .* SoftWeight;
+    Utility       = ParetoValue(:);
     UncertainOnly = QueryScore(:);
     HighProb      = Prob(:);
 
@@ -36,10 +42,15 @@ function Detail = ScoreBoundaryCandidates(Problem,CandidateDec,CandidateObj,Feas
     Detail.paretoValue        = ParetoValue(:);
     Detail.reliability        = Reliability(:);
     Detail.boundaryTrust      = BoundaryTrust(:);
+    Detail.trustWeight        = repmat(TrustWeight,Total,1);
+    Detail.trustECE           = repmat(TrustECE,Total,1);
+    Detail.trustCoreNearGap   = repmat(TrustCoreNearGap,Total,1);
     Detail.uncertaintyUtility = UncertainOnly(:);
     Detail.highProbUtility    = HighProb(:);
     Detail.utility            = Utility(:);
     Detail.utilityGateOff     = ParetoValue(:);
+    Detail.fullV2Utility      = -inf(Total,1);
+    Detail.fullV2Shortlisted  = false(Total,1);
     Detail.sector             = Sector(:);
     Detail.trustGate          = repmat(TrustGate,Total,1);
     Detail.eligible           = Eligible(:);
@@ -53,10 +64,15 @@ function Detail = InitBoundaryCandidateDetail(Total)
     Detail.paretoValue        = zeros(Total,1);
     Detail.reliability        = ones(Total,1);
     Detail.boundaryTrust      = zeros(Total,1);
+    Detail.trustWeight        = zeros(Total,1);
+    Detail.trustECE           = inf(Total,1);
+    Detail.trustCoreNearGap   = inf(Total,1);
     Detail.uncertaintyUtility = zeros(Total,1);
     Detail.highProbUtility    = zeros(Total,1);
     Detail.utility            = zeros(Total,1);
     Detail.utilityGateOff     = zeros(Total,1);
+    Detail.fullV2Utility      = -inf(Total,1);
+    Detail.fullV2Shortlisted  = false(Total,1);
     Detail.sector             = zeros(Total,1);
     Detail.trustGate          = false(Total,1);
     Detail.eligible           = true(Total,1);
@@ -142,8 +158,12 @@ function Eligible = IsOutsideHardNegativeRegion(Problem,CandidateDec,HardNegativ
     Eligible = all(Dist./repmat(Radius,Total,1) >= 1,2);
 end
 
-function Flag = ResolveTrustGate(Model)
+function Flag = ResolveTrustGate(Model,RuntimeOptions)
     Flag = false;
+    if nargin >= 2 && isstruct(RuntimeOptions) && isfield(RuntimeOptions,'DisableTrust') ...
+            && logical(RuntimeOptions.DisableTrust)
+        return;
+    end
     if isempty(Model)
         return;
     end
@@ -152,13 +172,28 @@ function Flag = ResolveTrustGate(Model)
     end
 end
 
-function Weight = ResolveTrustWeight(Model)
+function Weight = ResolveTrustWeight(Model,RuntimeOptions)
     Weight = 0;
+    if nargin >= 2 && isstruct(RuntimeOptions) && isfield(RuntimeOptions,'DisableTrust') ...
+            && logical(RuntimeOptions.DisableTrust)
+        return;
+    end
     if isempty(Model)
         return;
     end
     if isfield(Model,'TrustWeight') && ~isempty(Model.TrustWeight)
         Weight = min(max(Model.TrustWeight,0),1);
+    end
+end
+
+function Value = ResolveTrustMetric(Model,Field,Default)
+    Value = Default;
+    if isempty(Model) || ~isfield(Model,'TrustMetric') || isempty(Model.TrustMetric)
+        return;
+    end
+    Metric = Model.TrustMetric;
+    if isfield(Metric,Field) && ~isempty(Metric.(Field))
+        Value = Metric.(Field);
     end
 end
 

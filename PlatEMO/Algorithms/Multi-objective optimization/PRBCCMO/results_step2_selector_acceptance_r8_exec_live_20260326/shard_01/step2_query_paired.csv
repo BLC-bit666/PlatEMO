@@ -1,0 +1,15 @@
+problem,calibratorVariant,baseVariant,compareVariant,metric,pairCount,baseMedian,compareMedian,medianDiff,signrankP
+DASCMOP1_BC,raw,ParetoOnly,FullSoftTrust,meanSelectionOverlapPareto,1,0.972222222222222,0.916666666666667,0.0555555555555556,1
+DASCMOP1_BC,raw,ParetoOnly,FullSoftTrust,medianSelectionOverlapPareto,1,1,1,0,1
+DASCMOP1_BC,raw,ParetoOnly,FullSoftTrust,selectionDiffPoolRate,1,0,0.166666666666667,-0.166666666666667,1
+DASCMOP1_BC,raw,ParetoOnly,FullSoftTrust,meanDB,1,NaN,NaN,NaN,NaN
+DASCMOP1_BC,raw,ParetoOnly,FullSoftTrust,medianDB,1,NaN,NaN,NaN,NaN
+DASCMOP1_BC,raw,ParetoOnly,FullSoftTrust,QPTau,1,NaN,NaN,NaN,NaN
+DASCMOP1_BC,raw,ParetoOnly,FullSoftTrust,rhoUtilityNegDB,1,NaN,NaN,NaN,NaN
+DASCMOP1_BC,beta,ParetoOnly,FullSoftTrust,meanSelectionOverlapPareto,1,0.972222222222222,0.916666666666667,0.0555555555555556,1
+DASCMOP1_BC,beta,ParetoOnly,FullSoftTrust,medianSelectionOverlapPareto,1,1,1,0,1
+DASCMOP1_BC,beta,ParetoOnly,FullSoftTrust,selectionDiffPoolRate,1,0,0.166666666666667,-0.166666666666667,1
+DASCMOP1_BC,beta,ParetoOnly,FullSoftTrust,meanDB,1,NaN,NaN,NaN,NaN
+DASCMOP1_BC,beta,ParetoOnly,FullSoftTrust,medianDB,1,NaN,NaN,NaN,NaN
+DASCMOP1_BC,beta,ParetoOnly,FullSoftTrust,QPTau,1,NaN,NaN,NaN,NaN
+DASCMOP1_BC,beta,ParetoOnly,FullSoftTrust,rhoUtilityNegDB,1,NaN,NaN,NaN,NaN

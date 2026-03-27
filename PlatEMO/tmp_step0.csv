@@ -1,0 +1,2 @@
+problem,run,passed,failure_reason,bufferSeparationPass,updateAuditComplete,candidateAuditComplete,seedAuditComplete,boundaryLineageComplete,archiveEventComplete,runLevelSummaryPass,updateAuditCount,updateAuditMismatchCount,candidateAuditMismatchCount,seedAuditMismatchCount,boundaryLineageMismatchCount,archiveEventMismatchCount,totalCandidateRows,totalSeedRows,totalLineageRows,totalArchiveEventRows,maxTrainCalOverlap,maxTrainTestOverlap,maxCalTestOverlap,boundaryStarted
+DASCMOP1_BC,1,1,,1,1,1,1,1,1,1,19,0,0,0,0,0,35,24,24,4,0,0,0,1

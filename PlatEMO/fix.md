@@ -4,7 +4,7 @@
 
 `PRBCCMO` 面向的是 `binary / unknown constraints` 下的约束多目标优化。该场景没有可直接利用的 violation degree，因此真正值得学习的不是“违反了多少”，而是“可行域与不可行域的分界在哪里，以及这些边界信息是否能帮助找到更有价值的可行解”。
 
-相对 `NA-EMT` 一类把模型当作“不可行解价值预测器”的路线，`PRBCCMO` 当前工作树已经转向另一条主线：把学习器作为边界查询调度器，在双群体搜索框架内优先寻找对 Pareto 搜索有意义的边界点，再对选中的种子做标签感知的局部细化。
+相对 `NA-EMT` 一类把模型当作“不可行解价值预测器”的路线，`PRBCCMO` 当前工作树已经进一步收缩成一条更干净的主线：`TopKPair + midpoint placement + ParetoOnly`。学习器仍保留在 calibration/trust 审计与 `Full-v2` 实验分支中，但默认不再在线主导主选择。
 
 因此，`PRBCCMO` 的研究问题不是“再做一个双群体算法”，也不是“再套一个 MLP”，而是：
 
@@ -45,7 +45,11 @@
    - 可行 regular offspring
    - `ExternalArchive` 中已有的可行非支配解
 3. 基于可行 anchor 与 `PopulationU` 生成 boundary candidate pool。
-4. 用已训练的 boundary model 对候选做评分与筛选，给定 boundary budget 后真实评估。
+4. 主线默认固定 `midpoint placement + ParetoOnly`：
+   - bridge 候选先由 `TopKPair + two-stage fallback` 生成；
+   - probe placement 固定中点，默认关闭 trusted bridge scan；
+   - seed 排序主线只按 `paretoValue` 做 `ParetoOnly` 选择；
+   - boundary model 产生的 `prob / queryScore / boundaryTrust` 主要保留给审计与 `Full-v2` 实验分支。
 5. 根据真实标签进入 refinement：
    - feasible expansion
    - infeasible bracketing
@@ -55,14 +59,16 @@
 
 ### 2. 边界建模与 trust 机制
 
-当前实现不是固定单一模型，而是“轻量 committee + calibration/trust 审计”的结构：
+当前实现保留“轻量 committee + calibration/trust 审计”的结构，但它已经不再是主线在线调度器：
 
 - 训练入口：`TrainBoundaryMLP`
 - 预测入口：`PredictBoundaryMLP`
 - 校准/审计：`EvaluateBoundaryCalibration`、`RefreshBoundaryTrust`
-- 变体：`raw / temperature / beta / auto_trust`
+- 开发默认 calibrator：`raw / beta`
+- `temperature / auto`：降级为补充实验分支
+- 默认运行时：`DisableBridgeScan = true`，模型不再在线改写 probe placement
 
-当前模型目标已经不是“全局 feasibility classifier”，而是“边界附近的概率是否有可解释语义”。这也是后续必须转向 `boundary semantics first` 训练的原因。
+当前模型目标已经不是“全局 feasibility classifier”，而是“边界附近的概率是否有可解释语义”。但这部分语义目前只被允许以审计和实验分支的身份存在，不能再偷偷影响主线基线。
 
 ### 3. 候选生成、筛选与 refinement
 
@@ -85,17 +91,21 @@
 
 当前用于验证和续做实验的入口主要是：
 
+- [check_PRBCCMO_step0_engineering.m](/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Algorithms/Multi-objective%20optimization/PRBCCMO/check_PRBCCMO_step0_engineering.m)
+- [check_PRBCCMO_step2_query_trust.m](/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Algorithms/Multi-objective%20optimization/PRBCCMO/check_PRBCCMO_step2_query_trust.m)
 - [benchmark_PRBCCMO_experiment0.m](/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Algorithms/Multi-objective%20optimization/PRBCCMO/benchmark_PRBCCMO_experiment0.m)
 - [diagnose_PRBCCMO_boundary_activation.m](/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Algorithms/Multi-objective%20optimization/PRBCCMO/diagnose_PRBCCMO_boundary_activation.m)
 - [benchmark_PRBCCMO_crossset_suite.m](/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Algorithms/Multi-objective%20optimization/PRBCCMO/benchmark_PRBCCMO_crossset_suite.m)
 
 当前 `Algorithm.metric.sectionB` 已直接保留：
 
+- `candidateAudit`
 - `activationTrace`
 - `selectionTrace`
-- `bridgeTrace`
+- `calibrationTrace`
+- `updateAudit`
 
-因此后续调试和预实验不再需要额外的大型 trace dump 文件。
+此外，`check_PRBCCMO_step2_query_trust.m` 现在还会直接导出 run-level `queryReport` 和 update-level `queryUpdateReport`，因此 `O_t / D_t` 与 oracle 指标已经不需要再从 MAT 内部手工回推。
 
 ## 当前已经验证的内容
 
@@ -167,8 +177,22 @@
 截至目前，只能稳妥下列结论：
 
 - `boundary activation coverage` 已经被验证
+- 主线代码口径已经统一成：`TopKPair + midpoint placement + ParetoOnly`
+- trusted bridge scan 已退出主版本，`Full-v2` 只保留为实验分支
+- 开发默认 calibrator 已收缩为 `raw / beta`
 - 当前主瓶颈已从“完全不启动”转为“trust/calibration 语义弱且家族依赖”
+- 当前更具体的 Step 2 瓶颈是：`Full-v2` 还没有稳定证明自己和 `ParetoOnly` 选得不一样
 - 家族表现分层明显：`LIRCMOP_BC > MW_BC > DASCMOP_BC`
+- 最新 `37 problems x 3 methods x 5 runs` 的 Step 1 screening 已经给出新的配对结论：
+  - `TopKPair` 进入下一轮
+  - `RandSectorPair` 保留为唯一强备选
+  - `MainBridge` 暂时淘汰，不再进入下一轮模块实验
+- 从现在开始，后续模块实验统一以 `TopKPair` 作为 bridge 基准来分析其余模块；`RandSectorPair` 只在需要强结构对照时保留，`MainBridge` 只保留历史对照身份
+- `check_PRBCCMO_step2_query_trust.m` 已经补齐：
+  - update-level `selection overlap` 与 `boundary score dispersion`
+  - run/update 两层 stop/go 字段
+  - 自动闸门：若 `Full-v2` 仍塌缩到 `ParetoOnly`，则自动停止后续 oracle audit
+- 当前 smoke test 的现实信号并不乐观：自动闸门已经能正常触发，说明现阶段更大的风险仍然是 `Full-v2 ≈ ParetoOnly`
 - 当前证据仍不足以证明：
   - scheduler 选到的 query 更接近真实边界
   - 这些 boundary points 有显著 downstream usefulness
@@ -186,13 +210,13 @@
 
 `更可信的边界语义 -> 更靠近真实边界 -> 更有用的可行发现 -> 更好的最终优化`
 
-### 2. 真正瓶颈不是“机制不够多”，而是“概率语义不够强”
+### 2. 当前最紧迫的瓶颈不是“再加机制”，而是“先证明 Full-v2 真有分化”
 
-最新追加分析已经明确指出，不建议继续往主算法里塞新机制。当前最值得改的不是概念层，而是以下三点：
+最新追加分析和当前脚本状态已经把优先级压得很明确。现在最值得盯住的不是概念扩写，而是以下三点：
 
-- shared-sector 内的配对质量
-- trust 的使用方式，从 hard gate 改成 soft weighting
-- 训练目标转向 `boundary semantics first`
+- `Full-v2` 相对 `ParetoOnly` 是否真的产生不同选择
+- `boundaryTrust` 在 eligible pool 上是否真的有足够排序分辨率
+- 只有在前两项过关后，才值得继续做 oracle/downstream audit
 
 ### 3. 历史 hard case 仍有方法学意义
 
@@ -208,37 +232,43 @@
 2. 先不要改科学主张，只继续收集能支撑或反驳主张的证据。
 3. 不加新机制，不扩创新点，不再做“大礼包”式堆叠。
 4. 方法上优先改三件事：
-   - `shared-sector / top-K pairing`
-   - `soft trust weighting`
-   - `boundary semantics first` 训练
+   - 保持 `TopKPair + midpoint placement + ParetoOnly` 主线稳定
+   - 用 Step 2 自动 stop/go 先判断 `Full-v2` 是否值得继续
+   - 只有在 `Full-v2` 真分化后，才继续做 oracle 与 downstream usefulness 验证
 
 ### 方法调整方向
 
 #### A. 配对方式
 
-把当前桥接配对从“有 shared sector 就配”进一步收紧为更可靠的 sector 内配对，优先尝试 `TopKPair`。目标不是增加候选数，而是提高 shared-sector 内真正有语义的 feasible/infeasible pair 比例。
+基于最新 full-37 screening，下一轮 bridge 主线固定为 `TopKPair`。`RandSectorPair` 只保留为唯一强备选，负责回答“如果不用 `TopKPair`，最强的结构对照是谁”；`MainBridge` 暂时淘汰，不再进入下一轮模块实验。后续所有模块分析都默认建立在 `TopKPair` bridge 上。
 
 #### B. trust 使用方式
 
-不要再把 trust 当作硬开关。改成软权重，让模型在 trust 很差时自动回退到 Pareto-driven selection，在 trust 变好时再逐步放大 `p ≈ 0.5` 的作用。
+主版本已经不再让 trust 直接主导线上选择。当前更合理的口径是：
+
+- `ParetoOnly` 保持为线上主版本
+- `trust / boundary semantics` 只保留给审计与 `Full-v2` 实验分支
+- 先证明 `Full-v2` 相比 `ParetoOnly` 真有选点分化，再讨论它是否值得回到主版本
 
 #### C. 训练目标
 
 训练、校准、测试三套缓冲严格隔离；训练时优先过采样 tight brackets；损失设计围绕“边界附近概率是否有语义”，而不是追求一般分类精度。
 
-#### D. 打分简化
+#### D. 主线收缩
 
-主版本只保留最小必要三项：
+主版本已经明确收缩为：
 
-- eligibility
-- trust-corrected uncertainty
-- Pareto value
+- `TopKPair`
+- `midpoint placement`
+- `ParetoOnly`
+- `label-aware refinement`
+- `minimal migration`
 
-不要再回到 `entropy / hvGain / novelty / penalty` 的厚打分栈。
+不要再回到 `Full-v1` 乘法主打分，也不要让 trusted bridge scan 回流到主线。
 
 ### 实验 A：桥接配对与激活的修复性预实验
 
-目的：验证 `pair constructor` 是否真正缓解 `activation_gap_not_met`，尤其针对 `DASCMOP5_BC`。
+目的：完成 bridge 规则筛选，并确定下一轮模块实验的统一基线。
 
 建议设置：
 
@@ -247,7 +277,7 @@
 - `MaxFE = 50000`
 - `Runs = 20`
 - paired seeds
-- 比较：`CurrentPair` vs `TopKPair`
+- 比较：`MainBridge / RandSectorPair / TopKPair`
 
 建议指标：
 
@@ -257,11 +287,17 @@
 - `FSG`：首次产生 boundary seed 的代数
 - `BSR`：是否成功产生 boundary seed
 
-验收标准：`TopKPair` 在 D5 上显著改善 `ASR / PMR / BSR` 并降低 `FSG`，且不伤害 D6/LIR1/MW1。
+筛选决策写死为：
+
+- `TopKPair` 进入下一轮
+- `RandSectorPair` 保留为唯一强备选
+- `MainBridge` 暂时淘汰
+
+后续实验不再围绕 `CurrentPair vs TopKPair` 反复做 bridge 选择题，而是统一以 `TopKPair` 为 bridge 基线推进其余模块验证。
 
 ### 实验 B：校准 / trust 审计
 
-目的：回答当前 `p ≈ 0.5` 是否已有可用语义。
+目的：回答当前 `p ≈ 0.5` 是否至少已经有“可审计”的弱语义。
 
 建议设置：
 
@@ -269,7 +305,10 @@
 - `Population = 100`
 - `MaxFE = 200000`
 - `Runs = 30`
-- 变体：`raw / temperature / beta / auto_trust`
+- 开发默认：`raw / beta`
+- `temperature / auto`：只作为补充分支
+- 固定 bridge = `TopKPair`
+- 固定 placement = `midpoint`
 - 只统计 `auditReadyUpdates`
 - 主结论单位必须是 `run`，不能再以 pooled all rows 直接下主结论
 
@@ -285,7 +324,7 @@
 
 ### 实验 C：核心创新的 oracle boundary audit
 
-目的：直接验证 scheduler 选到的 query 是否更靠近真实边界。
+目的：先证明 `Full-v2` 相对 `ParetoOnly` 真有分化，再验证它是否更靠近真实边界。
 
 建议设置：
 
@@ -294,17 +333,22 @@
 - `Population = 100`
 - `MaxFE = 200000`
 - `Runs = 30`
+- 固定 bridge = `TopKPair`
+- 固定 runtime 主线 = `ParetoOnly`
+- 固定 placement = `midpoint`
 - 比较：
-  - `Full`
+  - `ParetoOnly`
+  - `Full-v2`
   - `Uncertain-only`
   - `HighProb-Boundary`
   - `Rand-Boundary`
 
 关键要求：
 
-- 四个变体必须共享相同 bridge generation、相同 boundary budget、相同主搜索框架
-- 离线记录 `oracle_dB`
-- 新增 `CandidateAudit`
+- 所有 query 变体必须共享相同 bridge generation、相同 boundary budget、相同主搜索轨迹
+- 脚本先看 stop/go：`O_t` 和 `D_t`
+- 只有 stop/go 通过时，才继续读取 `oracle_dB` 相关指标
+- 当前脚本已直接导出 run-level `queryReport` 与 update-level `queryUpdateReport`
 
 主指标：
 
@@ -323,6 +367,7 @@
 
 - 与实验 C 相同
 - 再加入 `No-local-label` 变体
+- bridge 仍固定 `TopKPair`
 
 新增日志：
 
@@ -352,10 +397,12 @@
 - `Population = 100`
 - `MaxFE = 200000`
 - `Runs = 30`
+- bridge 仍固定 `TopKPair`
 
 比较方式：
 
-- 内部主比较：`Full vs NoBoundary`
+- 内部主比较：当前主版本（默认 `ParetoOnly`） vs `NoBoundary`
+- 若 `Full-v2` 在 Step 2 真通过 stop/go，再把 `Full-v2` 并入最终内部比较
 - 外部参考：`NA-EMT` + 2 到 3 个最强 binary/unknown-constraint baselines
 
 指标：
@@ -373,7 +420,7 @@
 
 最终要形成的证据链只能写成：
 
-`pairing 修复 -> trust 改善 -> selected seeds 更接近真实边界 -> boundary discoveries 更有用 -> 最终 HV/IGD/AUC 更好`
+`TopKPair bridge 基线确定 -> ParetoOnly 主线稳定 -> Full-v2 若存在则先证明已分化 -> selected seeds 更接近真实边界 -> boundary discoveries 更有用 -> 最终 HV/IGD/AUC 更好`
 
 只要这条链断一段，就不能宣称创新点“已验证成立”。
 
@@ -397,4 +444,4 @@
 
 ## 一句话现状态
 
-`PRBCCMO` 当前已经证明“边界模块可以稳定启动”，但还没有证明“核心创新点已经成立”；下一阶段不该改题，不该加机制，而该围绕 `pairing -> trust -> oracle boundary audit -> downstream usefulness -> final performance` 这条证据链继续做干净验证。
+`PRBCCMO` 当前已经证明“边界模块可以稳定启动”，并且主线代码已经统一到 `TopKPair + midpoint placement + ParetoOnly`；下一步不该盲目把 runs 从 5 加到 30，而应先看 `Full-v2` 能否通过 Step 2 的自动 stop/go 闸门，只有过闸后才继续 oracle / downstream / final performance 证据链。

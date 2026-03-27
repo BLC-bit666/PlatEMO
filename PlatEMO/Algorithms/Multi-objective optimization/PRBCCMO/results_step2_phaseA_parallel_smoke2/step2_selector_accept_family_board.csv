@@ -1,0 +1,3 @@
+calibratorVariant,baseVariant,targetVariant,targetDisplayName,problemCount,passSelectionDiffProblemCount,passOracleAuditProblemCount,passAuditedProblemCount,stopGoPassProblemCount,majorityStopGoPass
+beta,ParetoOnly,FullV2,FullNew,9,0,0,0,0,0
+raw,ParetoOnly,FullV2,FullNew,9,0,0,0,0,0

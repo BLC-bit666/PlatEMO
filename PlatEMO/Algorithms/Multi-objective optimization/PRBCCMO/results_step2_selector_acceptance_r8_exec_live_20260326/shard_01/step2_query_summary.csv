@@ -1,0 +1,5 @@
+calibratorVariant,queryVariant,runCount,meanDB,medianDB,QPTau,rhoUtilityNegDB,selectedCount,oracleAuditEnabledRate,meanSelectionOverlapPareto,medianSelectionOverlapPareto,selectionDiffPoolCount,selectionDiffPoolRate,meanBoundaryScoreDispersion,medianBoundaryScoreDispersion
+raw,ParetoOnly,1,NaN,NaN,NaN,NaN,35,0,0.972222222222222,1,0,0,0.0694927197645479,0.0573713114889755
+raw,FullSoftTrust,1,NaN,NaN,NaN,NaN,35,0,0.916666666666667,1,2,0.166666666666667,0.0694927197645479,0.0573713114889755
+beta,ParetoOnly,1,NaN,NaN,NaN,NaN,35,0,0.972222222222222,1,0,0,0.0694927197645479,0.0573713114889755
+beta,FullSoftTrust,1,NaN,NaN,NaN,NaN,35,0,0.916666666666667,1,2,0.166666666666667,0.0694927197645479,0.0573713114889755

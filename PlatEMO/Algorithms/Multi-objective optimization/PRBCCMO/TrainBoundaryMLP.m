@@ -531,7 +531,7 @@ function Candidates = ResolveCalibratorCandidates(Options)
     elseif isstruct(Options) && isfield(Options,'Calibrator') && ~isempty(Options.Calibrator)
         Source = Options.Calibrator;
     else
-        Source = {'temperature','beta'};
+        Source = {'raw','beta'};
     end
 
     if ~iscell(Source)
