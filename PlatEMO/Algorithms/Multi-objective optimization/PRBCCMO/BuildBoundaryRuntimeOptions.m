@@ -1,34 +1,27 @@
 function Options = BuildBoundaryRuntimeOptions(varargin)
-% Build fixed PRBCCMO-Lite runtime options with TopKPair and midpoint probes.
+% Build PRBCCMO-BoundaryCore runtime options.
 
     Options = struct();
-    Options.SelectionMode = 1;
-    Options.LocalMode     = 1;
-    Options.GateMode      = 1;
-    Options.TraceFlag     = false;
+    Options.TraceFlag      = false;
     Options.TraceProbLabel = false;
-    Options.SelectionName = 'pareto_only';
-    Options.LocalName     = 'label_aware';
-    Options.BridgeName    = 'topk_pair';
-    Options.GateName      = 'two_stage';
     Options.BridgeActivationGap = 0.01;
     Options.BridgeScanLambda    = [0.25,0.50,0.75];
+    Options.BridgeRefineStep    = 0.125;
     Options.BridgeTopK          = 5;
-    Options.FullShortlistFactor = 3;
-    Options.FullTrustTau        = 0.10;
-    Options.FullAlphaMax        = 0.50;
-    Options.FullAlphaLowMax     = 0.15;
-    Options.FullAlphaHighMax    = 0.35;
-    Options.MigrationGap        = 0;
+    Options.SelectorMode        = 'pareto_then_boundary';
+    Options.BoundaryShortlistFactor = 3;
+    Options.BoundaryLocalDelta  = 0.10;
+    Options.BracketTightGap     = 0.03;
     Options.TrustTauE           = 0.10;
     Options.TrustTauN           = 0.10;
     Options.TrustMinCoreCount   = 20;
     Options.TrustAdmissionStreak = 3;
     Options.TrustFallbackCap    = 0.25;
+    Options.ForwardAlpha        = 0.10;
+    Options.ForcePlacementRefine = false;
+    Options.DisableFeasibleForward = false;
+    Options.DisableInfeasibleShrink = false;
     Options.DisableTrust        = false;
-    Options.DisableBridgeScan   = true;
-    Options.CalibratorCandidates = {};
-    Options.Calibrator         = [];
 
     if nargin == 0
         return;

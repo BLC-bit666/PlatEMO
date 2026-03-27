@@ -1,5 +1,5 @@
 function [Offspring,Info,Diag,CandidateAudit] = SelectBoundaryCandidates(Problem,Pool,FeasibleObj,Model,W,HardNegativeArchive,Budget,RuntimeOptions)
-% Select and evaluate Pareto-bridge boundary queries with trusted semantics.
+% Select bridge queries using the PRBCCMO-BoundaryCore pipeline.
 
     Offspring = [];
     Info = InitBoundarySeedInfo(Problem);
@@ -12,56 +12,51 @@ function [Offspring,Info,Diag,CandidateAudit] = SelectBoundaryCandidates(Problem
     Diag.budget = max(0,Budget);
     Diag.hasModel = ~isempty(Model);
     if isempty(Pool.sector)
-        Diag.candidateCount = numel(Pool.sector);
         return;
     end
-
-    [CandidateDec,ProxySel] = ResolveBridgePlacement(Problem,Pool,Model,RuntimeOptions);
     if nargin < 3 || isempty(FeasibleObj)
         FeasibleObj = zeros(0,Problem.M);
     end
 
-    Detail = ScoreBoundaryCandidates( ...
-        Problem,CandidateDec,ProxySel,FeasibleObj,Model,W,HardNegativeArchive,RuntimeOptions);
-    Detail = PopulateFullV2Utility(Detail,Diag.budget,RuntimeOptions);
-    [SelectionMode,RankScore,Valid,Detail] = ResolveBoundarySelectionScores( ...
-        Detail,Diag.budget,RuntimeOptions);
-    Diag.selectionMode = SelectionMode;
-    CandidateAudit = BuildBoundaryCandidateAudit(Problem,Pool,CandidateDec,Detail,SelectionMode,[]);
-    Diag = UpdateBoundarySelectionDiag(Diag,Detail,RankScore,Valid);
-    if Budget <= 0
-        return;
-    end
-    if ~any(Valid)
+    Placement = LocalizeBridgeBoundaryPoints(Problem,Pool,Model,RuntimeOptions);
+    Detail = ScoreBridgeCandidates( ...
+        Problem,Pool,FeasibleObj,W,HardNegativeArchive,Placement,Budget,RuntimeOptions);
+    SelectorMode = ResolveSelectorMode(RuntimeOptions);
+    SelectionMode = ResolveSelectionModeId(SelectorMode);
+    RankUtility = ResolveCandidateUtility(Detail,SelectorMode);
+    Diag = UpdateBoundarySelectionDiag(Diag,Detail,Placement,RankUtility,SelectionMode);
+
+    CandidateAudit = BuildBoundaryCandidateAudit( ...
+        Problem,Pool,Placement,Detail,SelectionMode,RankUtility,[]);
+    if Budget <= 0 || ~any(Detail.valid)
         return;
     end
 
-    ValidIdx = find(Valid);
-    [~,Order] = sort(RankScore(ValidIdx),'descend');
-    Accept = ValidIdx(Order(1:min(Budget,numel(Order))));
+    Accept = SelectAcceptedCandidates(Detail,RankUtility,Budget,RuntimeOptions);
     if isempty(Accept)
         return;
     end
-    CandidateAudit = BuildBoundaryCandidateAudit(Problem,Pool,CandidateDec,Detail,SelectionMode,Accept);
+    CandidateAudit = BuildBoundaryCandidateAudit( ...
+        Problem,Pool,Placement,Detail,SelectionMode,RankUtility,Accept);
     Diag.selectedCount = numel(Accept);
 
-    DecsSel   = CandidateDec(Accept,:);
-    ProxySel  = ProxySel(Accept,:);
-    SourceSel = Pool.source(Accept);
-
+    DecsSel = Placement.dec(Accept,:);
     Offspring = Problem.Evaluation(DecsSel);
-    Info.source        = SourceSel(:);
-    Info.score         = RankScore(Accept);
-    Info.prob          = Detail.prob(Accept);
-    Info.queryScore    = Detail.queryScore(Accept);
-    Info.disagreement  = Detail.disagreement(Accept);
+
+    Info.source        = Pool.source(Accept);
+    Info.score         = RankUtility(Accept);
+    Info.prob          = Placement.prob(Accept);
+    Info.queryScore    = Detail.boundaryScore(Accept);
+    Info.disagreement  = Placement.disagreement(Accept);
     Info.paretoValue   = Detail.paretoValue(Accept);
     Info.reliability   = Detail.reliability(Accept);
     Info.boundaryTrust = Detail.boundaryTrust(Accept);
-    Info.utility       = RankScore(Accept);
-    Info.sector        = Detail.sector(Accept);
+    Info.utility       = RankUtility(Accept);
+    Info.sector        = Pool.sector(Accept);
     Info.eligible      = Detail.eligible(Accept);
-    Info.proxyObjs     = ProxySel;
+    Info.boundaryLocal = false(numel(Accept),1);
+    Info.trainKeep     = true(numel(Accept),1);
+    Info.proxyObjs     = Placement.proxyObj(Accept,:);
     Info.anchorDec     = Pool.anchorDec(Accept,:);
     Info.anchorObj     = Pool.anchorObj(Accept,:);
     Info.helperDec     = Pool.helperDec(Accept,:);
@@ -71,7 +66,7 @@ end
 function Diag = InitBoundarySelectionDiag()
     Diag = struct( ...
         'budget',0, ...
-        'selectionMode',1, ...
+        'selectionMode',ResolveSelectionModeId(), ...
         'hasModel',false, ...
         'candidateCount',0, ...
         'eligibleCount',0, ...
@@ -87,17 +82,18 @@ function Diag = InitBoundarySelectionDiag()
         'maxBoundaryTrust',NaN);
 end
 
-function Diag = UpdateBoundarySelectionDiag(Diag,Detail,RankScore,Valid)
+function Diag = UpdateBoundarySelectionDiag(Diag,Detail,Placement,RankUtility,SelectionMode)
+    Diag.selectionMode = SelectionMode;
+    Diag.trustGate = logical(Placement.localTrust);
     Diag.candidateCount = numel(Detail.eligible);
     Diag.eligibleCount = sum(Detail.eligible(:));
     Diag.ineligibleCount = Diag.candidateCount - Diag.eligibleCount;
-    Diag.finiteScoreCount = sum(isfinite(RankScore(:)));
-    Diag.validCount = sum(Valid(:));
+    Diag.finiteScoreCount = sum(isfinite(RankUtility(:)));
+    Diag.validCount = sum(Detail.valid(:));
     Diag.positiveParetoCount = nnz(Detail.paretoValue(:) > 0);
-    Diag.trustGate = any(Detail.trustGate(:));
-    Diag.maxRankScore = SafeFiniteMax(RankScore);
+    Diag.maxRankScore = SafeFiniteMax(RankUtility);
     Diag.maxParetoValue = SafeFiniteMax(Detail.paretoValue);
-    Diag.maxQueryScore = SafeFiniteMax(Detail.queryScore);
+    Diag.maxQueryScore = SafeFiniteMax(Detail.boundaryScore);
     Diag.maxBoundaryTrust = SafeFiniteMax(Detail.boundaryTrust);
 end
 
@@ -126,6 +122,8 @@ function Info = InitBoundarySeedInfo(Problem)
     Info.utility       = zeros(0,1);
     Info.sector        = zeros(0,1);
     Info.eligible      = false(0,1);
+    Info.boundaryLocal = false(0,1);
+    Info.trainKeep     = false(0,1);
     Info.proxyObjs     = zeros(0,Problem.M);
     Info.anchorDec     = zeros(0,Problem.D);
     Info.anchorObj     = zeros(0,Problem.M);
@@ -138,7 +136,7 @@ function Row = InitBoundaryCandidateAuditRow(Problem)
         'generation',NaN, ...
         'FE',NaN, ...
         'source',NaN, ...
-        'selectionMode',1, ...
+        'selectionMode',ResolveSelectionModeId(), ...
         'sector',NaN, ...
         'eligible',false, ...
         'selected',false, ...
@@ -157,34 +155,36 @@ function Row = InitBoundaryCandidateAuditRow(Problem)
         'helperDec',zeros(1,Problem.D));
 end
 
-function Rows = BuildBoundaryCandidateAudit(Problem,Pool,CandidateDec,Detail,SelectionMode,Accept)
-    Count = size(CandidateDec,1);
+function Rows = BuildBoundaryCandidateAudit( ...
+    Problem,Pool,Placement,Detail,SelectionMode,RankUtility,Accept)
+    Count = size(Placement.dec,1);
     Rows = repmat(InitBoundaryCandidateAuditRow(Problem),Count,1);
     Selected = false(Count,1);
-    if nargin >= 6 && ~isempty(Accept)
+    if nargin >= 7 && ~isempty(Accept)
         Selected(Accept) = true;
     end
+    TrustWeight = ResolveTrustWeight(Placement.model);
     for i = 1 : Count
         Rows(i).source = SafeVectorValue(Pool.source,i,NaN);
         Rows(i).selectionMode = SelectionMode;
-        Rows(i).sector = SafeVectorValue(Detail.sector,i,NaN);
+        Rows(i).sector = SafeVectorValue(Pool.sector,i,NaN);
         Rows(i).eligible = logical(SafeVectorValue(Detail.eligible,i,false));
         Rows(i).selected = Selected(i);
-        Rows(i).prob = SafeVectorValue(Detail.prob,i,NaN);
-        Rows(i).queryScore = SafeVectorValue(Detail.queryScore,i,NaN);
-        Rows(i).disagreement = SafeVectorValue(Detail.disagreement,i,NaN);
+        Rows(i).prob = SafeVectorValue(Placement.prob,i,NaN);
+        Rows(i).queryScore = SafeVectorValue(Detail.boundaryScore,i,NaN);
+        Rows(i).disagreement = SafeVectorValue(Placement.disagreement,i,NaN);
         Rows(i).reliability = SafeVectorValue(Detail.reliability,i,NaN);
         Rows(i).paretoValue = SafeVectorValue(Detail.paretoValue,i,NaN);
         Rows(i).boundaryTrust = SafeVectorValue(Detail.boundaryTrust,i,NaN);
-        Rows(i).trustWeight = SafeVectorValue(Detail.trustWeight,i,NaN);
-        Rows(i).utility = SafeVectorValue(Detail.utility,i,NaN);
-        Rows(i).fullV2Utility = SafeVectorValue(Detail.fullV2Utility,i,NaN);
-        Rows(i).fullV2Shortlisted = logical(SafeVectorValue(Detail.fullV2Shortlisted,i,false));
-        Rows(i).candidateDec = CandidateDec(i,:);
-        if isfield(Pool,'anchorDec') && size(Pool.anchorDec,1) >= i
+        Rows(i).trustWeight = TrustWeight;
+        Rows(i).utility = SafeVectorValue(RankUtility,i,NaN);
+        Rows(i).fullV2Utility = NaN;
+        Rows(i).fullV2Shortlisted = logical(SafeVectorValue(Detail.shortlisted,i,false));
+        Rows(i).candidateDec = Placement.dec(i,:);
+        if size(Pool.anchorDec,1) >= i
             Rows(i).anchorDec = Pool.anchorDec(i,:);
         end
-        if isfield(Pool,'helperDec') && size(Pool.helperDec,1) >= i
+        if size(Pool.helperDec,1) >= i
             Rows(i).helperDec = Pool.helperDec(i,:);
         end
     end
@@ -198,135 +198,349 @@ function Value = SafeVectorValue(Data,Index,Default)
     Value = Data(Index);
 end
 
-function [Decs,ProxyObjs] = ResolveBridgePlacement(Problem,Pool,Model,RuntimeOptions)
+function Placement = LocalizeBridgeBoundaryPoints(Problem,Pool,Model,RuntimeOptions)
     Total = size(Pool.anchorDec,1);
-    Decs      = zeros(Total,Problem.D);
-    ProxyObjs = 0.5*(Pool.anchorObj + Pool.helperObj);
-    for i = 1 : Total
-        Decs(i,:) = InterpolateBridgePoint(Problem,Pool.anchorDec(i,:),Pool.helperDec(i,:),0.5);
-    end
-    if Total == 0 || isempty(Model) || ~HasTrustedBridgeScan(Model,RuntimeOptions)
+    Placement = struct();
+    Placement.dec          = zeros(Total,Problem.D);
+    Placement.proxyObj     = zeros(Total,size(Pool.anchorObj,2));
+    Placement.lambda0      = 0.5*ones(Total,1);
+    Placement.lambda       = 0.5*ones(Total,1);
+    Placement.prob0        = 0.5*ones(Total,1);
+    Placement.prob         = 0.5*ones(Total,1);
+    Placement.disagreement = zeros(Total,1);
+    Placement.localTrust   = HasBoundaryLocalTrust(Model,RuntimeOptions);
+    Placement.model        = Model;
+    if Total == 0
         return;
     end
 
-    LambdaSet = ResolveBridgeScanLambda(RuntimeOptions);
-    ScanCount = numel(LambdaSet);
-    ScanDec   = zeros(Total*ScanCount,Problem.D);
-    ScanProxy = zeros(Total*ScanCount,size(Pool.anchorObj,2));
+    ProbeLambda = ResolveProbeLambda(RuntimeOptions);
+    RefineStep  = ResolveProbeRefineStep(RuntimeOptions);
     for i = 1 : Total
-        Offset = (i-1)*ScanCount;
-        for j = 1 : ScanCount
-            Index = Offset + j;
-            ScanDec(Index,:)   = InterpolateBridgePoint(Problem,Pool.anchorDec(i,:),Pool.helperDec(i,:),LambdaSet(j));
-            ScanProxy(Index,:) = (1-LambdaSet(j))*Pool.anchorObj(i,:) + LambdaSet(j)*Pool.helperObj(i,:);
-        end
-    end
+        [ProbeDec,ProbeObj] = BuildBridgeSamples( ...
+            Problem,Pool.anchorDec(i,:),Pool.helperDec(i,:), ...
+            Pool.anchorObj(i,:),Pool.helperObj(i,:),ProbeLambda);
+        [ProbeProb,ProbeDis] = PredictBoundaryStatistics(Model,ProbeDec);
+        Best0 = SelectBestBoundaryProbe(ProbeLambda,ProbeProb,ProbeDis);
 
-    Prob = PredictBoundaryMLP(Model,ScanDec);
-    Prob = reshape(Prob(:),ScanCount,Total)';
-    for i = 1 : Total
-        [~,Best] = min(abs(Prob(i,:)-0.5));
-        Decs(i,:)      = ScanDec((i-1)*ScanCount + Best,:);
-        ProxyObjs(i,:) = ScanProxy((i-1)*ScanCount + Best,:);
+        Placement.lambda0(i) = ProbeLambda(Best0);
+        Placement.prob0(i) = ProbeProb(Best0);
+        Placement.lambda(i) = ProbeLambda(Best0);
+        Placement.prob(i) = ProbeProb(Best0);
+        Placement.disagreement(i) = ProbeDis(Best0);
+        Placement.dec(i,:) = ProbeDec(Best0,:);
+        Placement.proxyObj(i,:) = ProbeObj(Best0,:);
+
+        if ~Placement.localTrust
+            continue;
+        end
+
+        RefineLambda = unique([ ...
+            max(0,Placement.lambda0(i)-RefineStep), ...
+            Placement.lambda0(i), ...
+            min(1,Placement.lambda0(i)+RefineStep)],'stable');
+        [RefineDec,RefineObj] = BuildBridgeSamples( ...
+            Problem,Pool.anchorDec(i,:),Pool.helperDec(i,:), ...
+            Pool.anchorObj(i,:),Pool.helperObj(i,:),RefineLambda);
+        [RefineProb,RefineDis] = PredictBoundaryStatistics(Model,RefineDec);
+        Best1 = SelectBestBoundaryProbe(RefineLambda,RefineProb,RefineDis);
+
+        Placement.lambda(i) = RefineLambda(Best1);
+        Placement.prob(i) = RefineProb(Best1);
+        Placement.disagreement(i) = RefineDis(Best1);
+        Placement.dec(i,:) = RefineDec(Best1,:);
+        Placement.proxyObj(i,:) = RefineObj(Best1,:);
     end
 end
 
-function LambdaSet = ResolveBridgeScanLambda(RuntimeOptions)
-    LambdaSet = [0.25,0.50,0.75];
+function [Decs,Objs] = BuildBridgeSamples(Problem,AnchorDec,HelperDec,AnchorObj,HelperObj,LambdaSet)
+    Count = numel(LambdaSet);
+    Decs = zeros(Count,Problem.D);
+    Objs = zeros(Count,numel(AnchorObj));
+    for j = 1 : Count
+        Lambda = LambdaSet(j);
+        Decs(j,:) = InterpolateBridgePoint(Problem,AnchorDec,HelperDec,Lambda);
+        Objs(j,:) = (1-Lambda)*AnchorObj + Lambda*HelperObj;
+    end
+end
+
+function [Prob,Disagreement] = PredictBoundaryStatistics(Model,Decs)
+    [Prob,Stats] = PredictBoundaryMLP(Model,Decs);
+    Disagreement = zeros(size(Prob));
+    if isstruct(Stats) && isfield(Stats,'memberProb') && ~isempty(Stats.memberProb)
+        Disagreement = var(Stats.memberProb,0,2);
+    elseif isstruct(Stats) && isfield(Stats,'std') && ~isempty(Stats.std)
+        Disagreement = Stats.std(:).^2;
+    end
+end
+
+function Best = SelectBestBoundaryProbe(Lambda,Prob,~)
+    Distance = abs(Prob(:)-0.5);
+    MinDistance = min(Distance);
+    Candidate = find(Distance <= MinDistance + 1e-12);
+    if numel(Candidate) <= 1
+        Best = Candidate(1);
+        return;
+    end
+    % Keep the literal argmin |p-0.5| rule as the primary criterion, and
+    % only use lambda=0.5 proximity as a tie-break to preserve the
+    % midpoint-compatible fallback described in idea.md.
+    [~,LocalBest] = min(abs(Lambda(Candidate)-0.5));
+    Best = Candidate(LocalBest);
+end
+
+function Lambda = ResolveProbeLambda(RuntimeOptions)
+    Lambda = [0.25,0.50,0.75];
     if isstruct(RuntimeOptions) && isfield(RuntimeOptions,'BridgeScanLambda') ...
             && ~isempty(RuntimeOptions.BridgeScanLambda)
-        LambdaSet = RuntimeOptions.BridgeScanLambda(:)';
+        Lambda = RuntimeOptions.BridgeScanLambda(:)';
+    end
+    Lambda = min(max(Lambda,0),1);
+    Lambda = unique(Lambda,'stable');
+    if isempty(Lambda)
+        Lambda = [0.25,0.50,0.75];
     end
 end
 
-function Flag = HasTrustedBridgeScan(Model,RuntimeOptions)
+function Step = ResolveProbeRefineStep(RuntimeOptions)
+    Step = 0.125;
+    if isstruct(RuntimeOptions) && isfield(RuntimeOptions,'BridgeRefineStep') ...
+            && ~isempty(RuntimeOptions.BridgeRefineStep)
+        Step = RuntimeOptions.BridgeRefineStep;
+    end
+    Step = min(max(Step,0),0.5);
+end
+
+function Flag = HasBoundaryLocalTrust(Model,RuntimeOptions)
     Flag = false;
-    if nargin >= 2 && isstruct(RuntimeOptions) && isfield(RuntimeOptions,'DisableBridgeScan') ...
-            && logical(RuntimeOptions.DisableBridgeScan)
+    if isempty(Model)
         return;
     end
-    if ~isempty(Model) && isfield(Model,'TrustGate') && ~isempty(Model.TrustGate)
+    if nargin >= 2 && isstruct(RuntimeOptions)
+        if isfield(RuntimeOptions,'ForcePlacementRefine') ...
+                && logical(RuntimeOptions.ForcePlacementRefine)
+            Flag = true;
+            return;
+        end
+        if isfield(RuntimeOptions,'DisableTrust') ...
+                && logical(RuntimeOptions.DisableTrust)
+            return;
+        end
+    end
+    if isfield(Model,'TrustGate') && ~isempty(Model.TrustGate)
         Flag = logical(Model.TrustGate);
     end
 end
 
-function Detail = PopulateFullV2Utility(Detail,Budget,RuntimeOptions)
-    [Score,Meta] = ComputeBoundarySelectorUtility('FullV2',Detail,struct(),Budget,RuntimeOptions);
-    Detail.fullV2Utility = Score(:);
-    Detail.fullV2Shortlisted = Meta.shortlisted(:);
+function Detail = ScoreBridgeCandidates( ...
+    Problem,Pool,FeasibleObj,W,HardNegativeArchive,Placement,Budget,RuntimeOptions)
+
+    Total = size(Placement.dec,1);
+    Detail = struct();
+    Detail.paretoValue   = zeros(Total,1);
+    Detail.boundaryScore = max(0,1 - 2*abs(Placement.prob(:)-0.5));
+    Detail.disagreement  = Placement.disagreement(:);
+    Detail.boundaryTrust = Detail.boundaryScore;
+    Detail.reliability   = ones(Total,1);
+    Detail.eligible      = IsOutsideHardNegativeRegion(Problem,Placement.dec,HardNegativeArchive);
+    Detail.shortlisted   = false(Total,1);
+    Detail.valid         = false(Total,1);
+    Detail.sector        = Pool.sector(:);
+    if Total == 0
+        return;
+    end
+
+    Detail.paretoValue = ComputeBridgeParetoValue(Pool,FeasibleObj,W);
+    EligibleIdx = find(Detail.eligible);
+    if isempty(EligibleIdx) || Budget <= 0
+        return;
+    end
+
+    ShortlistFactor = ResolveShortlistFactor(RuntimeOptions);
+    ShortlistCount = min(numel(EligibleIdx),max(Budget,round(ShortlistFactor*Budget)));
+    StageAOrder = SortCandidates(EligibleIdx,Detail.paretoValue);
+    ShortlistedIdx = StageAOrder(1:ShortlistCount);
+    Detail.shortlisted(ShortlistedIdx) = true;
+    Detail.valid = Detail.shortlisted & Detail.eligible;
 end
 
-function [SelectionMode,RankScore,Valid,Detail] = ResolveBoundarySelectionScores(Detail,Budget,RuntimeOptions)
-    SelectionName = ResolveSelectionName(RuntimeOptions);
-    SelectionMode = ResolveSelectionModeId(SelectionName);
+function ParetoValue = ComputeBridgeParetoValue(Pool,FeasibleObj,W)
+    Total = size(Pool.anchorObj,1);
+    ParetoValue = zeros(Total,1);
+    if Total == 0
+        return;
+    end
+    if isempty(W)
+        W = ones(1,size(Pool.anchorObj,2));
+    end
+    RefObj = Pool.anchorObj;
+    if ~isempty(FeasibleObj)
+        RefObj = [FeasibleObj;Pool.anchorObj];
+    end
 
-    switch SelectionName
+    AnchorSector = Pool.sector(:);
+    AnchorValue = ComputeSectorScalar(Pool.anchorObj,W,RefObj,AnchorSector);
+    if isempty(FeasibleObj)
+        return;
+    end
+
+    FeasibleSector = AssociateSectors(FeasibleObj,W,RefObj);
+    FeasibleValue = ComputeSectorScalar(FeasibleObj,W,RefObj,FeasibleSector);
+    for s = unique(AnchorSector(:))'
+        FeasibleIdx = find(FeasibleSector == s);
+        AnchorIdx = find(AnchorSector == s);
+        if isempty(FeasibleIdx) || isempty(AnchorIdx)
+            continue;
+        end
+        ChampionValue = min(FeasibleValue(FeasibleIdx));
+        ParetoValue(AnchorIdx) = max(0,ChampionValue - AnchorValue(AnchorIdx));
+    end
+end
+
+function Order = SortCandidates(Idx,ParetoValue)
+    SortKey = [ ...
+        -ParetoValue(Idx), ...
+        Idx(:)];
+    [~,LocalOrder] = sortrows(SortKey,[1 2]);
+    Order = Idx(LocalOrder);
+end
+
+function Accept = SelectAcceptedCandidates(Detail,~,Budget,RuntimeOptions)
+    EligibleIdx = find(Detail.eligible);
+    ShortlistedIdx = find(Detail.valid);
+    if Budget <= 0 || isempty(EligibleIdx)
+        Accept = zeros(0,1);
+        return;
+    end
+
+    Mode = ResolveSelectorMode(RuntimeOptions);
+    switch Mode
+        case 'pareto_then_boundary'
+            if isempty(ShortlistedIdx)
+                Accept = zeros(0,1);
+                return;
+            end
+            Order = SortShortlistedCandidates( ...
+                ShortlistedIdx,Detail.boundaryScore,Detail.disagreement);
         case 'pareto_only'
-            RankScore = Detail.paretoValue(:);
-            Valid = Detail.eligible(:) & isfinite(RankScore(:));
-        case 'full_v2'
-            RankScore = Detail.fullV2Utility(:);
-            Valid = Detail.eligible(:) & isfinite(RankScore(:));
-        case 'bridge_only'
-            Count = numel(Detail.eligible);
-            RankScore = (Count:-1:1)';
-            Valid = Detail.eligible(:);
+            Order = SortCandidates(EligibleIdx,Detail.paretoValue);
+        case 'boundary_only'
+            Order = SortShortlistedCandidates( ...
+                EligibleIdx,Detail.boundaryScore,Detail.disagreement);
+        case 'random_within_shortlist'
+            if isempty(ShortlistedIdx)
+                Accept = zeros(0,1);
+                return;
+            end
+            Order = ShortlistedIdx(randperm(numel(ShortlistedIdx)));
         otherwise
-            error('PRBCCMO:UnsupportedSelectionMode', ...
-                'Unsupported SelectionName ''%s''.',SelectionName);
+            error('PRBCCMO:UnsupportedSelectorMode', ...
+                'Unsupported selector mode ''%s''.',Mode);
     end
-    if nargin >= 2 && Budget <= 0 && ~strcmp(SelectionName,'bridge_only')
-        Valid(:) = false;
-    end
-    Detail.utility = RankScore(:);
+    Accept = Order(1:min(Budget,numel(Order)));
 end
 
-function Name = ResolveSelectionName(RuntimeOptions)
-    Name = 'pareto_only';
-    if nargin >= 1 && isstruct(RuntimeOptions) && isfield(RuntimeOptions,'SelectionName') ...
-            && ~isempty(RuntimeOptions.SelectionName)
-        Name = CanonicalSelectionName(RuntimeOptions.SelectionName);
+function Order = SortShortlistedCandidates(Idx,BoundaryScore,Disagreement)
+    SortKey = [ ...
+        -BoundaryScore(Idx), ...
+        -Disagreement(Idx), ...
+        Idx(:)];
+    [~,LocalOrder] = sortrows(SortKey,[1 2 3]);
+    Order = Idx(LocalOrder);
+end
+
+function Factor = ResolveShortlistFactor(RuntimeOptions)
+    Factor = 3;
+    if isstruct(RuntimeOptions) && isfield(RuntimeOptions,'BoundaryShortlistFactor') ...
+            && ~isempty(RuntimeOptions.BoundaryShortlistFactor)
+        Factor = RuntimeOptions.BoundaryShortlistFactor;
+    end
+    Factor = max(1,round(Factor));
+end
+
+function Mode = ResolveSelectorMode(RuntimeOptions)
+    Mode = 'pareto_then_boundary';
+    if isstruct(RuntimeOptions) && isfield(RuntimeOptions,'SelectorMode') ...
+            && ~isempty(RuntimeOptions.SelectorMode)
+        Mode = lower(strtrim(char(RuntimeOptions.SelectorMode)));
+    end
+    switch Mode
+        case {'pareto_then_boundary','pareto-boundary','boundary_core','boundarycore'}
+            Mode = 'pareto_then_boundary';
+        case {'pareto_only','pareto-only'}
+            Mode = 'pareto_only';
+        case {'boundary_only','boundary-only'}
+            Mode = 'boundary_only';
+        case {'random_within_shortlist','random-shortlist','shortlist_random'}
+            Mode = 'random_within_shortlist';
+        otherwise
+            error('PRBCCMO:UnsupportedSelectorMode', ...
+                'Unsupported selector mode ''%s''.',char(RuntimeOptions.SelectorMode));
     end
 end
 
-function Mode = ResolveSelectionModeId(Name)
-    switch CanonicalSelectionName(Name)
+function Utility = ResolveCandidateUtility(Detail,SelectorMode)
+    switch SelectorMode
+        case 'pareto_then_boundary'
+            Utility = Detail.boundaryScore(:);
         case 'pareto_only'
-            Mode = 1;
-        case 'full_v2'
-            Mode = 2;
-        case 'bridge_only'
-            Mode = 3;
+            Utility = Detail.paretoValue(:);
+        case 'boundary_only'
+            Utility = Detail.boundaryScore(:);
+        case 'random_within_shortlist'
+            Utility = zeros(size(Detail.boundaryScore(:)));
         otherwise
-            Mode = 1;
+            error('PRBCCMO:UnsupportedSelectorMode', ...
+                'Unsupported selector mode ''%s''.',SelectorMode);
     end
 end
 
-function Name = CanonicalSelectionName(Name)
-    Name = lower(strtrim(char(Name)));
-    switch Name
-        case {'paretoonly','pareto_only','pareto-only'}
-            Name = 'pareto_only';
-        case {'full','fullv2','full_v2','full-v2'}
-            Name = 'full_v2';
-        case 'bridge_only'
-            Name = 'bridge_only';
+function Eligible = IsOutsideHardNegativeRegion(Problem,CandidateDec,HardNegativeArchive)
+    Total = size(CandidateDec,1);
+    Eligible = true(Total,1);
+    if Total == 0 || isempty(HardNegativeArchive) || ~isfield(HardNegativeArchive,'Dec') ...
+            || isempty(HardNegativeArchive.Dec)
+        return;
+    end
+
+    Range = Problem.upper - Problem.lower;
+    Range(Range<1e-12) = 1;
+    CandNorm = (CandidateDec - repmat(Problem.lower,Total,1))./repmat(Range,Total,1);
+    CenterNorm = (HardNegativeArchive.Dec - repmat(Problem.lower,size(HardNegativeArchive.Dec,1),1)) ...
+        ./repmat(Range,size(HardNegativeArchive.Dec,1),1);
+    Dist = pdist2(CandNorm,CenterNorm);
+    Radius = max(HardNegativeArchive.Radius(:)',1e-6);
+    Eligible = all(Dist./repmat(Radius,Total,1) >= 1,2);
+end
+
+function Weight = ResolveTrustWeight(Model)
+    Weight = 0;
+    if isempty(Model)
+        return;
+    end
+    if isfield(Model,'TrustWeight') && ~isempty(Model.TrustWeight)
+        Weight = min(max(Model.TrustWeight,0),1);
+    end
+end
+
+function Mode = ResolveSelectionModeId(SelectorMode)
+    if nargin < 1 || isempty(SelectorMode)
+        SelectorMode = 'pareto_then_boundary';
+    end
+    switch SelectorMode
+        case 'pareto_then_boundary'
+            Mode = 4;
+        case 'pareto_only'
+            Mode = 5;
+        case 'boundary_only'
+            Mode = 6;
+        case 'random_within_shortlist'
+            Mode = 7;
         otherwise
-            error('PRBCCMO:UnsupportedSelectionMode', ...
-                'Unsupported SelectionName ''%s''.',char(Name));
+            Mode = 4;
     end
 end
 
 function Dec = InterpolateBridgePoint(Problem,AnchorDec,HelperDec,Lambda)
-    Dec = AnchorDec;
-    RealIdx = find(Problem.encoding<=2);
-    if ~isempty(RealIdx)
-        Dec(RealIdx) = AnchorDec(RealIdx) + Lambda*(HelperDec(RealIdx)-AnchorDec(RealIdx));
-    end
-    OtherIdx = setdiff(1:Problem.D,RealIdx);
-    if ~isempty(OtherIdx)
-        Mask = rand(1,numel(OtherIdx)) < Lambda;
-        Dec(OtherIdx(Mask)) = HelperDec(OtherIdx(Mask));
-    end
-    Dec = Problem.CalDec(Dec);
+    Dec = InterpolateBoundaryPoint(Problem,AnchorDec,HelperDec,Lambda);
 end

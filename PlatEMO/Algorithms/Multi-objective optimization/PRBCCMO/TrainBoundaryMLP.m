@@ -23,12 +23,11 @@ function Model = TrainBoundaryMLP(X,Y,Hidden,Epoch,LR,PrevModel,CalDec,CalLabel,
     Epoch  = max(1,round(Epoch));
     LR     = max(LR,1e-4);
     EnsembleSize = max(1,round(GetOption(Options,'EnsembleSize',1)));
-    CalibratorCandidates = ResolveCalibratorCandidates(Options);
 
     if EnsembleSize <= 1
         Model = TrainSingleBoundaryModel( ...
             X,Y,Hidden,Epoch,LR,PrevModel,CalDec,CalLabel,Options);
-        Model = FinalizeBoundaryModel(Model,CalDec,CalLabel,CalibratorCandidates,Options);
+        Model = FinalizeBoundaryModel(Model,CalDec,CalLabel,Options);
         return;
     end
 
@@ -46,7 +45,7 @@ function Model = TrainBoundaryMLP(X,Y,Hidden,Epoch,LR,PrevModel,CalDec,CalLabel,
     Model.Members = Members;
     Model.EnsembleSize = EnsembleSize;
     Model.DisagreementWeight = max(GetOption(Options,'DisagreementWeight',1),0);
-    Model = FinalizeBoundaryModel(Model,CalDec,CalLabel,CalibratorCandidates,Options);
+    Model = FinalizeBoundaryModel(Model,CalDec,CalLabel,Options);
 end
 
 function Model = TrainSingleBoundaryModel(X,Y,Hidden,Epoch,LR,PrevModel,CalDec,CalLabel,Options)
@@ -69,7 +68,6 @@ function Model = TrainSingleBoundaryModel(X,Y,Hidden,Epoch,LR,PrevModel,CalDec,C
     PairMargin = max(0,GetOption(Options,'PairMargin',0.05));
     LambdaPair = max(0,GetOption(Options,'LambdaPair',1));
     LambdaMid  = max(0,GetOption(Options,'LambdaMid',1));
-    LambdaBrier = max(0,GetOption(Options,'LambdaBrier',0.5));
 
     [~,D] = size(X);
     LambdaReg = 1e-4;
@@ -121,15 +119,6 @@ function Model = TrainSingleBoundaryModel(X,Y,Hidden,Epoch,LR,PrevModel,CalDec,C
         dW1 = Xn'*D1 + LambdaReg*W1;
         db1 = sum(D1,1);
 
-        if LambdaBrier > 0
-            DeltaBrier = Weight.*(2*(P-YTrain).*(P.*(1-P)))./NormWeight;
-            dW2 = dW2 + LambdaBrier*(H'*DeltaBrier);
-            db2 = db2 + LambdaBrier*sum(DeltaBrier);
-            D1B = (DeltaBrier*W2').*(1-H.^2);
-            dW1 = dW1 + LambdaBrier*(Xn'*D1B);
-            db1 = db1 + LambdaBrier*sum(D1B,1);
-        end
-
         if LambdaPair > 0 && ~isempty(PairFeasible) && ~isempty(PairInfeasible)
             [PairdW1,Pairdb1,PairdW2,Pairdb2] = ComputePairGradients( ...
                 PairFeasible,PairInfeasible,PairMargin,Mu,Sigma,W1,b1,W2,b2);
@@ -162,23 +151,16 @@ function Model = TrainSingleBoundaryModel(X,Y,Hidden,Epoch,LR,PrevModel,CalDec,C
     Model.W2             = W2;
     Model.b2             = b2;
     Model.DisagreementWeight = max(GetOption(Options,'DisagreementWeight',1),0);
-    Model.CalibratorType = 'raw';
-    Model.Temp           = 1;
-    Model.BetaA          = 1;
-    Model.BetaB          = -1;
-    Model.BetaC          = 0;
+    Model = InitializeCalibrationDefaults(Model,'raw');
 end
 
-function Model = FinalizeBoundaryModel(Model,CalDec,CalLabel,Candidates,Options)
+function Model = FinalizeBoundaryModel(Model,CalDec,CalLabel,Options)
     if isempty(Model)
         return;
     end
     Model.DisagreementWeight = max(GetOption(Options,'DisagreementWeight',1),0);
-    Model.Temp  = 1;
-    Model.BetaA = 1;
-    Model.BetaB = -1;
-    Model.BetaC = 0;
-    Model.CalibratorType = 'raw';
+    Candidates = ResolveRequestedCalibrators(Options);
+    Model = InitializeCalibrationDefaults(Model,Candidates{1});
     Model.CalibrationObjective = inf;
 
     if isempty(CalDec) || isempty(CalLabel)
@@ -189,55 +171,82 @@ function Model = FinalizeBoundaryModel(Model,CalDec,CalLabel,Candidates,Options)
         return;
     end
 
-    [RawProb,RawLogit] = PredictRawBoundaryModel(Model,CalDec);
-    [Type,Temp,A,B,C,Objective] = SelectCalibrator(RawProb,RawLogit,CalLabel,Candidates);
-    Model.CalibratorType = Type;
-    Model.Temp  = Temp;
-    Model.BetaA = A;
-    Model.BetaB = B;
-    Model.BetaC = C;
-    Model.CalibrationObjective = Objective;
+    [RawProb,~] = PredictRawBoundaryModel(Model,CalDec);
+    BestType = Candidates{1};
+    BestParams = [];
+    BestObjective = inf;
+    for i = 1 : numel(Candidates)
+        [Objective,Params] = EvaluateCalibratorObjective(Candidates{i},RawProb,CalLabel);
+        if Objective < BestObjective
+            BestType = Candidates{i};
+            BestParams = Params;
+            BestObjective = Objective;
+        end
+    end
+    Model = InitializeCalibrationDefaults(Model,BestType);
+    if strcmp(BestType,'beta') && ~isempty(BestParams)
+        Model.BetaA = BestParams(1);
+        Model.BetaB = BestParams(2);
+        Model.BetaC = BestParams(3);
+    end
+    Model.CalibrationObjective = BestObjective;
 end
 
-function [Type,Temp,A,B,C,Objective] = SelectCalibrator(RawProb,RawLogit,CalLabel,Candidates)
-    Type = 'raw';
-    Temp = 1;
-    A = 1;
-    B = -1;
-    C = 0;
-    Objective = inf;
-    if isempty(Candidates)
-        Candidates = {'raw'};
-    end
+function [A,B,C,Objective] = FitBetaCalibrator(RawProb,CalLabel)
+    [A,B,C] = FitBetaFromProb(RawProb,CalLabel);
+    Prob = ApplyBetaCalibration(RawProb,A,B,C);
+    Metric = SummarizeCalibrationProbabilities(Prob,CalLabel);
+    Objective = Metric.brier + Metric.ece + 2*Metric.nearGap;
+end
 
+function Model = InitializeCalibrationDefaults(Model,CalibratorType)
+    Model.Temp  = 1;
+    Model.BetaA = 1;
+    Model.BetaB = -1;
+    Model.BetaC = 0;
+    Model.CalibratorType = CalibratorType;
+end
+
+function Candidates = ResolveRequestedCalibrators(Options)
+    Candidates = GetOption(Options,'CalibratorCandidates',{'beta'});
+    if ischar(Candidates) || (isstring(Candidates) && isscalar(Candidates))
+        Candidates = {char(Candidates)};
+    end
+    if ~iscell(Candidates) || isempty(Candidates)
+        Candidates = {'beta'};
+        return;
+    end
+    Normalized = cell(1,0);
     for i = 1 : numel(Candidates)
-        Candidate = ResolveCalibratorType(Candidates{i});
-        TempNow = 1;
-        ANow = 1;
-        BNow = -1;
-        CNow = 0;
-        switch Candidate
-            case 'raw'
-                Prob = RawProb;
-            case 'temperature'
-                TempNow = FitTemperatureFromLogit(RawLogit,CalLabel);
-                Prob = 1./(1+exp(-RawLogit./TempNow));
-            case 'beta'
-                [ANow,BNow,CNow] = FitBetaFromProb(RawProb,CalLabel);
-                Prob = ApplyBetaCalibration(RawProb,ANow,BNow,CNow);
+        Name = lower(strtrim(char(Candidates{i})));
+        switch Name
+            case {'beta','raw'}
+                if ~any(strcmp(Normalized,Name))
+                    Normalized{end+1} = Name; %#ok<AGROW>
+                end
             otherwise
-                continue;
+                error('PRBCCMO:UnsupportedCalibrator', ...
+                    'Unsupported calibrator candidate ''%s''.',char(Candidates{i}));
         end
-        Metric = SummarizeCalibrationProbabilities(Prob,CalLabel);
-        Score = Metric.brier + Metric.ece + 2*Metric.nearGap;
-        if Score < Objective
-            Type = Candidate;
-            Temp = TempNow;
-            A = ANow;
-            B = BNow;
-            C = CNow;
-            Objective = Score;
-        end
+    end
+    if isempty(Normalized)
+        Normalized = {'beta'};
+    end
+    Candidates = Normalized;
+end
+
+function [Objective,Params] = EvaluateCalibratorObjective(CalibratorType,RawProb,CalLabel)
+    Params = [];
+    switch CalibratorType
+        case 'raw'
+            Metric = SummarizeCalibrationProbabilities(RawProb,CalLabel);
+            Objective = Metric.brier + Metric.ece + 2*Metric.nearGap;
+        case 'beta'
+            [A,B,C,Objective] = FitBetaCalibrator(RawProb,CalLabel);
+            Params = [A,B,C];
+        otherwise
+            error('PRBCCMO:UnsupportedCalibrator', ...
+                'Unsupported calibrator candidate ''%s''.',CalibratorType);
     end
 end
 
@@ -341,18 +350,6 @@ function [dW1,db1,dW2,db2] = BackwardBoundary(Xn,H,dZ,W2)
     D1  = (dZ*W2').*(1-H.^2);
     dW1 = Xn'*D1;
     db1 = sum(D1,1);
-end
-
-function Temp = FitTemperatureFromLogit(Z,CalLabel)
-    Theta = 0;
-    for iter = 1 : 60
-        TempNow = exp(Theta);
-        P = 1./(1+exp(-Z./TempNow));
-        GradT = mean((P-CalLabel).*(-Z./(TempNow^2)));
-        Theta = Theta - 0.05*(GradT*TempNow);
-        Theta = min(max(Theta,log(0.25)),log(8));
-    end
-    Temp = exp(Theta);
 end
 
 function [A,B,C] = FitBetaFromProb(RawProb,CalLabel)
@@ -522,60 +519,5 @@ function Dec = NormalizeDecisionMatrix(Dec,D)
     Dec = double(Dec);
     if isvector(Dec)
         Dec = reshape(Dec,1,[]);
-    end
-end
-
-function Candidates = ResolveCalibratorCandidates(Options)
-    if isstruct(Options) && isfield(Options,'CalibratorCandidates') && ~isempty(Options.CalibratorCandidates)
-        Source = Options.CalibratorCandidates;
-    elseif isstruct(Options) && isfield(Options,'Calibrator') && ~isempty(Options.Calibrator)
-        Source = Options.Calibrator;
-    else
-        Source = {'raw','beta'};
-    end
-
-    if ~iscell(Source)
-        Source = {Source};
-    end
-    Candidates = cell(1,0);
-    for i = 1 : numel(Source)
-        Type = ResolveCalibratorType(Source{i});
-        if isempty(Type)
-            continue;
-        end
-        if ~any(strcmp(Candidates,Type))
-            Candidates{end+1} = Type; %#ok<AGROW>
-        end
-    end
-    if isempty(Candidates)
-        Candidates = {'raw'};
-    end
-end
-
-function Type = ResolveCalibratorType(Type)
-    if isnumeric(Type)
-        switch round(Type)
-            case 1
-                Type = 'raw';
-            case 2
-                Type = 'temperature';
-            case 3
-                Type = 'beta';
-            otherwise
-                Type = 'temperature';
-        end
-        return;
-    end
-
-    Type = lower(char(Type));
-    switch Type
-        case {'raw','none'}
-            Type = 'raw';
-        case {'temperature','temp'}
-            Type = 'temperature';
-        case {'beta','sigmoid','platt'}
-            Type = 'beta';
-        otherwise
-            Type = '';
     end
 end

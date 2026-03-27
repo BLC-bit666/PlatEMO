@@ -1,4 +1,0 @@
-problem,run,passed,failure_reason,bufferSeparationPass,updateAuditComplete,candidateAuditComplete,seedAuditComplete,boundaryLineageComplete,archiveEventComplete,runLevelSummaryPass,updateAuditCount,updateAuditMismatchCount,candidateAuditMismatchCount,seedAuditMismatchCount,boundaryLineageMismatchCount,archiveEventMismatchCount,totalCandidateRows,totalSeedRows,totalLineageRows,totalArchiveEventRows,maxTrainCalOverlap,maxTrainTestOverlap,maxCalTestOverlap,boundaryStarted
-DASCMOP1_BC,1,1,,1,1,1,1,1,1,1,93,0,0,0,0,0,1399,617,617,10,0,0,0,1
-LIRCMOP1_BC,1,1,,1,1,1,1,1,1,1,100,0,0,0,0,0,0,0,0,0,0,0,0,0
-MW1_BC,1,1,,1,1,1,1,1,1,1,99,0,0,0,0,0,173,90,90,21,0,0,0,1

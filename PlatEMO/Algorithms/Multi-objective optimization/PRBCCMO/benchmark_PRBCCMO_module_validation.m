@@ -1,0 +1,835 @@
+function Results = benchmark_PRBCCMO_module_validation(varargin)
+% Module-wise validation benchmark for PRBCCMO-BoundaryCore on all BC problems.
+%
+% The script collects module-wise evidence aligned with idea.md and the
+% current BoundaryCore implementation:
+%   M1 = candidate-level mean |p_cal(x_s^*) - 0.5|
+%   M2 = selected seeds that either yield useful feasible gains or actual shrink
+%   M3 = feasible forward local success (plus downstream success as auxiliary)
+%   M4 = infeasible shrink success (plus tight/recovery auxiliaries)
+%   M5 = ECE_bd, Gap_bd
+%
+% Optional name-value pairs:
+%   'Runs'          : independent runs per problem, default 6
+%   'RunSeeds'      : explicit random seeds, default 1001:1000+Runs
+%   'Population'    : population size, default 100
+%   'MaxFE'         : max function evaluations, default 200000
+%   'ProblemNames'  : explicit BC problem list, default all 37 BC problems
+%   'UseParallel'   : enable parfor execution, default true
+%   'Workers'       : parallel worker count, default 6
+%   'Calibrator'    : {'beta','raw'}, default 'beta'
+%   'AlgorithmOverride': algorithm-parameter struct overlay, default struct()
+%   'RuntimeOverride': runtime-options struct overlay, default struct()
+%   'SavePrefix'    : output prefix without suffix, default
+%                     'benchmark_PRBCCMO_module_validation_37uc_r6'
+%   'SaveMat'       : whether to save Results MAT alongside CSV files, default true
+%   'Verbose'       : print serial run summaries, default true
+
+    Params = struct( ...
+        'Runs',6, ...
+        'RunSeeds',[], ...
+        'Population',100, ...
+        'MaxFE',200000, ...
+        'ProblemNames',{{}}, ...
+        'UseParallel',true, ...
+        'Workers',6, ...
+        'Calibrator','beta', ...
+        'AlgorithmOverride',struct(), ...
+        'RuntimeOverride',struct(), ...
+        'SavePrefix','benchmark_PRBCCMO_module_validation_37uc_r6', ...
+        'SaveMat',true, ...
+        'Verbose',true);
+    Params = ParseInputs(Params,varargin{:});
+    Params.ProblemNames = NormalizeProblemNames(Params.ProblemNames);
+    Params.RunSeeds = NormalizeRunSeeds(Params.RunSeeds,Params.Runs);
+    Params.Workers = ResolveParallelWorkers(Params.Workers, ...
+        numel(Params.ProblemNames)*numel(Params.RunSeeds));
+    ProblemMeta = BuildProblemMeta(Params.ProblemNames);
+    Tasks = BuildTasks(Params.ProblemNames,Params.RunSeeds);
+
+    CandidateRowsCell = cell(numel(Tasks),1);
+    SeedRowsCell = cell(numel(Tasks),1);
+    UpdateRowsCell = cell(numel(Tasks),1);
+    RunRowsCell = cell(numel(Tasks),1);
+
+    if logical(Params.UseParallel) && numel(Tasks) > 1
+        ConfigureParallelPool(Params.Workers);
+        parfor t = 1 : numel(Tasks)
+            [CandidateRowsCell{t},SeedRowsCell{t},UpdateRowsCell{t},RunRowsCell{t}] = ...
+                RunModuleValidationTask(Tasks(t),Params);
+        end
+    else
+        for t = 1 : numel(Tasks)
+            [CandidateRowsCell{t},SeedRowsCell{t},UpdateRowsCell{t},RunRowsCell{t}] = ...
+                RunModuleValidationTask(Tasks(t),Params);
+            if logical(Params.Verbose)
+                PrintRunSummary(RunRowsCell{t});
+            end
+        end
+    end
+
+    CandidateRows = MergeStructCells(CandidateRowsCell,InitCandidateRow());
+    SeedRows = MergeStructCells(SeedRowsCell,InitSeedRow());
+    UpdateRows = MergeStructCells(UpdateRowsCell,InitUpdateRow());
+    RunRows = MergeStructCells(RunRowsCell,InitRunRow());
+    ProblemSummary = SummarizeProblems(RunRows);
+    FamilySummary = SummarizeFamilies(RunRows);
+    PooledSummary = SummarizePooled(RunRows);
+
+    Results = struct();
+    Results.params = Params;
+    Results.problemMeta = ProblemMeta;
+    Results.candidateRows = CandidateRows;
+    Results.seedRows = SeedRows;
+    Results.updateRows = UpdateRows;
+    Results.runSummary = RunRows;
+    Results.problemSummary = ProblemSummary;
+    Results.familySummary = FamilySummary;
+    Results.pooledSummary = PooledSummary;
+
+    WriteOutputs(Results,Params.SavePrefix,Params.SaveMat);
+end
+
+function Params = ParseInputs(Params,varargin)
+    if mod(numel(varargin),2) ~= 0
+        error('benchmark_PRBCCMO_module_validation:InvalidInput', ...
+            'Inputs must be name-value pairs.');
+    end
+    for i = 1 : 2 : numel(varargin)
+        Name = varargin{i};
+        if ~(ischar(Name) || (isstring(Name) && isscalar(Name)))
+            error('benchmark_PRBCCMO_module_validation:InvalidInputName', ...
+                'Input names must be character vectors or scalar strings.');
+        end
+        Name = char(Name);
+        if ~isfield(Params,Name)
+            error('benchmark_PRBCCMO_module_validation:UnknownOption', ...
+                'Unknown option ''%s''.',Name);
+        end
+        Params.(Name) = varargin{i+1};
+    end
+end
+
+function ProblemNames = NormalizeProblemNames(ProblemNames)
+    if isempty(ProblemNames)
+        ProblemNames = ResolveAllBCProblems();
+        return;
+    end
+    if ischar(ProblemNames) || (isstring(ProblemNames) && isscalar(ProblemNames))
+        ProblemNames = {char(ProblemNames)};
+    end
+    ProblemNames = cellfun(@char,ProblemNames(:)','UniformOutput',false);
+end
+
+function ProblemNames = ResolveAllBCProblems()
+    ProblemNames = [ ...
+        arrayfun(@(i)sprintf('DASCMOP%d_BC',i),1:9,'UniformOutput',false), ...
+        arrayfun(@(i)sprintf('LIRCMOP%d_BC',i),1:14,'UniformOutput',false), ...
+        arrayfun(@(i)sprintf('MW%d_BC',i),1:14,'UniformOutput',false)];
+end
+
+function RunSeeds = NormalizeRunSeeds(RunSeeds,Runs)
+    if isempty(RunSeeds)
+        RunSeeds = 1000 + (1:Runs);
+        return;
+    end
+    RunSeeds = round(double(RunSeeds(:)'));
+    RunSeeds = RunSeeds(isfinite(RunSeeds));
+    if isempty(RunSeeds)
+        error('benchmark_PRBCCMO_module_validation:InvalidRunSeeds', ...
+            'RunSeeds must contain at least one finite integer.');
+    end
+end
+
+function Meta = BuildProblemMeta(ProblemNames)
+    Meta = repmat(struct('problem','','family',''),numel(ProblemNames),1);
+    for i = 1 : numel(ProblemNames)
+        Meta(i).problem = ProblemNames{i};
+        Meta(i).family = ResolveProblemFamily(ProblemNames{i});
+    end
+end
+
+function Family = ResolveProblemFamily(ProblemName)
+    if startsWith(ProblemName,'DASCMOP')
+        Family = 'DASCMOP_BC';
+    elseif startsWith(ProblemName,'LIRCMOP')
+        Family = 'LIRCMOP_BC';
+    elseif startsWith(ProblemName,'MW')
+        Family = 'MW_BC';
+    else
+        Family = 'UNKNOWN_BC';
+    end
+end
+
+function Tasks = BuildTasks(ProblemNames,RunSeeds)
+    Template = struct('problem','','family','','run',0,'seed',0);
+    Tasks = repmat(Template,numel(ProblemNames)*numel(RunSeeds),1);
+    Row = 0;
+    for p = 1 : numel(ProblemNames)
+        Family = ResolveProblemFamily(ProblemNames{p});
+        for r = 1 : numel(RunSeeds)
+            Row = Row + 1;
+            Tasks(Row).problem = ProblemNames{p};
+            Tasks(Row).family = Family;
+            Tasks(Row).run = r;
+            Tasks(Row).seed = RunSeeds(r);
+        end
+    end
+end
+
+function Workers = ResolveParallelWorkers(RequestedWorkers,TaskCount)
+    if nargin < 1 || isempty(RequestedWorkers)
+        RequestedWorkers = 0;
+    end
+    if nargin < 2 || isempty(TaskCount)
+        TaskCount = inf;
+    end
+    if RequestedWorkers > 0
+        Workers = min(max(1,round(RequestedWorkers)),TaskCount);
+        return;
+    end
+    CoreCount = feature('numcores');
+    Workers = min([max(1,CoreCount-2),6,TaskCount]);
+end
+
+function ConfigureParallelPool(Workers)
+    Pool = gcp('nocreate');
+    if isempty(Pool)
+        parpool('local',Workers);
+    elseif Pool.NumWorkers ~= Workers
+        delete(Pool);
+        parpool('local',Workers);
+    end
+end
+
+function [CandidateRows,SeedRows,UpdateRows,RunRow] = RunModuleValidationTask(Task,Params)
+    rng(Task.seed,'twister');
+    Problem = feval(Task.problem,'N',Params.Population,'maxFE',Params.MaxFE);
+    Algorithm = PRBCCMO('parameter',BuildAlgorithmParameters(Params), ...
+        'save',0,'outputFcn',@NoOutput);
+    Algorithm.Solve(Problem);
+
+    Metric = Algorithm.metric;
+    SectionB = FieldOrDefault(Metric,'sectionB',struct());
+    CandidateAudit = FieldOrDefault(SectionB,'candidateAudit',repmat(InitBoundaryCandidateAuditLocal(),0,1));
+    SeedAudit = FieldOrDefault(SectionB,'seedAudit',repmat(InitBoundarySeedAuditLocal(),0,1));
+    UpdateAudit = FieldOrDefault(SectionB,'updateAudit',repmat(InitBoundaryUpdateAuditLocal(),0,1));
+
+    CandidateRows = ConvertCandidateAuditToRows(CandidateAudit,Task);
+    SeedRows = ConvertSeedAuditToRows(SeedAudit,Task,Params);
+    UpdateRows = ConvertUpdateAuditToRows(UpdateAudit,Task);
+    RunRow = SummarizeSingleRun(CandidateRows,SeedRows,UpdateRows,Metric,Task);
+end
+
+function ParamStruct = BuildAlgorithmParameters(Params)
+    ParamStruct = struct();
+    if isstruct(Params.AlgorithmOverride) && ~isempty(fieldnames(Params.AlgorithmOverride))
+        ParamStruct = Params.AlgorithmOverride;
+    end
+    ParamStruct.calibratorCandidates = ResolveCalibratorCandidates(Params.Calibrator);
+    BaseRuntime = struct('TraceFlag',true);
+    ExistingRuntime = FieldOrDefault(ParamStruct,'runtimeOptions',struct());
+    ParamStruct.runtimeOptions = BuildBoundaryRuntimeOptions( ...
+        BaseRuntime,ExistingRuntime,Params.RuntimeOverride);
+end
+
+function Candidates = ResolveCalibratorCandidates(CalibratorName)
+    switch lower(strtrim(char(CalibratorName)))
+        case 'beta'
+            Candidates = {'beta'};
+        case 'raw'
+            Candidates = {'raw'};
+        otherwise
+            error('benchmark_PRBCCMO_module_validation:UnsupportedCalibrator', ...
+                'Unsupported calibrator ''%s''.',char(CalibratorName));
+    end
+end
+
+function Rows = ConvertCandidateAuditToRows(CandidateAudit,Task)
+    Template = InitCandidateRow();
+    if isempty(CandidateAudit)
+        Rows = repmat(Template,0,1);
+        return;
+    end
+    Rows = repmat(Template,numel(CandidateAudit),1);
+    for i = 1 : numel(CandidateAudit)
+        Entry = CandidateAudit(i);
+        Rows(i).problem = Task.problem;
+        Rows(i).family = Task.family;
+        Rows(i).run = Task.run;
+        Rows(i).seed = Task.seed;
+        Rows(i).candidateIndex = i;
+        Rows(i).generation = FieldOrDefault(Entry,'generation',NaN);
+        Rows(i).FE = FieldOrDefault(Entry,'FE',NaN);
+        Rows(i).source = FieldOrDefault(Entry,'source',NaN);
+        Rows(i).selectionMode = FieldOrDefault(Entry,'selectionMode',NaN);
+        Rows(i).sector = FieldOrDefault(Entry,'sector',NaN);
+        Rows(i).eligible = logical(FieldOrDefault(Entry,'eligible',false));
+        Rows(i).selected = logical(FieldOrDefault(Entry,'selected',false));
+        Rows(i).prob = FieldOrDefault(Entry,'prob',NaN);
+        Rows(i).absProbHalf = abs(Rows(i).prob - 0.5);
+        Rows(i).queryScore = FieldOrDefault(Entry,'queryScore',NaN);
+        Rows(i).disagreement = FieldOrDefault(Entry,'disagreement',NaN);
+        Rows(i).reliability = FieldOrDefault(Entry,'reliability',NaN);
+        Rows(i).paretoValue = FieldOrDefault(Entry,'paretoValue',NaN);
+        Rows(i).boundaryTrust = FieldOrDefault(Entry,'boundaryTrust',NaN);
+        Rows(i).trustWeight = FieldOrDefault(Entry,'trustWeight',NaN);
+        Rows(i).utility = FieldOrDefault(Entry,'utility',NaN);
+        Rows(i).shortlisted = logical(FieldOrDefault(Entry,'fullV2Shortlisted',false));
+    end
+end
+
+function Rows = ConvertSeedAuditToRows(SeedAudit,Task,~)
+    Template = InitSeedRow();
+    if isempty(SeedAudit)
+        Rows = repmat(Template,0,1);
+        return;
+    end
+    Rows = repmat(Template,numel(SeedAudit),1);
+    for i = 1 : numel(SeedAudit)
+        Entry = SeedAudit(i);
+        Rows(i).problem = Task.problem;
+        Rows(i).family = Task.family;
+        Rows(i).run = Task.run;
+        Rows(i).seed = Task.seed;
+        Rows(i).seedIndex = i;
+        Rows(i).generation = FieldOrDefault(Entry,'generation',NaN);
+        Rows(i).FE = FieldOrDefault(Entry,'FE',NaN);
+        Rows(i).source = FieldOrDefault(Entry,'source',NaN);
+        Rows(i).seedFeasible = logical(FieldOrDefault(Entry,'seedFeasible',false));
+        Rows(i).prob = FieldOrDefault(Entry,'prob',NaN);
+        Rows(i).absProbHalf = abs(Rows(i).prob - 0.5);
+        Rows(i).queryScore = FieldOrDefault(Entry,'queryScore',NaN);
+        Rows(i).disagreement = FieldOrDefault(Entry,'disagreement',NaN);
+        Rows(i).paretoValue = FieldOrDefault(Entry,'paretoValue',NaN);
+        Rows(i).reliability = FieldOrDefault(Entry,'reliability',NaN);
+        Rows(i).boundaryTrust = FieldOrDefault(Entry,'boundaryTrust',NaN);
+        Rows(i).utility = FieldOrDefault(Entry,'utility',NaN);
+        Rows(i).localEvalCount = FieldOrDefault(Entry,'localEvalCount',0);
+        Rows(i).feasibleForwardSuccess = logical(FieldOrDefault(Entry,'feasibleForwardSuccess',false));
+        Rows(i).ubySuccess = logical(FieldOrDefault(Entry,'ubySuccess',false));
+        Rows(i).frrSuccess = logical(FieldOrDefault(Entry,'frrSuccess',false));
+        Rows(i).initialBracketGap = FieldOrDefault(Entry,'initialBracketGap',NaN);
+        Rows(i).bracketGap = FieldOrDefault(Entry,'bracketGap',NaN);
+        Rows(i).shrinkSuccess = logical(FieldOrDefault(Entry,'shrinkSuccess',false));
+        Rows(i).tightSuccess = logical(FieldOrDefault(Entry,'tightSuccess',false));
+        Rows(i).hardNegativeConfirmed = logical(FieldOrDefault(Entry,'hardNegativeConfirmed',false));
+        Rows(i).tightenBracket = ~Rows(i).seedFeasible && Rows(i).shrinkSuccess;
+        Rows(i).tightBracket = ~Rows(i).seedFeasible && Rows(i).tightSuccess;
+        Rows(i).m2Success = Rows(i).ubySuccess || Rows(i).shrinkSuccess;
+        Rows(i).m3Success = Rows(i).seedFeasible && Rows(i).feasibleForwardSuccess;
+        Rows(i).m3Downstream = Rows(i).seedFeasible && Rows(i).ubySuccess;
+        Rows(i).m4Success = ~Rows(i).seedFeasible && Rows(i).shrinkSuccess;
+        Rows(i).m4Tight = ~Rows(i).seedFeasible && Rows(i).tightSuccess;
+        Rows(i).m4Recover = ~Rows(i).seedFeasible && Rows(i).frrSuccess;
+    end
+end
+
+function Rows = ConvertUpdateAuditToRows(UpdateAudit,Task)
+    Template = InitUpdateRow();
+    if isempty(UpdateAudit)
+        Rows = repmat(Template,0,1);
+        return;
+    end
+    Rows = repmat(Template,numel(UpdateAudit),1);
+    for i = 1 : numel(UpdateAudit)
+        Entry = UpdateAudit(i);
+        Rows(i).problem = Task.problem;
+        Rows(i).family = Task.family;
+        Rows(i).run = Task.run;
+        Rows(i).seed = Task.seed;
+        Rows(i).updateIndex = i;
+        Rows(i).generation = FieldOrDefault(Entry,'generation',NaN);
+        Rows(i).FE = FieldOrDefault(Entry,'FE',NaN);
+        Rows(i).reason = FieldOrDefault(Entry,'reason','');
+        Rows(i).calibrator = FieldOrDefault(Entry,'calibrator','raw');
+        Rows(i).valid = logical(FieldOrDefault(Entry,'valid',false));
+        Rows(i).auditReady = logical(FieldOrDefault(Entry,'audit_ready',false));
+        Rows(i).auditPhase = FieldOrDefault(Entry,'audit_phase','not_yet_auditable');
+        Rows(i).boundaryCount = FieldOrDefault(Entry,'count',0);
+        Rows(i).eceBd = NormalizeFiniteMetric(FieldOrDefault(Entry,'ece',NaN));
+        Rows(i).gapBd = NormalizeFiniteMetric(FieldOrDefault(Entry,'core_near_gap', ...
+            FieldOrDefault(Entry,'near_gap',NaN)));
+        Rows(i).trainCount = FieldOrDefault(Entry,'train_count',0);
+        Rows(i).calCount = FieldOrDefault(Entry,'cal_count',0);
+        Rows(i).testCount = FieldOrDefault(Entry,'test_count',0);
+        Rows(i).strictSeparation = logical(FieldOrDefault(Entry,'strict_separation',false));
+        Rows(i).trainCalOverlap = FieldOrDefault(Entry,'train_cal_overlap',0);
+        Rows(i).trainTestOverlap = FieldOrDefault(Entry,'train_test_overlap',0);
+        Rows(i).calTestOverlap = FieldOrDefault(Entry,'cal_test_overlap',0);
+    end
+end
+
+function Row = SummarizeSingleRun(CandidateRows,SeedRows,UpdateRows,Metric,Task)
+    Row = InitRunRow();
+    Row.problem = Task.problem;
+    Row.family = Task.family;
+    Row.run = Task.run;
+    Row.seed = Task.seed;
+    Row.candidateCount = numel(CandidateRows);
+    Row.eligibleCandidateCount = sum(logical(ExtractStructField(CandidateRows,'eligible')));
+    Row.shortlistedCandidateCount = sum(logical(ExtractStructField(CandidateRows,'shortlisted')));
+    Row.selectedCandidateCount = sum(logical(ExtractStructField(CandidateRows,'selected')));
+    Row.selectedSeedCount = numel(SeedRows);
+    SeedFeasible = logical(ExtractStructField(SeedRows,'seedFeasible'));
+    Row.feasibleSeedCount = sum(SeedFeasible);
+    Row.infeasibleSeedCount = sum(~SeedFeasible);
+    Row.selectedUpdateCount = CountUniqueFinite(ExtractStructField(SeedRows,'FE'));
+    Row.M1 = MeanOrNaN(ExtractStructField(CandidateRows,'absProbHalf'));
+    Row.M1_eligible = MeanOrNaN(ExtractStructField(CandidateRows(logical(ExtractStructField(CandidateRows,'eligible'))),'absProbHalf'));
+    Row.M1_selected = MeanOrNaN(ExtractStructField(SeedRows,'absProbHalf'));
+    Row.M2 = MeanOrNaN(ExtractStructField(SeedRows,'m2Success'));
+    Row.M3 = MeanOrNaN(ExtractStructField(SeedRows(SeedFeasible),'m3Success'));
+    Row.M3_downstream = MeanOrNaN(ExtractStructField(SeedRows(SeedFeasible),'m3Downstream'));
+    Row.M4 = MeanOrNaN(ExtractStructField(SeedRows(~SeedFeasible),'m4Success'));
+    Row.M4_tight = MeanOrNaN(ExtractStructField(SeedRows(~SeedFeasible),'m4Tight'));
+    Row.M4_recover = MeanOrNaN(ExtractStructField(SeedRows(~SeedFeasible),'m4Recover'));
+    Row.updateCount = numel(UpdateRows);
+    ValidMask = logical(ExtractStructField(UpdateRows,'valid'));
+    AuditReadyMask = logical(ExtractStructField(UpdateRows,'auditReady'));
+    Row.validUpdateCount = sum(ValidMask);
+    Row.auditReadyUpdateCount = sum(AuditReadyMask);
+    AuditMask = ValidMask & AuditReadyMask;
+    Row.meanUpdateEceBd = MeanOrNaN(ExtractStructField(UpdateRows(AuditMask),'eceBd'));
+    Row.meanUpdateGapBd = MeanOrNaN(ExtractStructField(UpdateRows(AuditMask),'gapBd'));
+
+    BoundaryCal = FieldOrDefault(Metric,'boundaryCalibration',struct());
+    Row.M5_boundaryEce = NormalizeFiniteMetric(FieldOrDefault(BoundaryCal,'boundaryEce', ...
+        FieldOrDefault(BoundaryCal,'ece',NaN)));
+    Row.M5_boundaryGap = NormalizeFiniteMetric(FieldOrDefault(BoundaryCal,'boundaryGap', ...
+        FieldOrDefault(BoundaryCal,'coreNearGap',FieldOrDefault(BoundaryCal,'nearGap',NaN))));
+    Row.M5_valid = logical(FieldOrDefault(BoundaryCal,'valid',false));
+    Row.M5_auditReady = logical(FieldOrDefault(BoundaryCal,'auditReady',false));
+    Row.M5_boundaryCount = FieldOrDefault(BoundaryCal,'boundaryCount',0);
+    Row.finalTrustGate = logical(FieldOrDefault(BoundaryCal,'trustGate',false));
+    Row.finalTrustAuditPass = logical(FieldOrDefault(BoundaryCal,'trustAuditPass',false));
+    Row.finalTrustWeight = FieldOrDefault(BoundaryCal,'trustWeight',NaN);
+    Row.finalCalibrator = FieldOrDefault(BoundaryCal,'calibrator','raw');
+
+    if ~Row.M5_valid
+        Row.M5_boundaryEce = NaN;
+        Row.M5_boundaryGap = NaN;
+    end
+end
+
+function Rows = SummarizeProblems(RunRows)
+    Template = InitSummaryRow();
+    if isempty(RunRows)
+        Rows = repmat(Template,0,1);
+        return;
+    end
+    Problems = unique({RunRows.problem},'stable');
+    Rows = repmat(Template,numel(Problems),1);
+    for i = 1 : numel(Problems)
+        Mask = strcmp({RunRows.problem},Problems{i});
+        Rows(i) = BuildSummaryRow(RunRows(Mask),'problem',Problems{i});
+    end
+end
+
+function Rows = SummarizeFamilies(RunRows)
+    Template = InitSummaryRow();
+    if isempty(RunRows)
+        Rows = repmat(Template,0,1);
+        return;
+    end
+    Families = unique({RunRows.family},'stable');
+    Rows = repmat(Template,numel(Families),1);
+    for i = 1 : numel(Families)
+        Mask = strcmp({RunRows.family},Families{i});
+        Rows(i) = BuildSummaryRow(RunRows(Mask),'family',Families{i});
+    end
+end
+
+function Rows = SummarizePooled(RunRows)
+    Template = InitSummaryRow();
+    if isempty(RunRows)
+        Rows = repmat(Template,0,1);
+        return;
+    end
+    Rows = BuildSummaryRow(RunRows,'pooled','ALL_37_BC');
+end
+
+function Row = BuildSummaryRow(RunRows,Scope,Name)
+    Row = InitSummaryRow();
+    Row.scope = Scope;
+    Row.name = Name;
+    Row.family = ResolveSummaryFamily(RunRows,Scope);
+    Row.problemCount = numel(unique({RunRows.problem}));
+    Row.runCount = numel(RunRows);
+    Row.candidateCount_mean = MeanOrNaN([RunRows.candidateCount]);
+    Row.candidateCount_median = MedianOrNaN([RunRows.candidateCount]);
+    Row.selectedSeedCount_mean = MeanOrNaN([RunRows.selectedSeedCount]);
+    Row.selectedSeedCount_median = MedianOrNaN([RunRows.selectedSeedCount]);
+    Row.M1_mean = MeanOrNaN([RunRows.M1]);
+    Row.M1_median = MedianOrNaN([RunRows.M1]);
+    Row.M1_eligible_mean = MeanOrNaN([RunRows.M1_eligible]);
+    Row.M1_selected_mean = MeanOrNaN([RunRows.M1_selected]);
+    Row.M2_mean = MeanOrNaN([RunRows.M2]);
+    Row.M2_median = MedianOrNaN([RunRows.M2]);
+    Row.M3_mean = MeanOrNaN([RunRows.M3]);
+    Row.M3_median = MedianOrNaN([RunRows.M3]);
+    Row.M3_downstream_mean = MeanOrNaN([RunRows.M3_downstream]);
+    Row.M4_mean = MeanOrNaN([RunRows.M4]);
+    Row.M4_median = MedianOrNaN([RunRows.M4]);
+    Row.M4_tight_mean = MeanOrNaN([RunRows.M4_tight]);
+    Row.M4_recover_mean = MeanOrNaN([RunRows.M4_recover]);
+    Row.M5_boundaryEce_mean = MeanOrNaN([RunRows.M5_boundaryEce]);
+    Row.M5_boundaryEce_median = MedianOrNaN([RunRows.M5_boundaryEce]);
+    Row.M5_boundaryGap_mean = MeanOrNaN([RunRows.M5_boundaryGap]);
+    Row.M5_boundaryGap_median = MedianOrNaN([RunRows.M5_boundaryGap]);
+    Row.M5_validRunCount = sum([RunRows.M5_valid]);
+    Row.auditReadyRunCount = sum([RunRows.M5_auditReady]);
+    Row.validUpdateCount_mean = MeanOrNaN([RunRows.validUpdateCount]);
+    Row.auditReadyUpdateCount_mean = MeanOrNaN([RunRows.auditReadyUpdateCount]);
+end
+
+function Family = ResolveSummaryFamily(RunRows,Scope)
+    if strcmp(Scope,'problem') && ~isempty(RunRows)
+        Family = RunRows(1).family;
+    elseif strcmp(Scope,'family') && ~isempty(RunRows)
+        Family = RunRows(1).family;
+    else
+        Family = 'ALL_BC';
+    end
+end
+
+function WriteOutputs(Results,SavePrefix,SaveMat)
+    if nargin < 2 || isempty(SavePrefix)
+        return;
+    end
+    if nargin < 3 || isempty(SaveMat)
+        SaveMat = true;
+    end
+    EnsureOutputDirectory(SavePrefix);
+    if logical(SaveMat)
+        save([SavePrefix,'.mat'],'Results','-v7.3');
+    end
+    writetable(struct2table(Results.candidateRows,'AsArray',true),[SavePrefix,'_candidate_rows.csv']);
+    writetable(struct2table(Results.seedRows,'AsArray',true),[SavePrefix,'_seed_rows.csv']);
+    writetable(struct2table(Results.updateRows,'AsArray',true),[SavePrefix,'_update_rows.csv']);
+    writetable(struct2table(Results.runSummary,'AsArray',true),[SavePrefix,'_run_summary.csv']);
+    writetable(struct2table(Results.problemSummary,'AsArray',true),[SavePrefix,'_problem_summary.csv']);
+    writetable(struct2table(Results.familySummary,'AsArray',true),[SavePrefix,'_family_summary.csv']);
+    writetable(struct2table(Results.pooledSummary,'AsArray',true),[SavePrefix,'_pooled_summary.csv']);
+end
+
+function EnsureOutputDirectory(SavePrefix)
+    OutDir = fileparts(SavePrefix);
+    if isempty(OutDir) || exist(OutDir,'dir') == 7
+        return;
+    end
+    mkdir(OutDir);
+end
+
+function PrintRunSummary(RunRows)
+    if isempty(RunRows)
+        return;
+    end
+    Row = RunRows(1);
+    fprintf(['[ModuleValidation] %s run=%d seed=%d | cand=%d seeds=%d | ' ...
+        'M1=%.4f M2=%.4f M3(local/down)=%.4f/%.4f M4(shrink/tight)=%.4f/%.4f | ' ...
+        'M5(ECE,Gap)=(%.4f, %.4f) valid=%d\n'], ...
+        Row.problem,Row.run,Row.seed,Row.candidateCount,Row.selectedSeedCount, ...
+        Row.M1,Row.M2,Row.M3,Row.M3_downstream,Row.M4,Row.M4_tight, ...
+        Row.M5_boundaryEce,Row.M5_boundaryGap,Row.M5_valid);
+end
+
+function Value = MeanOrNaN(Data)
+    if isempty(Data)
+        Value = NaN;
+        return;
+    end
+    Value = mean(double(Data(:)),'omitnan');
+    if isempty(Value) || ~isfinite(Value)
+        Value = NaN;
+    end
+end
+
+function Value = MedianOrNaN(Data)
+    if isempty(Data)
+        Value = NaN;
+        return;
+    end
+    Value = median(double(Data(:)),'omitnan');
+    if isempty(Value) || ~isfinite(Value)
+        Value = NaN;
+    end
+end
+
+function Value = NormalizeFiniteMetric(Value)
+    if isempty(Value) || ~isfinite(Value)
+        Value = NaN;
+    end
+end
+
+function Values = ExtractStructField(Rows,Field)
+    if isempty(Rows)
+        Values = [];
+        return;
+    end
+    Values = [Rows.(Field)];
+end
+
+function Count = CountUniqueFinite(Values)
+    Values = double(Values(:));
+    Values = Values(isfinite(Values));
+    Count = numel(unique(Values));
+end
+
+function Rows = MergeStructCells(CellRows,Template)
+    if nargin < 2
+        Template = struct();
+    end
+    Valid = ~cellfun(@isempty,CellRows);
+    if ~any(Valid)
+        Rows = repmat(Template,0,1);
+        return;
+    end
+    CellRows = CellRows(Valid);
+    Rows = vertcat(CellRows{:});
+end
+
+function Value = FieldOrDefault(Data,Field,Default)
+    Value = Default;
+    if isstruct(Data) && isfield(Data,Field) && ~isempty(Data.(Field))
+        Value = Data.(Field);
+    end
+end
+
+function Row = InitCandidateRow()
+    Row = struct( ...
+        'problem','', ...
+        'family','', ...
+        'run',0, ...
+        'seed',0, ...
+        'candidateIndex',0, ...
+        'generation',NaN, ...
+        'FE',NaN, ...
+        'source',NaN, ...
+        'selectionMode',NaN, ...
+        'sector',NaN, ...
+        'eligible',false, ...
+        'selected',false, ...
+        'prob',NaN, ...
+        'absProbHalf',NaN, ...
+        'queryScore',NaN, ...
+        'disagreement',NaN, ...
+        'reliability',NaN, ...
+        'paretoValue',NaN, ...
+        'boundaryTrust',NaN, ...
+        'trustWeight',NaN, ...
+        'utility',NaN, ...
+        'shortlisted',false);
+end
+
+function Row = InitSeedRow()
+    Row = struct( ...
+        'problem','', ...
+        'family','', ...
+        'run',0, ...
+        'seed',0, ...
+        'seedIndex',0, ...
+        'generation',NaN, ...
+        'FE',NaN, ...
+        'source',NaN, ...
+        'seedFeasible',false, ...
+        'prob',NaN, ...
+        'absProbHalf',NaN, ...
+        'queryScore',NaN, ...
+        'disagreement',NaN, ...
+        'paretoValue',NaN, ...
+        'reliability',NaN, ...
+        'boundaryTrust',NaN, ...
+        'utility',NaN, ...
+        'localEvalCount',0, ...
+        'feasibleForwardSuccess',false, ...
+        'ubySuccess',false, ...
+        'frrSuccess',false, ...
+        'initialBracketGap',NaN, ...
+        'bracketGap',NaN, ...
+        'shrinkSuccess',false, ...
+        'tightSuccess',false, ...
+        'hardNegativeConfirmed',false, ...
+        'tightenBracket',false, ...
+        'tightBracket',false, ...
+        'm2Success',false, ...
+        'm3Success',false, ...
+        'm3Downstream',false, ...
+        'm4Success',false, ...
+        'm4Tight',false, ...
+        'm4Recover',false);
+end
+
+function Row = InitUpdateRow()
+    Row = struct( ...
+        'problem','', ...
+        'family','', ...
+        'run',0, ...
+        'seed',0, ...
+        'updateIndex',0, ...
+        'generation',NaN, ...
+        'FE',NaN, ...
+        'reason','', ...
+        'calibrator','raw', ...
+        'valid',false, ...
+        'auditReady',false, ...
+        'auditPhase','not_yet_auditable', ...
+        'boundaryCount',0, ...
+        'eceBd',NaN, ...
+        'gapBd',NaN, ...
+        'trainCount',0, ...
+        'calCount',0, ...
+        'testCount',0, ...
+        'strictSeparation',false, ...
+        'trainCalOverlap',0, ...
+        'trainTestOverlap',0, ...
+        'calTestOverlap',0);
+end
+
+function Row = InitRunRow()
+    Row = struct( ...
+        'problem','', ...
+        'family','', ...
+        'run',0, ...
+        'seed',0, ...
+        'candidateCount',0, ...
+        'eligibleCandidateCount',0, ...
+        'shortlistedCandidateCount',0, ...
+        'selectedCandidateCount',0, ...
+        'selectedSeedCount',0, ...
+        'feasibleSeedCount',0, ...
+        'infeasibleSeedCount',0, ...
+        'selectedUpdateCount',0, ...
+        'M1',NaN, ...
+        'M1_eligible',NaN, ...
+        'M1_selected',NaN, ...
+        'M2',NaN, ...
+        'M3',NaN, ...
+        'M4',NaN, ...
+        'M3_downstream',NaN, ...
+        'M4_tight',NaN, ...
+        'M4_recover',NaN, ...
+        'M5_boundaryEce',NaN, ...
+        'M5_boundaryGap',NaN, ...
+        'M5_valid',false, ...
+        'M5_auditReady',false, ...
+        'M5_boundaryCount',0, ...
+        'updateCount',0, ...
+        'validUpdateCount',0, ...
+        'auditReadyUpdateCount',0, ...
+        'meanUpdateEceBd',NaN, ...
+        'meanUpdateGapBd',NaN, ...
+        'finalTrustGate',false, ...
+        'finalTrustAuditPass',false, ...
+        'finalTrustWeight',NaN, ...
+        'finalCalibrator','raw');
+end
+
+function Row = InitSummaryRow()
+    Row = struct( ...
+        'scope','', ...
+        'name','', ...
+        'family','', ...
+        'problemCount',0, ...
+        'runCount',0, ...
+        'candidateCount_mean',NaN, ...
+        'candidateCount_median',NaN, ...
+        'selectedSeedCount_mean',NaN, ...
+        'selectedSeedCount_median',NaN, ...
+        'M1_mean',NaN, ...
+        'M1_median',NaN, ...
+        'M1_eligible_mean',NaN, ...
+        'M1_selected_mean',NaN, ...
+        'M2_mean',NaN, ...
+        'M2_median',NaN, ...
+        'M3_mean',NaN, ...
+        'M3_median',NaN, ...
+        'M3_downstream_mean',NaN, ...
+        'M4_mean',NaN, ...
+        'M4_median',NaN, ...
+        'M4_tight_mean',NaN, ...
+        'M4_recover_mean',NaN, ...
+        'M5_boundaryEce_mean',NaN, ...
+        'M5_boundaryEce_median',NaN, ...
+        'M5_boundaryGap_mean',NaN, ...
+        'M5_boundaryGap_median',NaN, ...
+        'M5_validRunCount',0, ...
+        'auditReadyRunCount',0, ...
+        'validUpdateCount_mean',NaN, ...
+        'auditReadyUpdateCount_mean',NaN);
+end
+
+function Row = InitBoundaryCandidateAuditLocal()
+    Row = struct( ...
+        'generation',NaN, ...
+        'FE',NaN, ...
+        'source',NaN, ...
+        'selectionMode',NaN, ...
+        'sector',NaN, ...
+        'eligible',false, ...
+        'selected',false, ...
+        'prob',NaN, ...
+        'queryScore',NaN, ...
+        'disagreement',NaN, ...
+        'reliability',NaN, ...
+        'paretoValue',NaN, ...
+        'boundaryTrust',NaN, ...
+        'trustWeight',NaN, ...
+        'utility',NaN, ...
+        'fullV2Shortlisted',false);
+end
+
+function Row = InitBoundarySeedAuditLocal()
+    Row = struct( ...
+        'generation',NaN, ...
+        'FE',NaN, ...
+        'source',NaN, ...
+        'seedFeasible',false, ...
+        'prob',NaN, ...
+        'queryScore',NaN, ...
+        'disagreement',NaN, ...
+        'paretoValue',NaN, ...
+        'reliability',NaN, ...
+        'boundaryTrust',NaN, ...
+        'eligible',false, ...
+        'utility',NaN, ...
+        'localEvalCount',0, ...
+        'feasibleForwardSuccess',false, ...
+        'frrSuccess',false, ...
+        'ubySuccess',false, ...
+        'initialBracketGap',NaN, ...
+        'bracketGap',NaN, ...
+        'shrinkSuccess',false, ...
+        'tightSuccess',false, ...
+        'hardNegativeConfirmed',false, ...
+        'seedDec',zeros(1,0), ...
+        'lineageFeasibleDec',zeros(0,0));
+end
+
+function Row = InitBoundaryUpdateAuditLocal()
+    Row = struct( ...
+        'generation',NaN, ...
+        'FE',NaN, ...
+        'reason','', ...
+        'calibrator','raw', ...
+        'valid',false, ...
+        'audit_ready',false, ...
+        'audit_phase','not_yet_auditable', ...
+        'count',0, ...
+        'prob',zeros(0,1), ...
+        'label',zeros(0,1), ...
+        'brier',NaN, ...
+        'ece',NaN, ...
+        'near_gap',NaN, ...
+        'core_near_gap',NaN, ...
+        'train_count',0, ...
+        'cal_count',0, ...
+        'test_count',0, ...
+        'strict_separation',false, ...
+        'train_cal_overlap',0, ...
+        'train_test_overlap',0, ...
+        'cal_test_overlap',0);
+end
+
+function NoOutput(varargin)
+end

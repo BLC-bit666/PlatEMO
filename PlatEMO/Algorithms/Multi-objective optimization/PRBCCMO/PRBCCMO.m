@@ -12,9 +12,10 @@ classdef PRBCCMO < ALGORITHM
 % pairM    --- 0.05 --- Margin for tight bracket pair loss
 % lPair    --- 1    --- Weight of bracket pair loss
 % lMid     --- 1    --- Weight of midpoint-to-0.5 loss
-% The PRBCCMO-Lite mainline is fixed to TopKPair bridge generation,
-% midpoint probe placement, Pareto-only seed selection, label-aware refinement, and held-out
-% calibration/trust auditing with raw/beta as the development default.
+% calibrator --- beta --- Boundary calibrator candidates ('beta'/'raw')
+% The PRBCCMO-BoundaryCore mainline follows TopKPair bridge generation,
+% bridge-conditioned p≈0.5 localization, Pareto-then-boundary selection,
+% one-step feasible exploit / one-step infeasible bracket shrink, and calibrated trust.
 
 %------------------------------- Copyright --------------------------------
 % Copyright (c) 2026 BIMK Group. You are free to use the PlatEMO for
@@ -40,6 +41,7 @@ classdef PRBCCMO < ALGORITHM
             pairM     = Params.pairM;
             lPair     = Params.lPair;
             lMid      = Params.lMid;
+            CalibratorCandidates = Params.calibratorCandidates;
             RuntimeOptions = BuildBoundaryRuntimeOptions(Params.runtimeOptions);
 
             BoundaryBudget = max(0,floor(bRho*Problem.N));
@@ -48,14 +50,13 @@ classdef PRBCCMO < ALGORITHM
             TestMax        = max(1,Problem.N);
             BracketMax     = max(1,Problem.N);
             HardNegMax     = max(20,ceil(0.25*TrainMax));
-            ColdStartCap   = max(1,round(0.3*CalibMax));
             SeedRatio      = min(max(mRho,0),1);
             [W,~]          = UniformPoint(max(Problem.N,2),Problem.M);
             UpdateGap      = 5;
             RestartGap     = 25;
             WarmEpoch      = min(epoch,max(5,round(epoch/3)));
             TriggerCount   = max(1,ceil(0.1*TrainMax));
-            TightGap       = 0.03;
+            TightGap       = SafeRuntimeOption(RuntimeOptions,'BracketTightGap',0.03);
 
             %% Generate random populations
             PopulationC = Problem.Initialization();
@@ -65,29 +66,24 @@ classdef PRBCCMO < ALGORITHM
             BracketArchive = EmptyBracketArchive(Problem.D);
             HardNegativeArchive.Dec    = zeros(0,Problem.D);
             HardNegativeArchive.Radius = zeros(0,1);
-            InitSolutions = [PopulationC,PopulationU];
-            [InitTrain,~,InitCalib,InitCalibInfo,InitTest,InitTestInfo] = SplitHeldOutBatch( ...
-                InitSolutions,NormalizeBoundaryInfo([],Problem.M),CalibMax,TestMax,Problem.M);
-            InitHoldoutDec = [SolutionDecs(InitCalib,Problem.D);SolutionDecs(InitTest,Problem.D)];
-            ProtectedDec   = zeros(0,Problem.D);
-            ProtectedLabel = zeros(0,1);
-            [TrainDec,TrainLabel] = UpdateTrainingArchive( ...
-                [],[],ProtectedDec,ProtectedLabel,InitTrain,InitHoldoutDec,TrainMax);
-            [CalibDec,CalibLabel,CalibNear,CalibStatus] = UpdateCalibrationBuffer( ...
-                [],[],[],InitCalib,InitCalibInfo,CalibMax);
-            [TestDec,TestLabel,TestNear,TestStatus] = UpdateCalibrationBuffer( ...
-                [],[],[],InitTest,InitTestInfo,TestMax);
-            TrainOptions = BuildBoundaryTrainingOptions( ...
-                BracketArchive,ensK,dLambda,pairM,lPair,lMid,Problem.D,TightGap,RuntimeOptions);
-            Model = TrainBoundaryMLP( ...
-                TrainDec,TrainLabel,hidden,epoch,lr,[],CalibDec,CalibLabel,TrainOptions);
-            Model = RefreshBoundaryTrust(Model,TestDec,TestLabel,RuntimeOptions,[]);
-            LastCalMetric = EvaluateBoundaryCalibration(Model,TestDec,TestLabel);
+            TrainDec       = zeros(0,Problem.D);
+            TrainLabel     = zeros(0,1);
+            CalibDec       = zeros(0,Problem.D);
+            CalibLabel     = zeros(0,1);
+            CalibNear      = false(0,1);
+            CalibStatus    = InitDefaultBufferStatus();
+            TestDec        = zeros(0,Problem.D);
+            TestLabel      = zeros(0,1);
+            TestNear       = false(0,1);
+            TestStatus     = InitDefaultBufferStatus();
+            Model = [];
+            LastCalMetric = EvaluateBoundaryCalibration(Model,TestDec,TestLabel,TestNear);
             PendingLabels = 0;
             Generation    = 0;
             BoundaryAuditStarted = false;
+            InitSolutions = [PopulationC,PopulationU];
             [ExternalArchive,~] = UpdateExternalArchive([],FilterFeasiblePopulation(InitSolutions));
-            AuditState = BuildBoundaryAuditState(CalibStatus,TestStatus,false,0,0,BoundaryAuditStarted);
+            AuditState = BuildBoundaryAuditState(CalibStatus,TestStatus,0,BoundaryAuditStarted);
             Algorithm.metric.boundaryCalibration = AttachCalibrationContext( ...
                 LastCalMetric,Generation,Problem.FE,size(TrainDec,1),size(CalibDec,1), ...
                 sum(CalibNear),size(TestDec,1),sum(TestNear),CalibStatus,TestStatus,AuditState);
@@ -119,6 +115,10 @@ classdef PRBCCMO < ALGORITHM
 
                 BoundaryBudgetNow = min(BoundaryBudget,max(0,Problem.maxFE-Problem.FE));
                 SeedBudget = min(BoundaryBudgetNow,max(0,round(SeedRatio*BoundaryBudgetNow)));
+                if BoundaryBudgetNow >= 2
+                    % Reserve one post-label local evaluation slot per selected seed whenever possible.
+                    SeedBudget = min(SeedBudget,BoundaryBudgetNow-SeedBudget);
+                end
                 if BoundaryBudgetNow > 0 && SeedBudget == 0
                     SeedBudget = 1;
                 end
@@ -134,8 +134,7 @@ classdef PRBCCMO < ALGORITHM
                     BoundarySeeds,SeedInfo,WorkerOffspring,WorkerInfo,Problem.M);
                 BoundaryBatchCount = max(numel(BoundarySeeds),numel(BoundaryOffspring));
                 BoundaryAuditStarted = BoundaryAuditStarted || BoundaryBatchCount > 0;
-                MigrationPool = ScreenBoundaryMigrants( ...
-                    PopulationC,BoundarySeeds,WorkerFeasiblePool,W,RuntimeOptions);
+                MigrationPool = ScreenBoundaryMigrants(PopulationC,WorkerFeasiblePool,W);
 
                 HardNegativeArchive = UpdateHardNegativeArchive(HardNegativeArchive,HardNegBatch,HardNegMax);
                 BracketArchive = UpdateBracketArchive(BracketArchive,BracketBatch,BracketMax,Problem.D,TightGap);
@@ -145,7 +144,7 @@ classdef PRBCCMO < ALGORITHM
                 PopulationU = EnvironmentalSelectionU(KeepUniquePopulation([PopulationU,OffspringU]),Problem.N);
 
                 [ExternalArchive,BoundaryGain,BoundaryAdded,ArchiveEvents] = UpdateSectionBExternalArchive( ...
-                    ExternalArchive,OffspringC,OffspringU,BoundaryOffspring,Generation,Problem.FE);
+                    ExternalArchive,OffspringC,OffspringU,MigrationPool,Generation,Problem.FE);
                 Algorithm.metric.sectionB.candidateAudit = AppendBoundaryCandidateAuditRows( ...
                     Algorithm.metric.sectionB.candidateAudit,CandidateAudit,Generation,Problem.FE);
                 Algorithm.metric.sectionB.seedAudit = AppendBoundarySeedAuditRows( ...
@@ -153,7 +152,7 @@ classdef PRBCCMO < ALGORITHM
                     BoundaryAdded,Generation,Problem.FE,Problem.D);
                 Algorithm.metric.sectionB.boundaryLineage = AppendBoundaryLineageRows( ...
                     Algorithm.metric.sectionB.boundaryLineage,BoundarySeeds,SeedInfo,WorkerAudit, ...
-                    RuntimeOptions,Generation,Problem.FE,Problem.D);
+                    Generation,Problem.FE,Problem.D);
                 Algorithm.metric.sectionB.selectionTrace = AppendBoundarySelectionTrace( ...
                     Algorithm.metric.sectionB.selectionTrace,Generation,Problem.FE,SelectionDiag);
                 Algorithm.metric.sectionB.bridgeTrace = AppendBoundaryBridgeTrace( ...
@@ -170,12 +169,12 @@ classdef PRBCCMO < ALGORITHM
                 Algorithm.metric.sectionB.externalArchiveCount = numel(ExternalArchive);
                 Algorithm.metric.sectionB.totalBoundaryGain = Algorithm.metric.sectionB.totalBoundaryGain + BoundaryGain;
 
-                [HoldoutSolutions,HoldoutInfo,ColdStartActive,ColdStartBatchCount] = PrepareHoldoutFeed( ...
-                    BoundaryOffspring,BoundaryInfo,OffspringC,OffspringU,CalibStatus,TestStatus, ...
-                    Problem.M,BoundaryAuditStarted,ColdStartCap);
+                [HoldoutSolutions,HoldoutInfo] = PrepareHoldoutFeed( ...
+                    BoundaryOffspring,BoundaryInfo,Problem.M);
                 [TrainBatch,~,CalibBatch,CalibInfo,TestBatch,TestInfo] = SplitHeldOutBatch( ...
                     HoldoutSolutions,HoldoutInfo,CalibMax,TestMax,Problem.M);
-                [ProtectedBracketDec,ProtectedBracketLabel] = BuildBracketProtectedBuffer(BracketArchive,Problem.D);
+                [ProtectedBracketDec,ProtectedBracketLabel] = BuildBracketProtectedBuffer( ...
+                    BracketArchive,HardNegativeArchive,Problem.D);
                 [CalibFallbackDec,CalibFallbackLabel,TestFallbackDec,TestFallbackLabel] = ...
                     BuildAuditFallbackPools(ProtectedBracketDec,ProtectedBracketLabel);
                 [CalibDec,CalibLabel,CalibNear] = ExcludeBufferRows(CalibDec,CalibLabel,CalibNear,TestDec);
@@ -204,16 +203,16 @@ classdef PRBCCMO < ALGORITHM
 
                 PendingLabels = PendingLabels + numel(HoldoutSolutions);
                 TrainOptions = BuildBoundaryTrainingOptions( ...
-                    BracketArchive,ensK,dLambda,pairM,lPair,lMid,Problem.D,TightGap,RuntimeOptions);
+                    Problem,BracketArchive,ensK,dLambda,pairM,lPair,lMid,TightGap, ...
+                    CalibratorCandidates);
                 [Model,PendingLabels,LastCalMetric,ModelUpdated,UpdateReason] = UpdateBoundaryModel( ...
-                    Model,TrainDec,TrainLabel,CalibDec,CalibLabel,TestDec,TestLabel, ...
+                    Model,TrainDec,TrainLabel,CalibDec,CalibLabel,TestDec,TestLabel,TestNear, ...
                     hidden,epoch,WarmEpoch,lr,Generation,PendingLabels,TriggerCount, ...
                     UpdateGap,RestartGap,LastCalMetric,TrainOptions,RuntimeOptions);
                 AuditState = BuildBoundaryAuditState( ...
-                    CalibStatus,TestStatus,ColdStartActive,ColdStartBatchCount, ...
-                    BoundaryBatchCount,BoundaryAuditStarted);
+                    CalibStatus,TestStatus,BoundaryBatchCount,BoundaryAuditStarted);
                 Algorithm.metric.boundaryCalibration = AttachCalibrationContext( ...
-                    EvaluateBoundaryCalibration(Model,TestDec,TestLabel), ...
+                    EvaluateBoundaryCalibration(Model,TestDec,TestLabel,TestNear), ...
                     Generation,Problem.FE,size(TrainDec,1),size(CalibDec,1), ...
                     sum(CalibNear),size(TestDec,1),sum(TestNear),CalibStatus,TestStatus,AuditState);
                 if ModelUpdated
@@ -266,122 +265,35 @@ function Obj = SolutionObjs(Solutions,M)
     Obj = Solutions.objs;
 end
 
-function [HoldoutSolutions,HoldoutInfo,ColdStartActive,ColdStartBatchCount] = PrepareHoldoutFeed( ...
-    BoundaryOffspring,BoundaryInfo,OffspringC,OffspringU,CalibStatus,TestStatus,M,BoundaryAuditStarted,ColdStartCap)
-
-    HoldoutSolutions = BoundaryOffspring;
+function [HoldoutSolutions,HoldoutInfo] = PrepareHoldoutFeed(BoundaryOffspring,BoundaryInfo,M)
     HoldoutInfo = NormalizeBoundaryInfo(BoundaryInfo,M);
-    ColdStartActive = ShouldUseColdStartHoldout( ...
-        BoundaryOffspring,CalibStatus,TestStatus,BoundaryAuditStarted);
-    ColdStartBatchCount = 0;
-    if ~ColdStartActive
+    HoldoutSolutions = BoundaryOffspring;
+    if isempty(BoundaryOffspring)
         return;
     end
 
-    ColdStartSolutions = KeepUniquePopulation([OffspringC,OffspringU]);
-    ColdStartInfo = BuildColdStartBoundaryInfo(ColdStartSolutions,M);
-    [ColdStartSolutions,ColdStartInfo] = LimitColdStartBatch( ...
-        ColdStartSolutions,ColdStartInfo,ColdStartCap,M);
-    ColdStartBatchCount = numel(ColdStartSolutions);
-    [HoldoutSolutions,HoldoutInfo] = MergeBoundaryResults( ...
-        BoundaryOffspring,BoundaryInfo,ColdStartSolutions,ColdStartInfo,M);
-end
-
-function Flag = ShouldUseColdStartHoldout(BoundaryOffspring,CalibStatus,TestStatus,BoundaryAuditStarted)
-    %#ok<INUSD>
-    Flag = ~SafeBufferValid(CalibStatus) || ~SafeBufferValid(TestStatus);
+    Keep = true(numel(BoundaryOffspring),1);
+    if isfield(HoldoutInfo,'trainKeep') && numel(HoldoutInfo.trainKeep) == numel(BoundaryOffspring)
+        % The model update keeps selected bridge probes and tight bracket refinements only.
+        Keep = logical(HoldoutInfo.trainKeep(:));
+    end
+    HoldoutSolutions = BoundaryOffspring(Keep);
+    HoldoutInfo = SliceBoundaryInfo(HoldoutInfo,find(Keep),M);
 end
 
 function Flag = SafeBufferValid(Status)
     Flag = isstruct(Status) && isfield(Status,'valid') && logical(Status.valid);
 end
 
-function Info = BuildColdStartBoundaryInfo(Solutions,M)
-    Info = DefaultBoundaryInfo(Solutions,M);
-    if isempty(Solutions)
-        return;
-    end
-    Count = numel(Solutions);
-    Info.source = repmat(ResolveColdStartSourceCode(),Count,1);
-    % Cold-start samples are labeled regular offspring, not boundary-near probes.
-    Info.prob = -ones(Count,1);
-end
-
-function [Solutions,Info] = LimitColdStartBatch(Solutions,Info,MaxCount,M)
-    if nargin < 4
-        M = 0;
-    end
-    if isempty(Solutions) || MaxCount <= 0 || numel(Solutions) <= MaxCount
-        return;
-    end
-
-    Keep = SelectColdStartRows(double(all(Solutions.cons<=0,2)),MaxCount);
-    Solutions = Solutions(Keep);
-    Info = SliceBoundaryInfo(Info,Keep,M);
-end
-
-function Keep = SelectColdStartRows(Label,MaxCount)
-    Total = numel(Label);
-    MaxCount = min(MaxCount,Total);
-    Keep = zeros(0,1);
-    ClassValues = [1,0];
-
-    % Preserve both classes when cold-start already contains them.
-    for i = 1 : numel(ClassValues)
-        ClassIdx = find(Label == ClassValues(i));
-        if ~isempty(ClassIdx)
-            Keep(end+1,1) = ClassIdx(end); %#ok<AGROW>
-        end
-    end
-    Keep = unique(Keep,'stable');
-    if numel(Keep) >= MaxCount
-        Keep = sort(Keep(end-MaxCount+1:end));
-        return;
-    end
-
-    Remaining = setdiff((1:Total)',Keep,'stable');
-    SlotsLeft = MaxCount - numel(Keep);
-    TargetPerClass = floor(SlotsLeft/2);
-    FillCell = cell(numel(ClassValues),1);
-    for i = 1 : numel(ClassValues)
-        ClassIdx = Remaining(Label(Remaining) == ClassValues(i));
-        Take = min(numel(ClassIdx),TargetPerClass);
-        if Take > 0
-            FillCell{i} = ClassIdx(max(1,end-Take+1):end);
-        end
-    end
-    Keep = unique([Keep;vertcat(FillCell{:})],'stable');
-
-    Remaining = setdiff((1:Total)',Keep,'stable');
-    SlotsLeft = MaxCount - numel(Keep);
-    if SlotsLeft > 0
-        Keep = [Keep;Remaining(max(1,end-SlotsLeft+1):end)];
-    end
-    Keep = unique(Keep,'stable');
-    if numel(Keep) > MaxCount
-        Keep = Keep(end-MaxCount+1:end);
-    end
-    Keep = sort(Keep);
-end
-
-function Code = ResolveColdStartSourceCode()
-    Code = 2;
-end
-
-function State = BuildBoundaryAuditState( ...
-    CalibStatus,TestStatus,ColdStartActive,ColdStartBatchCount,BoundaryBatchCount,BoundaryAuditStarted)
+function State = BuildBoundaryAuditState(CalibStatus,TestStatus,BoundaryBatchCount,BoundaryAuditStarted)
 
     State = struct();
-    State.coldStartActive = logical(ColdStartActive);
-    State.coldStartBatchCount = max(0,ColdStartBatchCount);
     State.boundaryBatchCount = max(0,BoundaryBatchCount);
     State.boundaryStarted = logical(BoundaryAuditStarted);
     State.auditReady = SafeBufferValid(CalibStatus) && SafeBufferValid(TestStatus) ...
-        && ~State.coldStartActive && State.boundaryStarted;
+        && State.boundaryStarted;
     if State.auditReady
         State.auditPhase = 'boundary_auditable';
-    elseif State.coldStartActive
-        State.auditPhase = 'coldstart';
     else
         State.auditPhase = 'not_yet_auditable';
     end
@@ -404,10 +316,7 @@ function [TrainSolutions,TrainInfo,CalibSolutions,CalibInfo,TestSolutions,TestIn
         Info = DefaultBoundaryInfo(Solutions,M);
     end
     Label = double(all(Solutions.cons<=0,2));
-    NearMask = true(Count,1);
-    if isfield(Info,'prob') && numel(Info.prob) == Count
-        NearMask = abs(Info.prob(:)-0.5) <= 0.1;
-    end
+    NearMask = ResolveBoundaryNearMask(Info,Count,0.10);
 
     CalibQuota = min(max(1,round(0.2*Count)),min(CalibMax,Count-1));
     CalibIdx = SelectCalibrationHoldout(Label,NearMask,CalibQuota);
@@ -434,6 +343,22 @@ function [TrainSolutions,TrainInfo,CalibSolutions,CalibInfo,TestSolutions,TestIn
     CalibInfo = SliceBoundaryInfo(Info,CalibIdx,M);
     TestSolutions = Solutions(TestIdx);
     TestInfo = SliceBoundaryInfo(Info,TestIdx,M);
+end
+
+function NearMask = ResolveBoundaryNearMask(Info,Count,Delta)
+    if nargin < 3 || isempty(Delta)
+        Delta = 0.10;
+    end
+    NearMask = false(Count,1);
+    if isstruct(Info) && isfield(Info,'prob') && numel(Info.prob) == Count
+        NearMask = NearMask | abs(Info.prob(:)-0.5) <= Delta;
+    end
+    if isstruct(Info) && isfield(Info,'boundaryLocal') && numel(Info.boundaryLocal) == Count
+        NearMask = NearMask | logical(Info.boundaryLocal(:));
+    end
+    if ~any(NearMask) && Count > 0
+        NearMask = true(Count,1);
+    end
 end
 
 function HoldoutIdx = SelectCalibrationHoldout(Label,NearMask,Quota)
@@ -492,6 +417,8 @@ function Info = DefaultBoundaryInfo(Solutions,M)
     Info.utility       = zeros(Count,1);
     Info.sector        = zeros(Count,1);
     Info.eligible      = true(Count,1);
+    Info.boundaryLocal = false(Count,1);
+    Info.trainKeep     = false(Count,1);
     Info.proxyObjs     = Solutions.objs;
     Info.anchorDec     = zeros(Count,D);
     Info.anchorObj     = zeros(Count,M);
@@ -531,17 +458,33 @@ function Dec = SolutionDecs(Solutions,D)
         Dec = zeros(0,D);
         return;
     end
-    Dec = Solutions.decs;
+    if isstruct(Solutions) && isfield(Solutions,'dec')
+        Dec = vertcat(Solutions.dec);
+    elseif isstruct(Solutions) && isfield(Solutions,'decs')
+        Dec = Solutions.decs;
+    else
+        Dec = Solutions.decs;
+    end
 end
 
-function [ProtectedDec,ProtectedLabel] = BuildBracketProtectedBuffer(BracketArchive,D)
+function [ProtectedDec,ProtectedLabel] = BuildBracketProtectedBuffer(BracketArchive,HardNegativeArchive,D)
     ProtectedDec = zeros(0,D);
     ProtectedLabel = zeros(0,1);
-    if isempty(BracketArchive) || isempty(BracketArchive.FeasibleDec)
-        return;
+    if nargin < 2
+        HardNegativeArchive = [];
     end
-    ProtectedDec = [BracketArchive.FeasibleDec;BracketArchive.InfeasibleDec];
-    ProtectedLabel = [ones(size(BracketArchive.FeasibleDec,1),1);zeros(size(BracketArchive.InfeasibleDec,1),1)];
+    if ~isempty(BracketArchive) && isfield(BracketArchive,'FeasibleDec') ...
+            && ~isempty(BracketArchive.FeasibleDec)
+        ProtectedDec = [ProtectedDec;BracketArchive.FeasibleDec;BracketArchive.InfeasibleDec];
+        ProtectedLabel = [ProtectedLabel; ...
+            ones(size(BracketArchive.FeasibleDec,1),1); ...
+            zeros(size(BracketArchive.InfeasibleDec,1),1)];
+    end
+    if nargin >= 2 && ~isempty(HardNegativeArchive) && isfield(HardNegativeArchive,'Dec') ...
+            && ~isempty(HardNegativeArchive.Dec)
+        ProtectedDec = [ProtectedDec;HardNegativeArchive.Dec];
+        ProtectedLabel = [ProtectedLabel;zeros(size(HardNegativeArchive.Dec,1),1)];
+    end
 end
 
 function [CalibDec,CalibLabel,TestDec,TestLabel] = BuildAuditFallbackPools(ProtectedDec,ProtectedLabel)
@@ -603,7 +546,11 @@ function Archive = UpdateBracketArchive(Archive,NewPairs,MaxPairs,D,TightGap)
     NewF = zeros(0,D);
     NewI = zeros(0,D);
     NewG = zeros(0,1);
-    if ~isempty(NewPairs) && isfield(NewPairs,'Feasible') && ~isempty(NewPairs.Feasible)
+    if ~isempty(NewPairs) && isfield(NewPairs,'FeasibleDec') && ~isempty(NewPairs.FeasibleDec)
+        NewF = NewPairs.FeasibleDec;
+        NewI = NewPairs.InfeasibleDec;
+        NewG = NewPairs.Gap(:);
+    elseif ~isempty(NewPairs) && isfield(NewPairs,'Feasible') && ~isempty(NewPairs.Feasible)
         NewF = SolutionDecs(NewPairs.Feasible,D);
         NewI = SolutionDecs(NewPairs.Infeasible,D);
         NewG = NewPairs.Gap(:);
@@ -634,21 +581,21 @@ function Archive = UpdateBracketArchive(Archive,NewPairs,MaxPairs,D,TightGap)
 end
 
 function Options = BuildBoundaryTrainingOptions( ...
-    BracketArchive,EnsembleSize,DisagreementWeight,PairMargin,LambdaPair,LambdaMid,D,TightGap,RuntimeOptions)
-
-    if nargin < 9 || ~isstruct(RuntimeOptions)
-        RuntimeOptions = struct();
-    end
+    Problem,BracketArchive,EnsembleSize,DisagreementWeight,PairMargin,LambdaPair,LambdaMid, ...
+    TightGap,CalibratorCandidates)
 
     Options = struct();
     Options.EnsembleSize       = EnsembleSize;
-    Options.CalibratorCandidates = {'raw','beta'};
+    Options.CalibratorCandidates = {'beta'};
+    if nargin >= 9 && ~isempty(CalibratorCandidates)
+        Options.CalibratorCandidates = CalibratorCandidates;
+    end
     Options.DisagreementWeight = max(DisagreementWeight,0);
     Options.PairMargin         = max(PairMargin,0);
-    Options.LambdaBrier        = 0.5;
     Options.LambdaPair         = max(LambdaPair,0);
     Options.LambdaMid          = max(LambdaMid,0);
     Options.BracketOversampleFactor = 3;
+    D = Problem.D;
     Options.PairFeasibleDec    = zeros(0,D);
     Options.PairInfeasibleDec  = zeros(0,D);
     Options.MidDec             = zeros(0,D);
@@ -664,37 +611,41 @@ function Options = BuildBoundaryTrainingOptions( ...
         if any(TightMask)
             Options.PairFeasibleDec = BracketArchive.FeasibleDec(TightMask,:);
             Options.PairInfeasibleDec = BracketArchive.InfeasibleDec(TightMask,:);
-            Options.MidDec = 0.5*(BracketArchive.FeasibleDec(TightMask,:) + ...
-                BracketArchive.InfeasibleDec(TightMask,:));
+            Options.MidDec = BuildTrainingMidpoints( ...
+                Problem,Options.PairFeasibleDec,Options.PairInfeasibleDec);
         end
     end
 
-    if isfield(RuntimeOptions,'CalibratorCandidates') && ~isempty(RuntimeOptions.CalibratorCandidates)
-        Options.CalibratorCandidates = RuntimeOptions.CalibratorCandidates;
-    elseif isfield(RuntimeOptions,'Calibrator') && ~isempty(RuntimeOptions.Calibrator)
-        Options.CalibratorCandidates = RuntimeOptions.Calibrator;
+end
+
+function MidDec = BuildTrainingMidpoints(Problem,FeasibleDec,InfeasibleDec)
+    Count = min(size(FeasibleDec,1),size(InfeasibleDec,1));
+    MidDec = zeros(Count,Problem.D);
+    for i = 1 : Count
+        MidDec(i,:) = InterpolateBoundaryPoint( ...
+            Problem,FeasibleDec(i,:),InfeasibleDec(i,:),0.5);
     end
 end
 
 function [Model,PendingLabels,LastCalMetric,ModelUpdated,UpdateReason] = UpdateBoundaryModel( ...
-    Model,TrainDec,TrainLabel,CalibDec,CalibLabel,TestDec,TestLabel, ...
+    Model,TrainDec,TrainLabel,CalibDec,CalibLabel,TestDec,TestLabel,TestNear, ...
     Hidden,Epoch,WarmEpoch,LR,Generation,PendingLabels,TriggerCount, ...
     UpdateGap,RestartGap,LastCalMetric,TrainOptions,RuntimeOptions)
 
     ModelUpdated = false;
-    CurrentMetric = EvaluateBoundaryCalibration(Model,TestDec,TestLabel);
+    CurrentMetric = EvaluateBoundaryCalibration(Model,TestDec,TestLabel,TestNear);
     ReasonFlags = cell(1,0);
     if isempty(Model)
-        ReasonFlags{end+1} = 'missing_model'; %#ok<AGROW>
+        ReasonFlags{end+1} = 'missing_model';
     end
     if PendingLabels >= TriggerCount
-        ReasonFlags{end+1} = 'pending_labels'; %#ok<AGROW>
+        ReasonFlags{end+1} = 'pending_labels';
     end
     if mod(Generation,UpdateGap) == 0
-        ReasonFlags{end+1} = 'periodic'; %#ok<AGROW>
+        ReasonFlags{end+1} = 'periodic';
     end
     if IsCalibrationDrifting(CurrentMetric,LastCalMetric)
-        ReasonFlags{end+1} = 'calibration_drift'; %#ok<AGROW>
+        ReasonFlags{end+1} = 'calibration_drift';
     end
     NeedUpdate = ~isempty(ReasonFlags);
     if NeedUpdate
@@ -714,7 +665,7 @@ function [Model,PendingLabels,LastCalMetric,ModelUpdated,UpdateReason] = UpdateB
         TrainEpoch = WarmEpoch;
     end
 
-    if nargin < 18 || ~isstruct(TrainOptions)
+    if nargin < 19 || ~isstruct(TrainOptions)
         TrainOptions = struct();
     end
     TrainOptions.WarmStart = UseWarmStart;
@@ -725,22 +676,23 @@ function [Model,PendingLabels,LastCalMetric,ModelUpdated,UpdateReason] = UpdateB
         LastCalMetric = CurrentMetric;
         return;
     end
-    Model = RefreshBoundaryTrust(UpdatedModel,TestDec,TestLabel,RuntimeOptions,PrevModel);
+    UpdatedModel.BoundaryLocalDelta = SafeRuntimeOption(RuntimeOptions,'BoundaryLocalDelta',0.10);
+    Model = RefreshBoundaryTrust(UpdatedModel,TestDec,TestLabel,TestNear,RuntimeOptions,PrevModel);
     ModelUpdated = true;
     PendingLabels = 0;
-    LastCalMetric = EvaluateBoundaryCalibration(Model,TestDec,TestLabel);
+    LastCalMetric = EvaluateBoundaryCalibration(Model,TestDec,TestLabel,TestNear);
 end
 
-function Model = RefreshBoundaryTrust(Model,TestDec,TestLabel,RuntimeOptions,PrevModel)
+function Model = RefreshBoundaryTrust(Model,TestDec,TestLabel,TestNear,RuntimeOptions,PrevModel)
     if isempty(Model)
         return;
     end
 
-    Metric = EvaluateBoundaryCalibration(Model,TestDec,TestLabel);
-    if nargin < 4 || ~isstruct(RuntimeOptions)
+    Metric = EvaluateBoundaryCalibration(Model,TestDec,TestLabel,TestNear);
+    if nargin < 5 || ~isstruct(RuntimeOptions)
         RuntimeOptions = struct();
     end
-    if nargin < 5
+    if nargin < 6
         PrevModel = [];
     end
     TauE = SafeRuntimeOption(RuntimeOptions,'TrustTauE',0.10);
@@ -748,17 +700,19 @@ function Model = RefreshBoundaryTrust(Model,TestDec,TestLabel,RuntimeOptions,Pre
     MinCoreCount = SafeRuntimeOption(RuntimeOptions,'TrustMinCoreCount',20);
     RequiredStreak = SafeRuntimeOption(RuntimeOptions,'TrustAdmissionStreak',3);
     FallbackCap = SafeRuntimeOption(RuntimeOptions,'TrustFallbackCap',0.25);
-    CoreNearGap = FieldOrDefaultMetric(Metric,'coreNearGap',FieldOrDefaultMetric(Metric,'nearGap',inf));
+    BoundaryEce = FieldOrDefaultMetric(Metric,'boundaryEce',FieldOrDefaultMetric(Metric,'ece',inf));
+    BoundaryGap = FieldOrDefaultMetric( ...
+        Metric,'boundaryGap',FieldOrDefaultMetric(Metric,'coreNearGap',FieldOrDefaultMetric(Metric,'nearGap',inf)));
     RawTrustWeight = 0;
     if logical(FieldOrDefaultMetric(Metric,'valid',false)) ...
-            && isfinite(Metric.ece) && isfinite(CoreNearGap)
-        RawTrustWeight = max(0,1-Metric.ece/TauE) * max(0,1-CoreNearGap/TauN);
+            && isfinite(BoundaryEce) && isfinite(BoundaryGap)
+        RawTrustWeight = max(0,1-BoundaryEce/TauE) * max(0,1-BoundaryGap/TauN);
         RawTrustWeight = min(max(RawTrustWeight,0),1);
     end
     AuditPass = logical(FieldOrDefaultMetric(Metric,'valid',false)) ...
-        && isfinite(Metric.ece) && Metric.ece <= TauE ...
-        && isfinite(CoreNearGap) && CoreNearGap <= TauN ...
-        && FieldOrDefaultMetric(Metric,'coreNearCount',0) >= MinCoreCount;
+        && isfinite(BoundaryEce) && BoundaryEce <= TauE ...
+        && isfinite(BoundaryGap) && BoundaryGap <= TauN ...
+        && FieldOrDefaultMetric(Metric,'boundaryCount',FieldOrDefaultMetric(Metric,'coreNearCount',0)) >= MinCoreCount;
     PrevStreak = 0;
     if isstruct(PrevModel) && isfield(PrevModel,'TrustPassStreak') && ~isempty(PrevModel.TrustPassStreak)
         PrevStreak = PrevModel.TrustPassStreak;
@@ -843,7 +797,7 @@ function Metric = AttachCalibrationContext( ...
         TestStatus = InitDefaultBufferStatus();
     end
     if nargin < 11 || ~isstruct(AuditState)
-        AuditState = BuildBoundaryAuditState(CalibStatus,TestStatus,false,0,0,false);
+        AuditState = BuildBoundaryAuditState(CalibStatus,TestStatus,0,false);
     end
 
     Metric.generation        = Generation;
@@ -958,6 +912,10 @@ function Info = NormalizeBoundaryInfo(Info,M,D)
     end
     Info.sector        = ResolveBoundaryVector(Info,'sector',Count,0);
     Info.eligible      = ResolveBoundaryEligible(Info,Count);
+    Info.boundaryLocal = ResolveBoundaryEligible( ...
+        struct('eligible',ResolveBoundaryVector(Info,'boundaryLocal',Count,false)),Count);
+    Info.trainKeep     = ResolveBoundaryEligible( ...
+        struct('eligible',ResolveBoundaryVector(Info,'trainKeep',Count,false)),Count);
     Info.proxyObjs     = ResolveBoundaryMatrix(Info,'proxyObjs',Count,M);
     Info.anchorDec     = ResolveBoundaryMatrix(Info,'anchorDec',Count,D);
     Info.anchorObj     = ResolveBoundaryMatrix(Info,'anchorObj',Count,M);
@@ -986,7 +944,7 @@ end
 
 function Fields = BoundaryInfoVectorFields()
     Fields = {'source','score','prob','queryScore','disagreement','paretoValue', ...
-        'reliability','boundaryTrust','utility','sector','eligible'};
+        'reliability','boundaryTrust','utility','sector','eligible','boundaryLocal','trainKeep'};
 end
 
 function Fields = BoundaryInfoMatrixFields()
@@ -1074,6 +1032,7 @@ function Params = ResolvePRBCCMOParameters(ParameterCell)
     LegacyThreshold = max(struct2array(LegacyMap));
 
     Params = cell2struct(ActiveDefaults,ActiveNames,2);
+    Params.calibratorCandidates = {'beta'};
     Params.runtimeOptions = struct();
 
     if nargin < 1 || isempty(ParameterCell)
@@ -1129,9 +1088,43 @@ function Params = ApplyPRBCCMOParameterStruct(Params,Overrides,ActiveNames)
         if strcmpi(Field,'runtimeOptions')
             Params.runtimeOptions = BuildBoundaryRuntimeOptions( ...
                 Params.runtimeOptions,Value);
+        elseif strcmpi(Field,'calibratorCandidates')
+            Params.calibratorCandidates = NormalizeCalibratorCandidates(Value);
+        elseif strcmpi(Field,'calibrator')
+            Params.calibratorCandidates = NormalizeCalibratorCandidates(Value);
         elseif any(strcmp(Field,ActiveNames))
             Params.(Field) = Value;
         end
+    end
+end
+
+function Candidates = NormalizeCalibratorCandidates(Value)
+    if isempty(Value)
+        Candidates = {'beta'};
+        return;
+    end
+    if ischar(Value) || (isstring(Value) && isscalar(Value))
+        Value = {char(Value)};
+    end
+    if ~iscell(Value)
+        error('PRBCCMO:InvalidCalibratorCandidates', ...
+            'Calibrator candidates must be a string or a cell array of strings.');
+    end
+    Candidates = cell(1,0);
+    for i = 1 : numel(Value)
+        Name = lower(strtrim(char(Value{i})));
+        switch Name
+            case {'beta','raw'}
+                if ~any(strcmp(Candidates,Name))
+                    Candidates{end+1} = Name; %#ok<AGROW>
+                end
+            otherwise
+                error('PRBCCMO:UnsupportedCalibrator', ...
+                    'Unsupported calibrator candidate ''%s''.',char(Value{i}));
+        end
+    end
+    if isempty(Candidates)
+        Candidates = {'beta'};
     end
 end
 
@@ -1147,14 +1140,14 @@ function Metric = InitSectionBMetric(D,RuntimeOptions,ExternalArchive)
     end
 
     Metric = struct();
-    Metric.selectionName = ResolveSectionBSelectionName(RuntimeOptions);
-    Metric.selectionMode = ResolveSectionBSelectionMode(Metric.selectionName);
-    Metric.localMode     = SafeRuntimeOption(RuntimeOptions,'LocalMode',1);
-    Metric.localName     = SafeRuntimeOption(RuntimeOptions,'LocalName','label_aware');
+    Metric.selectionName = 'boundary_core';
+    Metric.selectionMode = 4;
+    Metric.localMode     = 1;
+    Metric.localName     = 'boundary_core';
     Metric.bridgeName    = 'topk_pair';
     Metric.bridgeTopK    = SafeRuntimeOption(RuntimeOptions,'BridgeTopK',5);
-    Metric.gateMode      = SafeRuntimeOption(RuntimeOptions,'GateMode',1);
-    Metric.gateName      = SafeRuntimeOption(RuntimeOptions,'GateName','two_stage');
+    Metric.gateMode      = 1;
+    Metric.gateName      = 'two_stage';
     Metric.traceFlag     = logical(SafeRuntimeOption(RuntimeOptions,'TraceFlag',false));
     Metric.traceProbLabel = logical(SafeRuntimeOption(RuntimeOptions,'TraceProbLabel',false));
     Metric.candidateAudit = repmat(InitBoundaryCandidateAuditRow(D),0,1);
@@ -1169,34 +1162,6 @@ function Metric = InitSectionBMetric(D,RuntimeOptions,ExternalArchive)
     Metric.updateAudit = repmat(InitBoundaryUpdateAuditRow(),0,1);
     Metric.totalBoundaryGain = 0;
     Metric.externalArchiveCount = numel(ExternalArchive);
-end
-
-function Name = ResolveSectionBSelectionName(RuntimeOptions)
-    Name = SafeRuntimeOption(RuntimeOptions,'SelectionName','pareto_only');
-    Name = lower(strtrim(char(Name)));
-    switch Name
-        case {'paretoonly','pareto_only','pareto-only'}
-            Name = 'pareto_only';
-        case {'full','fullv2','full_v2','full-v2'}
-            Name = 'full_v2';
-        case 'bridge_only'
-            Name = 'bridge_only';
-        otherwise
-            Name = 'pareto_only';
-    end
-end
-
-function Mode = ResolveSectionBSelectionMode(Name)
-    switch ResolveSectionBSelectionName(struct('SelectionName',Name))
-        case 'pareto_only'
-            Mode = 1;
-        case 'full_v2'
-            Mode = 2;
-        case 'bridge_only'
-            Mode = 3;
-        otherwise
-            Mode = 1;
-    end
 end
 
 function Audit = BuildBoundaryBufferAudit(TrainDec,CalibDec,TestDec)
@@ -1331,7 +1296,7 @@ function Row = InitBoundaryCandidateAuditRow(D)
         'generation',NaN, ...
         'FE',NaN, ...
         'source',NaN, ...
-        'selectionMode',1, ...
+        'selectionMode',4, ...
         'sector',NaN, ...
         'eligible',false, ...
         'selected',false, ...
@@ -1373,9 +1338,13 @@ function Row = InitBoundarySeedAuditRow(D)
         'eligible',false, ...
         'utility',NaN, ...
         'localEvalCount',0, ...
+        'feasibleForwardSuccess',false, ...
         'frrSuccess',false, ...
         'ubySuccess',false, ...
+        'initialBracketGap',NaN, ...
         'bracketGap',NaN, ...
+        'shrinkSuccess',false, ...
+        'tightSuccess',false, ...
         'hardNegativeConfirmed',false, ...
         'seedDec',zeros(1,D), ...
         'lineageFeasibleDec',zeros(0,D));
@@ -1386,7 +1355,7 @@ function Row = InitBoundarySelectionTraceRow()
         'generation',NaN, ...
         'FE',NaN, ...
         'budget',0, ...
-        'selectionMode',1, ...
+        'selectionMode',4, ...
         'hasModel',false, ...
         'trustGate',false, ...
         'candidateCount',0, ...
@@ -1534,8 +1503,12 @@ function Rows = AppendBoundarySeedAuditRows(Rows,BoundarySeeds,SeedInfo,WorkerAu
         AddRows(i).seedDec    = BoundarySeeds(i).dec;
         if nargin >= 4 && numel(WorkerAudit) >= i
             AddRows(i).localEvalCount = WorkerAudit(i).localEvalCount;
+            AddRows(i).feasibleForwardSuccess = WorkerAudit(i).feasibleForwardSuccess;
             AddRows(i).frrSuccess = WorkerAudit(i).frrSuccess;
+            AddRows(i).initialBracketGap = WorkerAudit(i).initialBracketGap;
             AddRows(i).bracketGap = WorkerAudit(i).bracketGap;
+            AddRows(i).shrinkSuccess = WorkerAudit(i).shrinkSuccess;
+            AddRows(i).tightSuccess = WorkerAudit(i).tightSuccess;
             AddRows(i).hardNegativeConfirmed = WorkerAudit(i).hardNegativeConfirmed;
             AddRows(i).lineageFeasibleDec = WorkerAudit(i).lineageFeasibleDec;
         end
@@ -1573,7 +1546,7 @@ function Row = InitBoundaryLineageRow(D)
         'FE',NaN, ...
         'seedIndex',0, ...
         'source',NaN, ...
-        'workerMode','label_aware', ...
+        'workerMode','boundary_core', ...
         'seedFeasible',false, ...
         'seedProb',NaN, ...
         'seedUtility',NaN, ...
@@ -1582,13 +1555,17 @@ function Row = InitBoundaryLineageRow(D)
         'descendantLabel',zeros(0,1), ...
         'feasibleDescendantDec',zeros(0,D), ...
         'localEvalCount',0, ...
+        'feasibleForwardSuccess',false, ...
         'frrSuccess',false, ...
+        'initialBracketGap',NaN, ...
         'bracketGap',NaN, ...
+        'shrinkSuccess',false, ...
+        'tightSuccess',false, ...
         'hardNegativeConfirmed',false);
 end
 
-function Rows = AppendBoundaryLineageRows(Rows,BoundarySeeds,SeedInfo,WorkerAudit,RuntimeOptions,Generation,FE,D)
-    if nargin < 8 || isempty(D)
+function Rows = AppendBoundaryLineageRows(Rows,BoundarySeeds,SeedInfo,WorkerAudit,Generation,FE,D)
+    if nargin < 7 || isempty(D)
         D = 0;
     end
     if isempty(BoundarySeeds)
@@ -1600,7 +1577,7 @@ function Rows = AppendBoundaryLineageRows(Rows,BoundarySeeds,SeedInfo,WorkerAudi
         AddRows(i).FE = FE;
         AddRows(i).seedIndex = i;
         AddRows(i).source = SafeInfoValue(SeedInfo,'source',i,NaN);
-        AddRows(i).workerMode = SafeRuntimeOption(RuntimeOptions,'LocalName','label_aware');
+        AddRows(i).workerMode = 'boundary_core';
         AddRows(i).seedFeasible = all(BoundarySeeds(i).cons<=0,2);
         AddRows(i).seedProb = SafeInfoValue(SeedInfo,'prob',i,NaN);
         AddRows(i).seedUtility = SafeInfoValue(SeedInfo,'utility',i,NaN);
@@ -1610,8 +1587,12 @@ function Rows = AppendBoundaryLineageRows(Rows,BoundarySeeds,SeedInfo,WorkerAudi
             AddRows(i).descendantLabel = FieldOrDefaultMetric(WorkerAudit(i),'lineageDescLabel',zeros(0,1));
             AddRows(i).feasibleDescendantDec = FieldOrDefaultMetric(WorkerAudit(i),'lineageFeasibleDec',zeros(0,D));
             AddRows(i).localEvalCount = FieldOrDefaultMetric(WorkerAudit(i),'localEvalCount',0);
+            AddRows(i).feasibleForwardSuccess = logical(FieldOrDefaultMetric(WorkerAudit(i),'feasibleForwardSuccess',false));
             AddRows(i).frrSuccess = logical(FieldOrDefaultMetric(WorkerAudit(i),'frrSuccess',false));
+            AddRows(i).initialBracketGap = FieldOrDefaultMetric(WorkerAudit(i),'initialBracketGap',NaN);
             AddRows(i).bracketGap = FieldOrDefaultMetric(WorkerAudit(i),'bracketGap',NaN);
+            AddRows(i).shrinkSuccess = logical(FieldOrDefaultMetric(WorkerAudit(i),'shrinkSuccess',false));
+            AddRows(i).tightSuccess = logical(FieldOrDefaultMetric(WorkerAudit(i),'tightSuccess',false));
             AddRows(i).hardNegativeConfirmed = logical(FieldOrDefaultMetric(WorkerAudit(i),'hardNegativeConfirmed',false));
         end
     end
@@ -1749,7 +1730,7 @@ function Rows = AppendBoundaryArchiveEventRows(Rows,AddRows)
 end
 
 function [ExternalArchive,BoundaryGain,BoundaryAdded,ArchiveEvents] = UpdateSectionBExternalArchive( ...
-    ExternalArchive,OffspringC,OffspringU,BoundaryOffspring,Generation,FE)
+    ExternalArchive,OffspringC,OffspringU,BoundaryMigrants,Generation,FE)
     if nargin < 1 || isempty(ExternalArchive)
         ExternalArchive = [];
     end
@@ -1759,8 +1740,8 @@ function [ExternalArchive,BoundaryGain,BoundaryAdded,ArchiveEvents] = UpdateSect
     if nargin < 3 || isempty(OffspringU)
         OffspringU = [];
     end
-    if nargin < 4 || isempty(BoundaryOffspring)
-        BoundaryOffspring = [];
+    if nargin < 4 || isempty(BoundaryMigrants)
+        BoundaryMigrants = [];
     end
     if nargin < 5
         Generation = NaN;
@@ -1771,7 +1752,7 @@ function [ExternalArchive,BoundaryGain,BoundaryAdded,ArchiveEvents] = UpdateSect
 
     [ExternalArchive,~] = UpdateExternalArchive(ExternalArchive,[OffspringC,OffspringU]);
     BaseArchive = ExternalArchive;
-    [ExternalArchive,BoundaryAdded] = UpdateExternalArchive(ExternalArchive,BoundaryOffspring);
+    [ExternalArchive,BoundaryAdded] = UpdateExternalArchive(ExternalArchive,BoundaryMigrants);
     BoundaryGain = EstimateArchiveHVGain(BaseArchive,BoundaryAdded);
     ArchiveEvents = BuildBoundaryArchiveEvents(BaseArchive,BoundaryAdded,Generation,FE);
 end

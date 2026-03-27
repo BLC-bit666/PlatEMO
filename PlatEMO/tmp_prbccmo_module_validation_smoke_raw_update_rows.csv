@@ -1,0 +1,15 @@
+problem,family,run,seed,updateIndex,generation,FE,reason,calibrator,valid,auditReady,auditPhase,boundaryCount,eceBd,gapBd,trainCount,calCount,testCount,strictSeparation,trainCalOverlap,trainTestOverlap,calTestOverlap
+LIRCMOP1_BC,LIRCMOP_BC,1,1201,1,0,80,initial_train,raw,0,0,not_yet_auditable,0,NaN,NaN,0,0,0,1,0,0,0
+LIRCMOP1_BC,LIRCMOP_BC,1,1201,2,1,160,missing_model,raw,0,0,not_yet_auditable,0,NaN,NaN,0,0,0,1,0,0,0
+LIRCMOP1_BC,LIRCMOP_BC,1,1201,3,5,480,periodic,raw,0,0,not_yet_auditable,0,NaN,NaN,0,0,0,1,0,0,0
+LIRCMOP1_BC,LIRCMOP_BC,1,1201,4,10,880,periodic,raw,0,0,not_yet_auditable,0,NaN,NaN,0,0,0,1,0,0,0
+LIRCMOP1_BC,LIRCMOP_BC,1,1201,5,15,1280,periodic,raw,0,0,not_yet_auditable,0,NaN,NaN,0,0,0,1,0,0,0
+LIRCMOP1_BC,LIRCMOP_BC,1,1201,6,20,1680,periodic,raw,0,0,not_yet_auditable,0,NaN,NaN,0,0,0,1,0,0,0
+LIRCMOP1_BC,LIRCMOP_BC,1,1201,7,25,2080,periodic,raw,0,0,not_yet_auditable,0,NaN,NaN,0,0,0,1,0,0,0
+LIRCMOP1_BC,LIRCMOP_BC,1,1201,8,30,2480,periodic,raw,0,0,not_yet_auditable,0,NaN,NaN,0,0,0,1,0,0,0
+LIRCMOP1_BC,LIRCMOP_BC,1,1201,9,35,2880,periodic,raw,0,0,not_yet_auditable,0,NaN,NaN,0,0,0,1,0,0,0
+LIRCMOP1_BC,LIRCMOP_BC,1,1201,10,40,3280,periodic,raw,0,0,not_yet_auditable,0,NaN,NaN,0,0,0,1,0,0,0
+LIRCMOP1_BC,LIRCMOP_BC,1,1201,11,45,3680,periodic,raw,0,0,not_yet_auditable,0,NaN,NaN,0,0,0,1,0,0,0
+LIRCMOP1_BC,LIRCMOP_BC,1,1201,12,50,4080,periodic,raw,0,0,not_yet_auditable,0,NaN,NaN,0,0,0,1,0,0,0
+LIRCMOP1_BC,LIRCMOP_BC,1,1201,13,55,4480,periodic,raw,0,0,not_yet_auditable,0,NaN,NaN,0,0,0,1,0,0,0
+LIRCMOP1_BC,LIRCMOP_BC,1,1201,14,60,4880,periodic,raw,0,0,not_yet_auditable,0,NaN,NaN,0,0,0,1,0,0,0

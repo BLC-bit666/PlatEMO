@@ -26,10 +26,7 @@ function [CalDec,CalLabel,CalNear,Status] = UpdateCalibrationBuffer( ...
 
     NewDec  = NewSolutions.decs;
     NewLab  = double(all(NewSolutions.cons<=0,2));
-    NewNear = true(size(NewLab));
-    if nargin >= 5 && isstruct(NewInfo) && isfield(NewInfo,'prob') && numel(NewInfo.prob) == numel(NewSolutions)
-        NewNear = abs(NewInfo.prob(:)-0.5) <= 0.1;
-    end
+    NewNear = ResolveBoundaryNearMask(NewInfo,numel(NewSolutions),0.10);
 
     AllDec  = [CalDec;NewDec];
     AllLab  = [CalLabel(:);NewLab(:)];
@@ -43,6 +40,25 @@ function [CalDec,CalLabel,CalNear,Status] = UpdateCalibrationBuffer( ...
     [CalDec,CalLabel,CalNear] = RepairCalibrationBuffer( ...
         CalDec,CalLabel,CalNear,FallbackDec,FallbackLabel,MaxCal);
     Status = InitCalibrationBufferStatus(CalLabel,CalNear,MaxCal);
+end
+
+function NearMask = ResolveBoundaryNearMask(Info,Count,Delta)
+    if nargin < 2
+        Count = 0;
+    end
+    if nargin < 3 || isempty(Delta)
+        Delta = 0.10;
+    end
+    NearMask = false(Count,1);
+    if ~isstruct(Info)
+        return;
+    end
+    if isfield(Info,'prob') && numel(Info.prob) == Count
+        NearMask = NearMask | abs(Info.prob(:)-0.5) <= Delta;
+    end
+    if isfield(Info,'boundaryLocal') && numel(Info.boundaryLocal) == Count
+        NearMask = NearMask | logical(Info.boundaryLocal(:));
+    end
 end
 
 function [Dec,Lab,Near] = TrimCalibrationBuffer(Dec,Lab,Near,MaxCal)

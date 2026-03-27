@@ -1,4 +1,0 @@
-problem,variant,run,sharedSectorCount,activeSectorCount,gatePassedPairCount,positiveMarginPairCount,candidateCount,selectedCount,feasibleDescendantSeedCount,FSG,boundaryStarted,SAR,GPR,FDR,oracleCount,meanSelectedOracleDB,medianSelectedOracleDB,qpTauSelectedOracleDB
-DASCMOP5_BC,MainBridge,1,0,0,0,0,0,0,0,Inf,0,NaN,NaN,NaN,0,NaN,NaN,NaN
-DASCMOP5_BC,RandSectorPair,1,0,0,0,0,0,0,0,Inf,0,NaN,NaN,NaN,0,NaN,NaN,NaN
-DASCMOP5_BC,TopKPair,1,0,0,0,0,0,0,0,Inf,0,NaN,NaN,NaN,0,NaN,NaN,NaN

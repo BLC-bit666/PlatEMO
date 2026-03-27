@@ -22,9 +22,8 @@ function Detail = ScoreBoundaryCandidates( ...
     TrustWeight = ResolveTrustWeight(Model,RuntimeOptions);
     TrustECE    = ResolveTrustMetric(Model,'ece',inf);
     TrustCoreNearGap = ResolveTrustMetric(Model,'coreNearGap',ResolveTrustMetric(Model,'nearGap',inf));
-    LambdaSigma = ResolveDisagreementWeight(Model);
 
-    BoundaryTrust = Reliability .* QueryScore .* (1 + LambdaSigma*Disagreement);
+    BoundaryTrust = QueryScore;
     Utility       = ParetoValue(:);
     UncertainOnly = QueryScore(:);
     HighProb      = Prob(:);
@@ -194,17 +193,5 @@ function Value = ResolveTrustMetric(Model,Field,Default)
     Metric = Model.TrustMetric;
     if isfield(Metric,Field) && ~isempty(Metric.(Field))
         Value = Metric.(Field);
-    end
-end
-
-function Weight = ResolveDisagreementWeight(Model)
-    Weight = 1;
-    if isempty(Model)
-        return;
-    end
-    if isfield(Model,'DisagreementWeight') && ~isempty(Model.DisagreementWeight)
-        Weight = max(Model.DisagreementWeight,0);
-    elseif isfield(Model,'Members') && numel(Model.Members) > 1
-        Weight = 1;
     end
 end

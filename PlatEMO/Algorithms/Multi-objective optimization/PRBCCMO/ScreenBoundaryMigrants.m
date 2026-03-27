@@ -1,11 +1,7 @@
-function MigrationPool = ScreenBoundaryMigrants(PopulationC,BoundarySeeds,WorkerFeasiblePool,W,RuntimeOptions)
-% Build the generation-level migration pool from all real feasible boundary discoveries.
+function MigrationPool = ScreenBoundaryMigrants(PopulationC,CandidatePool,W)
+% Keep only sector-champion-improving feasible boundary gains.
 
-    if nargin < 5 || ~isstruct(RuntimeOptions)
-        RuntimeOptions = struct();
-    end
-
-    BoundaryFeasiblePool = CollectBoundaryFeasiblePool(BoundarySeeds,WorkerFeasiblePool);
+    BoundaryFeasiblePool = FilterBoundaryFeasiblePool(CandidatePool);
     MigrationPool = [];
     if isempty(BoundaryFeasiblePool)
         return;
@@ -23,7 +19,7 @@ function MigrationPool = ScreenBoundaryMigrants(PopulationC,BoundarySeeds,Worker
 
     SectorPool = AssociateSectors(BoundaryFeasiblePool.objs,W,RefObj);
     PoolValue  = ComputeSectorScalar(BoundaryFeasiblePool.objs,W,RefObj,SectorPool);
-    DeltaMig   = ResolveMigrationGap(RuntimeOptions);
+    DeltaMig   = 0;
 
     if isempty(BaseFeasible)
         Improve = inf(size(PoolValue));
@@ -57,16 +53,11 @@ function MigrationPool = ScreenBoundaryMigrants(PopulationC,BoundarySeeds,Worker
     MigrationPool = BoundaryFeasiblePool(SelectIdx(Order));
 end
 
-function Pool = CollectBoundaryFeasiblePool(BoundarySeeds,WorkerFeasiblePool)
-    Pool = [];
-    if ~isempty(BoundarySeeds)
-        SeedFeasible = BoundarySeeds(all(BoundarySeeds.cons<=0,2));
-        Pool = [Pool,SeedFeasible];
+function Pool = FilterBoundaryFeasiblePool(Pool)
+    if isempty(Pool)
+        return;
     end
-    if ~isempty(WorkerFeasiblePool)
-        WorkerFeasiblePool = WorkerFeasiblePool(all(WorkerFeasiblePool.cons<=0,2));
-        Pool = [Pool,WorkerFeasiblePool];
-    end
+    Pool = Pool(all(Pool.cons<=0,2));
     Pool = KeepUniquePopulation(Pool);
 end
 
@@ -80,14 +71,6 @@ function Keep = SelectBestPerSector(SectorPool,PoolValue,Improve,DeltaMig)
         end
         [~,Best] = min(PoolValue(CandIdx));
         Keep(CandIdx(Best)) = true;
-    end
-end
-
-function Gap = ResolveMigrationGap(RuntimeOptions)
-    Gap = 0;
-    if isstruct(RuntimeOptions) && isfield(RuntimeOptions,'MigrationGap') ...
-            && ~isempty(RuntimeOptions.MigrationGap)
-        Gap = max(RuntimeOptions.MigrationGap,0);
     end
 end
 
