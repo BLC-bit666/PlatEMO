@@ -1,0 +1,3 @@
+problem,family,variant,variantLabel,algorithm,run,seed,snapshotCount,finalFE,finalHV,finalIGDp,finalFeasibleRate,aucHV,firstFeasibleHitFE,firstArchiveEntryFE,firstArchiveEntrySource,boundaryGainTotal,archiveEventCount,runtime
+DASCMOP1_BC,DASCMOP_BC,boundarycore_beta,PRBCCMO BoundaryCore mainline,PRBCCMO,1,1001,5,200,0,0.974422675211234,0.05,0,200,200,population_feasible_hit_proxy,0,0,0.400810791666667
+DASCMOP1_BC,DASCMOP_BC,no_boundary,PRBCCMO without boundary budget,PRBCCMO,1,1001,5,200,0,0.974422675211234,0.05,0,200,200,population_feasible_hit_proxy,0,0,0.0572792083333333

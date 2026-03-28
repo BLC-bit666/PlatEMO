@@ -12,7 +12,7 @@ classdef PRBCCMO < ALGORITHM
 % pairM    --- 0.05 --- Margin for tight bracket pair loss
 % lPair    --- 1    --- Weight of bracket pair loss
 % lMid     --- 1    --- Weight of midpoint-to-0.5 loss
-% calibrator --- beta --- Boundary calibrator candidates ('beta'/'raw')
+% calibrator --- 'beta' --- Boundary calibrator candidates ('beta'/'raw')
 % The PRBCCMO-BoundaryCore mainline follows TopKPair bridge generation,
 % bridge-conditioned p≈0.5 localization, Pareto-then-boundary selection,
 % one-step feasible exploit / one-step infeasible bracket shrink, and calibrated trust.
@@ -677,13 +677,13 @@ function [Model,PendingLabels,LastCalMetric,ModelUpdated,UpdateReason] = UpdateB
         return;
     end
     UpdatedModel.BoundaryLocalDelta = SafeRuntimeOption(RuntimeOptions,'BoundaryLocalDelta',0.10);
-    Model = RefreshBoundaryTrust(UpdatedModel,TestDec,TestLabel,TestNear,RuntimeOptions,PrevModel);
+    Model = RefreshBoundaryTrust(UpdatedModel,TestDec,TestLabel,TestNear,RuntimeOptions);
     ModelUpdated = true;
     PendingLabels = 0;
     LastCalMetric = EvaluateBoundaryCalibration(Model,TestDec,TestLabel,TestNear);
 end
 
-function Model = RefreshBoundaryTrust(Model,TestDec,TestLabel,TestNear,RuntimeOptions,PrevModel)
+function Model = RefreshBoundaryTrust(Model,TestDec,TestLabel,TestNear,RuntimeOptions)
     if isempty(Model)
         return;
     end
@@ -692,14 +692,9 @@ function Model = RefreshBoundaryTrust(Model,TestDec,TestLabel,TestNear,RuntimeOp
     if nargin < 5 || ~isstruct(RuntimeOptions)
         RuntimeOptions = struct();
     end
-    if nargin < 6
-        PrevModel = [];
-    end
     TauE = SafeRuntimeOption(RuntimeOptions,'TrustTauE',0.10);
     TauN = SafeRuntimeOption(RuntimeOptions,'TrustTauN',0.10);
     MinCoreCount = SafeRuntimeOption(RuntimeOptions,'TrustMinCoreCount',20);
-    RequiredStreak = SafeRuntimeOption(RuntimeOptions,'TrustAdmissionStreak',3);
-    FallbackCap = SafeRuntimeOption(RuntimeOptions,'TrustFallbackCap',0.25);
     BoundaryEce = FieldOrDefaultMetric(Metric,'boundaryEce',FieldOrDefaultMetric(Metric,'ece',inf));
     BoundaryGap = FieldOrDefaultMetric( ...
         Metric,'boundaryGap',FieldOrDefaultMetric(Metric,'coreNearGap',FieldOrDefaultMetric(Metric,'nearGap',inf)));
@@ -713,26 +708,11 @@ function Model = RefreshBoundaryTrust(Model,TestDec,TestLabel,TestNear,RuntimeOp
         && isfinite(BoundaryEce) && BoundaryEce <= TauE ...
         && isfinite(BoundaryGap) && BoundaryGap <= TauN ...
         && FieldOrDefaultMetric(Metric,'boundaryCount',FieldOrDefaultMetric(Metric,'coreNearCount',0)) >= MinCoreCount;
-    PrevStreak = 0;
-    if isstruct(PrevModel) && isfield(PrevModel,'TrustPassStreak') && ~isempty(PrevModel.TrustPassStreak)
-        PrevStreak = PrevModel.TrustPassStreak;
-    end
-    if AuditPass
-        TrustPassStreak = PrevStreak + 1;
-    else
-        TrustPassStreak = 0;
-    end
-    TrustGate = TrustPassStreak >= RequiredStreak;
-    if TrustGate
-        TrustWeight = RawTrustWeight;
-    else
-        TrustWeight = min(RawTrustWeight,FallbackCap);
-    end
+    TrustWeight = RawTrustWeight;
+    TrustGate = TrustWeight > 0;
     Model.TrustWeightRaw = RawTrustWeight;
     Model.TrustWeight = TrustWeight;
     Model.TrustAuditPass = AuditPass;
-    Model.TrustPassStreak = TrustPassStreak;
-    Model.TrustAdmissionStreak = RequiredStreak;
     Model.TrustMinCoreCount = MinCoreCount;
     Model.TrustGate = TrustGate;
     Model.TrustMetric = Metric;
@@ -1358,6 +1338,10 @@ function Row = InitBoundarySelectionTraceRow()
         'selectionMode',4, ...
         'hasModel',false, ...
         'trustGate',false, ...
+        'trustWeight',0, ...
+        'refineQuota',0, ...
+        'refineUseCount',0, ...
+        'refineGain',0, ...
         'candidateCount',0, ...
         'eligibleCount',0, ...
         'ineligibleCount',0, ...
@@ -1408,6 +1392,10 @@ function Trace = AppendBoundarySelectionTrace(Trace,Generation,FE,Diag)
         Row.selectionMode = BoundaryDiagValue(Diag,'selectionMode',1);
         Row.hasModel = logical(BoundaryDiagValue(Diag,'hasModel',false));
         Row.trustGate = logical(BoundaryDiagValue(Diag,'trustGate',false));
+        Row.trustWeight = BoundaryDiagValue(Diag,'trustWeight',0);
+        Row.refineQuota = BoundaryDiagValue(Diag,'refineQuota',0);
+        Row.refineUseCount = BoundaryDiagValue(Diag,'refineUseCount',0);
+        Row.refineGain = BoundaryDiagValue(Diag,'refineGain',0);
         Row.candidateCount = BoundaryDiagValue(Diag,'candidateCount',0);
         Row.eligibleCount = BoundaryDiagValue(Diag,'eligibleCount',0);
         Row.ineligibleCount = BoundaryDiagValue(Diag,'ineligibleCount',0);
@@ -1852,7 +1840,6 @@ function Metric = AppendSectionBCalibrationTrace(Metric,CalMetric)
     Row.class_count = FieldOrDefaultMetric(CalMetric,'classCount',0);
     Row.trust_gate = logical(FieldOrDefaultMetric(CalMetric,'trustGate',false));
     Row.trust_audit_pass = logical(FieldOrDefaultMetric(CalMetric,'trustAuditPass',false));
-    Row.trust_pass_streak = FieldOrDefaultMetric(CalMetric,'trustPassStreak',0);
     Row.trust_weight = FieldOrDefaultMetric(CalMetric,'trustWeight',NaN);
     Row.trust_weight_raw = FieldOrDefaultMetric(CalMetric,'trustWeightRaw',NaN);
     Row.calibrator = FieldOrDefaultMetric(CalMetric,'calibrator','raw');
@@ -1915,7 +1902,6 @@ function Row = InitSectionBCalibrationTraceRow()
         'class_count',0, ...
         'trust_gate',false, ...
         'trust_audit_pass',false, ...
-        'trust_pass_streak',0, ...
         'trust_weight',NaN, ...
         'trust_weight_raw',NaN, ...
         'calibrator','raw', ...

@@ -19,7 +19,6 @@ function Metric = EvaluateBoundaryCalibration(Model,CalDec,CalLabel,BoundaryLoca
     Metric.relaxedNearCount = 0;
     Metric.trustGate = false;
     Metric.trustAuditPass = false;
-    Metric.trustPassStreak = 0;
     Metric.trustWeight = 0;
     Metric.trustWeightRaw = 0;
     Metric.calibrator = 'raw';
@@ -107,9 +106,6 @@ function Metric = EvaluateBoundaryCalibration(Model,CalDec,CalLabel,BoundaryLoca
     end
     if isfield(Model,'TrustAuditPass') && ~isempty(Model.TrustAuditPass)
         Metric.trustAuditPass = logical(Model.TrustAuditPass);
-    end
-    if isfield(Model,'TrustPassStreak') && ~isempty(Model.TrustPassStreak)
-        Metric.trustPassStreak = Model.TrustPassStreak;
     end
     if isfield(Model,'TrustWeight') && ~isempty(Model.TrustWeight)
         Metric.trustWeight = Model.TrustWeight;

@@ -1,0 +1,11 @@
+scope,name,family,metric,baseVariant,compareVariant,betterDirection,pairCount,baseMedian,compareMedian,medianDiff,signrankP,holmAdjustedP
+problem,DASCMOP1_BC,DASCMOP_BC,finalHV,boundarycore_beta,no_boundary,higher_better,1,0,0,0,1,1
+problem,DASCMOP1_BC,DASCMOP_BC,finalIGDp,boundarycore_beta,no_boundary,lower_better,1,0.974422675211234,0.974422675211234,0,1,1
+problem,DASCMOP1_BC,DASCMOP_BC,finalFeasibleRate,boundarycore_beta,no_boundary,higher_better,1,0.05,0.05,0,1,1
+problem,DASCMOP1_BC,DASCMOP_BC,firstArchiveEntryFE,boundarycore_beta,no_boundary,lower_better,1,200,200,0,1,1
+problem,DASCMOP1_BC,DASCMOP_BC,aucHV,boundarycore_beta,no_boundary,higher_better,1,0,0,0,1,1
+pooled,ALL_1_BC,ALL_BC,finalHV,boundarycore_beta,no_boundary,higher_better,1,0,0,0,1,1
+pooled,ALL_1_BC,ALL_BC,finalIGDp,boundarycore_beta,no_boundary,lower_better,1,0.974422675211234,0.974422675211234,0,1,1
+pooled,ALL_1_BC,ALL_BC,finalFeasibleRate,boundarycore_beta,no_boundary,higher_better,1,0.05,0.05,0,1,1
+pooled,ALL_1_BC,ALL_BC,firstArchiveEntryFE,boundarycore_beta,no_boundary,lower_better,1,200,200,0,1,1
+pooled,ALL_1_BC,ALL_BC,aucHV,boundarycore_beta,no_boundary,higher_better,1,0,0,0,1,1

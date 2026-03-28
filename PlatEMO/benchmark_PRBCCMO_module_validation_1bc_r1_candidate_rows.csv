@@ -1,0 +1,2 @@
+problem,family,run,seed,candidateIndex,generation,FE,source,selectionMode,sector,eligible,selected,prob0,prob,absProbHalf,placementRefined,placementGain,queryScore,disagreement,reliability,paretoValue,boundaryTrust,trustWeight,utility,shortlisted
+DASCMOP1_BC,DASCMOP_BC,1,1001,1,4,200,1,4,11,1,0,0.5,0.5,0,0,0,1,0,1,0,1,0,1,0

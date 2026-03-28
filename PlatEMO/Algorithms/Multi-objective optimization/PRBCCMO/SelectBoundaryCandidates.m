@@ -18,7 +18,7 @@ function [Offspring,Info,Diag,CandidateAudit] = SelectBoundaryCandidates(Problem
         FeasibleObj = zeros(0,Problem.M);
     end
 
-    Placement = LocalizeBridgeBoundaryPoints(Problem,Pool,Model,RuntimeOptions);
+    Placement = LocalizeBridgeBoundaryPoints(Problem,Pool,Model,Budget,RuntimeOptions);
     Detail = ScoreBridgeCandidates( ...
         Problem,Pool,FeasibleObj,W,HardNegativeArchive,Placement,Budget,RuntimeOptions);
     SelectorMode = ResolveSelectorMode(RuntimeOptions);
@@ -76,6 +76,10 @@ function Diag = InitBoundarySelectionDiag()
         'selectedCount',0, ...
         'positiveParetoCount',0, ...
         'trustGate',false, ...
+        'trustWeight',0, ...
+        'refineQuota',0, ...
+        'refineUseCount',0, ...
+        'refineGain',0, ...
         'maxRankScore',NaN, ...
         'maxParetoValue',NaN, ...
         'maxQueryScore',NaN, ...
@@ -85,6 +89,10 @@ end
 function Diag = UpdateBoundarySelectionDiag(Diag,Detail,Placement,RankUtility,SelectionMode)
     Diag.selectionMode = SelectionMode;
     Diag.trustGate = logical(Placement.localTrust);
+    Diag.trustWeight = Placement.localTrustWeight;
+    Diag.refineQuota = Placement.refineQuota;
+    Diag.refineUseCount = sum(Placement.refinedMask);
+    Diag.refineGain = sum(Placement.refineGain);
     Diag.candidateCount = numel(Detail.eligible);
     Diag.eligibleCount = sum(Detail.eligible(:));
     Diag.ineligibleCount = Diag.candidateCount - Diag.eligibleCount;
@@ -140,7 +148,10 @@ function Row = InitBoundaryCandidateAuditRow(Problem)
         'sector',NaN, ...
         'eligible',false, ...
         'selected',false, ...
+        'prob0',NaN, ...
         'prob',NaN, ...
+        'placementRefined',false, ...
+        'placementGain',0, ...
         'queryScore',NaN, ...
         'disagreement',NaN, ...
         'reliability',NaN, ...
@@ -163,20 +174,22 @@ function Rows = BuildBoundaryCandidateAudit( ...
     if nargin >= 7 && ~isempty(Accept)
         Selected(Accept) = true;
     end
-    TrustWeight = ResolveTrustWeight(Placement.model);
     for i = 1 : Count
         Rows(i).source = SafeVectorValue(Pool.source,i,NaN);
         Rows(i).selectionMode = SelectionMode;
         Rows(i).sector = SafeVectorValue(Pool.sector,i,NaN);
         Rows(i).eligible = logical(SafeVectorValue(Detail.eligible,i,false));
         Rows(i).selected = Selected(i);
+        Rows(i).prob0 = SafeVectorValue(Placement.prob0,i,NaN);
         Rows(i).prob = SafeVectorValue(Placement.prob,i,NaN);
+        Rows(i).placementRefined = logical(SafeVectorValue(Placement.refinedMask,i,false));
+        Rows(i).placementGain = SafeVectorValue(Placement.refineGain,i,0);
         Rows(i).queryScore = SafeVectorValue(Detail.boundaryScore,i,NaN);
         Rows(i).disagreement = SafeVectorValue(Placement.disagreement,i,NaN);
         Rows(i).reliability = SafeVectorValue(Detail.reliability,i,NaN);
         Rows(i).paretoValue = SafeVectorValue(Detail.paretoValue,i,NaN);
         Rows(i).boundaryTrust = SafeVectorValue(Detail.boundaryTrust,i,NaN);
-        Rows(i).trustWeight = TrustWeight;
+        Rows(i).trustWeight = Placement.localTrustWeight;
         Rows(i).utility = SafeVectorValue(RankUtility,i,NaN);
         Rows(i).fullV2Utility = NaN;
         Rows(i).fullV2Shortlisted = logical(SafeVectorValue(Detail.shortlisted,i,false));
@@ -198,7 +211,7 @@ function Value = SafeVectorValue(Data,Index,Default)
     Value = Data(Index);
 end
 
-function Placement = LocalizeBridgeBoundaryPoints(Problem,Pool,Model,RuntimeOptions)
+function Placement = LocalizeBridgeBoundaryPoints(Problem,Pool,Model,Budget,RuntimeOptions)
     Total = size(Pool.anchorDec,1);
     Placement = struct();
     Placement.dec          = zeros(Total,Problem.D);
@@ -208,7 +221,11 @@ function Placement = LocalizeBridgeBoundaryPoints(Problem,Pool,Model,RuntimeOpti
     Placement.prob0        = 0.5*ones(Total,1);
     Placement.prob         = 0.5*ones(Total,1);
     Placement.disagreement = zeros(Total,1);
-    Placement.localTrust   = HasBoundaryLocalTrust(Model,RuntimeOptions);
+    Placement.localTrustWeight = ResolveTrustWeight(Model,RuntimeOptions);
+    Placement.refineQuota  = 0;
+    Placement.refinedMask  = false(Total,1);
+    Placement.refineGain   = zeros(Total,1);
+    Placement.localTrust   = false;
     Placement.model        = Model;
     if Total == 0
         return;
@@ -230,11 +247,19 @@ function Placement = LocalizeBridgeBoundaryPoints(Problem,Pool,Model,RuntimeOpti
         Placement.disagreement(i) = ProbeDis(Best0);
         Placement.dec(i,:) = ProbeDec(Best0,:);
         Placement.proxyObj(i,:) = ProbeObj(Best0,:);
+    end
 
-        if ~Placement.localTrust
-            continue;
-        end
+    Placement.refineQuota = ResolvePlacementRefineQuota( ...
+        Total,Budget,Placement.localTrustWeight,RuntimeOptions);
+    Placement.localTrust = Placement.refineQuota > 0 && RefineStep > 0;
+    if ~Placement.localTrust
+        return;
+    end
 
+    RefineIdx = SelectPlacementRefineIdx( ...
+        Placement.prob0,Placement.disagreement,Placement.refineQuota);
+    for k = 1 : numel(RefineIdx)
+        i = RefineIdx(k);
         RefineLambda = unique([ ...
             max(0,Placement.lambda0(i)-RefineStep), ...
             Placement.lambda0(i), ...
@@ -250,6 +275,8 @@ function Placement = LocalizeBridgeBoundaryPoints(Problem,Pool,Model,RuntimeOpti
         Placement.disagreement(i) = RefineDis(Best1);
         Placement.dec(i,:) = RefineDec(Best1,:);
         Placement.proxyObj(i,:) = RefineObj(Best1,:);
+        Placement.refinedMask(i) = true;
+        Placement.refineGain(i) = abs(Placement.prob0(i)-0.5) - abs(Placement.prob(i)-0.5);
     end
 end
 
@@ -311,25 +338,37 @@ function Step = ResolveProbeRefineStep(RuntimeOptions)
     Step = min(max(Step,0),0.5);
 end
 
-function Flag = HasBoundaryLocalTrust(Model,RuntimeOptions)
-    Flag = false;
-    if isempty(Model)
+function Quota = ResolvePlacementRefineQuota(Total,Budget,TrustWeight,RuntimeOptions)
+    Quota = 0;
+    if Total <= 0 || Budget <= 0
         return;
     end
-    if nargin >= 2 && isstruct(RuntimeOptions)
-        if isfield(RuntimeOptions,'ForcePlacementRefine') ...
-                && logical(RuntimeOptions.ForcePlacementRefine)
-            Flag = true;
-            return;
-        end
-        if isfield(RuntimeOptions,'DisableTrust') ...
-                && logical(RuntimeOptions.DisableTrust)
-            return;
-        end
+    if nargin >= 4 && isstruct(RuntimeOptions) ...
+            && isfield(RuntimeOptions,'ForcePlacementRefine') ...
+            && logical(RuntimeOptions.ForcePlacementRefine)
+        Quota = Total;
+        return;
     end
-    if isfield(Model,'TrustGate') && ~isempty(Model.TrustGate)
-        Flag = logical(Model.TrustGate);
+    if nargin >= 4 && isstruct(RuntimeOptions) ...
+            && isfield(RuntimeOptions,'DisableTrust') ...
+            && logical(RuntimeOptions.DisableTrust)
+        return;
     end
+    Quota = min(Total,max(0,floor(Budget*TrustWeight)));
+end
+
+function Idx = SelectPlacementRefineIdx(Prob0,Disagreement,Quota)
+    if nargin < 3 || Quota <= 0 || isempty(Prob0)
+        Idx = zeros(0,1);
+        return;
+    end
+    Total = numel(Prob0);
+    SortKey = [ ...
+        abs(Prob0(:)-0.5), ...
+        -Disagreement(:), ...
+        (1:Total)'];
+    [~,Order] = sortrows(SortKey,[1 2 3]);
+    Idx = Order(1:min(Quota,Total));
 end
 
 function Detail = ScoreBridgeCandidates( ...
@@ -513,8 +552,12 @@ function Eligible = IsOutsideHardNegativeRegion(Problem,CandidateDec,HardNegativ
     Eligible = all(Dist./repmat(Radius,Total,1) >= 1,2);
 end
 
-function Weight = ResolveTrustWeight(Model)
+function Weight = ResolveTrustWeight(Model,RuntimeOptions)
     Weight = 0;
+    if nargin >= 2 && isstruct(RuntimeOptions) && isfield(RuntimeOptions,'DisableTrust') ...
+            && logical(RuntimeOptions.DisableTrust)
+        return;
+    end
     if isempty(Model)
         return;
     end
