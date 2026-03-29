@@ -1,5 +1,0 @@
-problem,baseVariant,compareVariant,metric,pairCount,baseMedian,compareMedian,medianDiff,signrankP
-DASCMOP1_BC,raw,beta,meanECE,1,0.393399479045509,0.393399479045509,0,1
-DASCMOP1_BC,raw,beta,meanCoreNearGap,1,0.394060498287417,0.394060498287417,0,1
-DASCMOP1_BC,raw,beta,TWS,1,0,0,0,1
-DASCMOP1_BC,raw,beta,TGP,1,0,0,0,1

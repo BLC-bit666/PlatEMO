@@ -285,7 +285,7 @@ classdef module_exp < handle
                 str = arrayfun(@num2str,[obj.data.PRO.N;obj.data.PRO.M;obj.data.PRO.D;obj.data.PRO.maxFE]','UniformOutput',false);
                 obj.app.table.Data = [[str(:,show);repmat({''},size(obj.app.table.Data,1)-length(obj.data.PRO),sum(show))],obj.app.table.Data(:,end-length(obj.data.ALG)+1:end)];
                 % Update the styles
-                styleLoc = cat(1,obj.app.table.StyleConfigurations.TargetIndex{:});
+                styleLoc = getStyleLocations(obj.app.table);
                 if ~isempty(styleLoc)
                     obj.app.table.removeStyle();
                     obj.app.table.addStyle(uistyle('FontWeight','bold'),'cell',[styleLoc(:,1),styleLoc(:,2)+size(obj.app.table.Data,2)-oldsize]);
@@ -308,7 +308,7 @@ classdef module_exp < handle
                 end
                 % Delete the cells and styles in the table
                 obj.app.table.Data(proindex,end-nA+1:end) = {''};
-                styleLoc = cat(1,obj.app.table.StyleConfigurations.TargetIndex{:});
+                styleLoc = getStyleLocations(obj.app.table);
                 if ~isempty(styleLoc)
                     styleLoc(ismember(styleLoc(:,1),proindex),:) = [];
                 end
@@ -473,11 +473,12 @@ classdef module_exp < handle
                     figure(obj.GUI.app.figure);
                     if ischar(Name)
                         [~,~,Type] = fileparts(Name);
+                        styleLoc = getStyleLocations(obj.app.table);
                         switch Type
                             case '.xlsx'
-                                table2excel(fullfile(Path,Name),obj.app.dropC(1).Value,[{'Problem'},obj.app.table.ColumnName';obj.app.table.RowName,obj.app.table.Data],cat(1,obj.app.table.StyleConfigurations.TargetIndex{:}),size(obj.data.result,2));
+                                table2excel(fullfile(Path,Name),obj.app.dropC(1).Value,[{'Problem'},obj.app.table.ColumnName';obj.app.table.RowName,obj.app.table.Data],styleLoc,size(obj.data.result,2));
                             case '.tex'
-                                table2tex(fullfile(Path,Name),[{'Problem'},obj.app.table.ColumnName';obj.app.table.RowName,obj.app.table.Data],cat(1,obj.app.table.StyleConfigurations.TargetIndex{:}),size(obj.data.result,1),size(obj.data.result,2));
+                                table2tex(fullfile(Path,Name),[{'Problem'},obj.app.table.ColumnName';obj.app.table.RowName,obj.app.table.Data],styleLoc,size(obj.data.result,1),size(obj.data.result,2));
                             case '.txt'
                                 table2txt(fullfile(Path,Name),[{'Problem'},obj.app.table.ColumnName';obj.app.table.RowName,obj.app.table.Data]);
                         	case '.mat'
@@ -560,9 +561,22 @@ function [result,metric] = parallelFcn(Algorithm,Problem)
     metric = Algorithm.metric;
 end
 
+function styleLoc = getStyleLocations(tableObj)
+    styleLoc = zeros(0,2);
+    if isempty(tableObj.StyleConfigurations)
+        return;
+    end
+    targetIndex = {tableObj.StyleConfigurations.TargetIndex};
+    targetIndex = targetIndex(~cellfun(@isempty,targetIndex));
+    if ~isempty(targetIndex)
+        styleLoc = cat(1,targetIndex{:});
+    end
+end
+
 %% Save the table to Excel
 function table2excel(filename,sheetname,Data,styleLoc,nA)
     [x,y] = size(Data);
+    sheetname = normalizeExcelSheetName(sheetname);
     % Convert the indices to Excel cell number
     function range = getRange(varargin)
         if nargin == 2
@@ -575,14 +589,24 @@ function table2excel(filename,sheetname,Data,styleLoc,nA)
             range = [getRange(varargin{1:2}),':',getRange(varargin{3:4})];
         end
     end
-    % Open the file and get the sheet
-    try
-        Excel = actxGetRunningServer('Excel.Application');
-    catch
-        Excel = actxserver('Excel.Application');
-    end
     if exist(filename,'file')
         delete(filename);
+    end
+    % ActiveX automation is only available when Excel COM is accessible.
+    if ~ispc
+        writecell(Data,filename,'Sheet',sheetname);
+        return;
+    end
+    % Open the file and get the sheet
+    try
+        try
+            Excel = actxGetRunningServer('Excel.Application');
+        catch
+            Excel = actxserver('Excel.Application');
+        end
+    catch
+        writecell(Data,filename,'Sheet',sheetname);
+        return;
     end
     Workbook = invoke(Excel.Workbooks,'Add');
     Workbook.SaveAs(filename);
@@ -623,6 +647,14 @@ function table2excel(filename,sheetname,Data,styleLoc,nA)
     Workbook.Close;
     Excel.Quit;
     Excel.delete;
+end
+
+function sheetname = normalizeExcelSheetName(sheetname)
+    sheetname = regexprep(char(sheetname),'[\[\]\*:/\\?]','_');
+    if isempty(sheetname)
+        sheetname = 'Sheet1';
+    end
+    sheetname = sheetname(1:min(end,31));
 end
 
 %% Save the table to TeX

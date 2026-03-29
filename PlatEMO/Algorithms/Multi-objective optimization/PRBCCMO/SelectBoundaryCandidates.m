@@ -1,16 +1,12 @@
-function [Offspring,Info,Diag,CandidateAudit] = SelectBoundaryCandidates(Problem,Pool,FeasibleObj,Model,W,HardNegativeArchive,Budget,RuntimeOptions)
+function [Offspring,Info] = SelectBoundaryCandidates(Problem,Pool,FeasibleObj,Model,W,HardNegativeArchive,Budget,RuntimeOptions)
 % Select bridge queries using the PRBCCMO-BoundaryCore pipeline.
 
     Offspring = [];
     Info = InitBoundarySeedInfo(Problem);
-    Diag = InitBoundarySelectionDiag();
-    CandidateAudit = repmat(InitBoundaryCandidateAuditRow(Problem),0,1);
 
     if nargin < 8 || ~isstruct(RuntimeOptions)
         RuntimeOptions = struct();
     end
-    Diag.budget = max(0,Budget);
-    Diag.hasModel = ~isempty(Model);
     if isempty(Pool.sector)
         return;
     end
@@ -22,23 +18,16 @@ function [Offspring,Info,Diag,CandidateAudit] = SelectBoundaryCandidates(Problem
     Detail = ScoreBridgeCandidates( ...
         Problem,Pool,FeasibleObj,W,HardNegativeArchive,Placement,Budget,RuntimeOptions);
     SelectorMode = ResolveSelectorMode(RuntimeOptions);
-    SelectionMode = ResolveSelectionModeId(SelectorMode);
     RankUtility = ResolveCandidateUtility(Detail,SelectorMode);
-    Diag = UpdateBoundarySelectionDiag(Diag,Detail,Placement,RankUtility,SelectionMode);
 
-    CandidateAudit = BuildBoundaryCandidateAudit( ...
-        Problem,Pool,Placement,Detail,SelectionMode,RankUtility,[]);
     if Budget <= 0 || ~any(Detail.valid)
         return;
     end
 
-    Accept = SelectAcceptedCandidates(Detail,RankUtility,Budget,RuntimeOptions);
+    Accept = SelectAcceptedCandidates(Detail,Budget,RuntimeOptions);
     if isempty(Accept)
         return;
     end
-    CandidateAudit = BuildBoundaryCandidateAudit( ...
-        Problem,Pool,Placement,Detail,SelectionMode,RankUtility,Accept);
-    Diag.selectedCount = numel(Accept);
 
     DecsSel = Placement.dec(Accept,:);
     Offspring = Problem.Evaluation(DecsSel);
@@ -63,60 +52,6 @@ function [Offspring,Info,Diag,CandidateAudit] = SelectBoundaryCandidates(Problem
     Info.helperObj     = Pool.helperObj(Accept,:);
 end
 
-function Diag = InitBoundarySelectionDiag()
-    Diag = struct( ...
-        'budget',0, ...
-        'selectionMode',ResolveSelectionModeId(), ...
-        'hasModel',false, ...
-        'candidateCount',0, ...
-        'eligibleCount',0, ...
-        'ineligibleCount',0, ...
-        'finiteScoreCount',0, ...
-        'validCount',0, ...
-        'selectedCount',0, ...
-        'positiveParetoCount',0, ...
-        'trustGate',false, ...
-        'trustWeight',0, ...
-        'refineQuota',0, ...
-        'refineUseCount',0, ...
-        'refineGain',0, ...
-        'maxRankScore',NaN, ...
-        'maxParetoValue',NaN, ...
-        'maxQueryScore',NaN, ...
-        'maxBoundaryTrust',NaN);
-end
-
-function Diag = UpdateBoundarySelectionDiag(Diag,Detail,Placement,RankUtility,SelectionMode)
-    Diag.selectionMode = SelectionMode;
-    Diag.trustGate = logical(Placement.localTrust);
-    Diag.trustWeight = Placement.localTrustWeight;
-    Diag.refineQuota = Placement.refineQuota;
-    Diag.refineUseCount = sum(Placement.refinedMask);
-    Diag.refineGain = sum(Placement.refineGain);
-    Diag.candidateCount = numel(Detail.eligible);
-    Diag.eligibleCount = sum(Detail.eligible(:));
-    Diag.ineligibleCount = Diag.candidateCount - Diag.eligibleCount;
-    Diag.finiteScoreCount = sum(isfinite(RankUtility(:)));
-    Diag.validCount = sum(Detail.valid(:));
-    Diag.positiveParetoCount = nnz(Detail.paretoValue(:) > 0);
-    Diag.maxRankScore = SafeFiniteMax(RankUtility);
-    Diag.maxParetoValue = SafeFiniteMax(Detail.paretoValue);
-    Diag.maxQueryScore = SafeFiniteMax(Detail.boundaryScore);
-    Diag.maxBoundaryTrust = SafeFiniteMax(Detail.boundaryTrust);
-end
-
-function Value = SafeFiniteMax(Data)
-    Value = NaN;
-    if isempty(Data)
-        return;
-    end
-    Data = Data(isfinite(Data));
-    if isempty(Data)
-        return;
-    end
-    Value = max(Data);
-end
-
 function Info = InitBoundarySeedInfo(Problem)
     Info = struct();
     Info.source        = zeros(0,1);
@@ -139,78 +74,6 @@ function Info = InitBoundarySeedInfo(Problem)
     Info.helperObj     = zeros(0,Problem.M);
 end
 
-function Row = InitBoundaryCandidateAuditRow(Problem)
-    Row = struct( ...
-        'generation',NaN, ...
-        'FE',NaN, ...
-        'source',NaN, ...
-        'selectionMode',ResolveSelectionModeId(), ...
-        'sector',NaN, ...
-        'eligible',false, ...
-        'selected',false, ...
-        'prob0',NaN, ...
-        'prob',NaN, ...
-        'placementRefined',false, ...
-        'placementGain',0, ...
-        'queryScore',NaN, ...
-        'disagreement',NaN, ...
-        'reliability',NaN, ...
-        'paretoValue',NaN, ...
-        'boundaryTrust',NaN, ...
-        'trustWeight',NaN, ...
-        'utility',NaN, ...
-        'fullV2Utility',NaN, ...
-        'fullV2Shortlisted',false, ...
-        'candidateDec',zeros(1,Problem.D), ...
-        'anchorDec',zeros(1,Problem.D), ...
-        'helperDec',zeros(1,Problem.D));
-end
-
-function Rows = BuildBoundaryCandidateAudit( ...
-    Problem,Pool,Placement,Detail,SelectionMode,RankUtility,Accept)
-    Count = size(Placement.dec,1);
-    Rows = repmat(InitBoundaryCandidateAuditRow(Problem),Count,1);
-    Selected = false(Count,1);
-    if nargin >= 7 && ~isempty(Accept)
-        Selected(Accept) = true;
-    end
-    for i = 1 : Count
-        Rows(i).source = SafeVectorValue(Pool.source,i,NaN);
-        Rows(i).selectionMode = SelectionMode;
-        Rows(i).sector = SafeVectorValue(Pool.sector,i,NaN);
-        Rows(i).eligible = logical(SafeVectorValue(Detail.eligible,i,false));
-        Rows(i).selected = Selected(i);
-        Rows(i).prob0 = SafeVectorValue(Placement.prob0,i,NaN);
-        Rows(i).prob = SafeVectorValue(Placement.prob,i,NaN);
-        Rows(i).placementRefined = logical(SafeVectorValue(Placement.refinedMask,i,false));
-        Rows(i).placementGain = SafeVectorValue(Placement.refineGain,i,0);
-        Rows(i).queryScore = SafeVectorValue(Detail.boundaryScore,i,NaN);
-        Rows(i).disagreement = SafeVectorValue(Placement.disagreement,i,NaN);
-        Rows(i).reliability = SafeVectorValue(Detail.reliability,i,NaN);
-        Rows(i).paretoValue = SafeVectorValue(Detail.paretoValue,i,NaN);
-        Rows(i).boundaryTrust = SafeVectorValue(Detail.boundaryTrust,i,NaN);
-        Rows(i).trustWeight = Placement.localTrustWeight;
-        Rows(i).utility = SafeVectorValue(RankUtility,i,NaN);
-        Rows(i).fullV2Utility = NaN;
-        Rows(i).fullV2Shortlisted = logical(SafeVectorValue(Detail.shortlisted,i,false));
-        Rows(i).candidateDec = Placement.dec(i,:);
-        if size(Pool.anchorDec,1) >= i
-            Rows(i).anchorDec = Pool.anchorDec(i,:);
-        end
-        if size(Pool.helperDec,1) >= i
-            Rows(i).helperDec = Pool.helperDec(i,:);
-        end
-    end
-end
-
-function Value = SafeVectorValue(Data,Index,Default)
-    Value = Default;
-    if isempty(Data) || numel(Data) < Index
-        return;
-    end
-    Value = Data(Index);
-end
-
 function Placement = LocalizeBridgeBoundaryPoints(Problem,Pool,Model,Budget,RuntimeOptions)
     Total = size(Pool.anchorDec,1);
     Placement = struct();
@@ -226,7 +89,6 @@ function Placement = LocalizeBridgeBoundaryPoints(Problem,Pool,Model,Budget,Runt
     Placement.refinedMask  = false(Total,1);
     Placement.refineGain   = zeros(Total,1);
     Placement.localTrust   = false;
-    Placement.model        = Model;
     if Total == 0
         return;
     end
@@ -238,7 +100,7 @@ function Placement = LocalizeBridgeBoundaryPoints(Problem,Pool,Model,Budget,Runt
             Problem,Pool.anchorDec(i,:),Pool.helperDec(i,:), ...
             Pool.anchorObj(i,:),Pool.helperObj(i,:),ProbeLambda);
         [ProbeProb,ProbeDis] = PredictBoundaryStatistics(Model,ProbeDec);
-        Best0 = SelectBestBoundaryProbe(ProbeLambda,ProbeProb,ProbeDis);
+        Best0 = SelectBestBoundaryProbe(ProbeLambda,ProbeProb);
 
         Placement.lambda0(i) = ProbeLambda(Best0);
         Placement.prob0(i) = ProbeProb(Best0);
@@ -268,7 +130,7 @@ function Placement = LocalizeBridgeBoundaryPoints(Problem,Pool,Model,Budget,Runt
             Problem,Pool.anchorDec(i,:),Pool.helperDec(i,:), ...
             Pool.anchorObj(i,:),Pool.helperObj(i,:),RefineLambda);
         [RefineProb,RefineDis] = PredictBoundaryStatistics(Model,RefineDec);
-        Best1 = SelectBestBoundaryProbe(RefineLambda,RefineProb,RefineDis);
+        Best1 = SelectBestBoundaryProbe(RefineLambda,RefineProb);
 
         Placement.lambda(i) = RefineLambda(Best1);
         Placement.prob(i) = RefineProb(Best1);
@@ -301,7 +163,7 @@ function [Prob,Disagreement] = PredictBoundaryStatistics(Model,Decs)
     end
 end
 
-function Best = SelectBestBoundaryProbe(Lambda,Prob,~)
+function Best = SelectBestBoundaryProbe(Lambda,Prob)
     Distance = abs(Prob(:)-0.5);
     MinDistance = min(Distance);
     Candidate = find(Distance <= MinDistance + 1e-12);
@@ -309,9 +171,6 @@ function Best = SelectBestBoundaryProbe(Lambda,Prob,~)
         Best = Candidate(1);
         return;
     end
-    % Keep the literal argmin |p-0.5| rule as the primary criterion, and
-    % only use lambda=0.5 proximity as a tie-break to preserve the
-    % midpoint-compatible fallback described in idea.md.
     [~,LocalBest] = min(abs(Lambda(Candidate)-0.5));
     Best = Candidate(LocalBest);
 end
@@ -444,7 +303,7 @@ function Order = SortCandidates(Idx,ParetoValue)
     Order = Idx(LocalOrder);
 end
 
-function Accept = SelectAcceptedCandidates(Detail,~,Budget,RuntimeOptions)
+function Accept = SelectAcceptedCandidates(Detail,Budget,RuntimeOptions)
     EligibleIdx = find(Detail.eligible);
     ShortlistedIdx = find(Detail.valid);
     if Budget <= 0 || isempty(EligibleIdx)
@@ -563,24 +422,6 @@ function Weight = ResolveTrustWeight(Model,RuntimeOptions)
     end
     if isfield(Model,'TrustWeight') && ~isempty(Model.TrustWeight)
         Weight = min(max(Model.TrustWeight,0),1);
-    end
-end
-
-function Mode = ResolveSelectionModeId(SelectorMode)
-    if nargin < 1 || isempty(SelectorMode)
-        SelectorMode = 'pareto_then_boundary';
-    end
-    switch SelectorMode
-        case 'pareto_then_boundary'
-            Mode = 4;
-        case 'pareto_only'
-            Mode = 5;
-        case 'boundary_only'
-            Mode = 6;
-        case 'random_within_shortlist'
-            Mode = 7;
-        otherwise
-            Mode = 4;
     end
 end
 

@@ -1,3 +1,0 @@
-scope,name,family,variant,variantLabel,algorithm,problemCount,runCount,finalHV_mean,finalHV_median,finalIGDp_mean,finalIGDp_median,finalFeasibleRate_mean,finalFeasibleRate_median,aucHV_mean,aucHV_median,firstFeasibleHitFE_mean,firstFeasibleHitFE_median,firstArchiveEntryFE_mean,firstArchiveEntryFE_median,boundaryGainTotal_mean,archiveEventCount_mean,runtime_mean,runtime_median
-problem,DASCMOP1_BC,DASCMOP_BC,boundarycore_beta,PRBCCMO BoundaryCore mainline,PRBCCMO,1,1,0,0,0.974422675211234,0.974422675211234,0.05,0.05,0,0,200,200,200,200,0,0,0.400810791666667,0.400810791666667
-problem,DASCMOP1_BC,DASCMOP_BC,no_boundary,PRBCCMO without boundary budget,PRBCCMO,1,1,0,0,0.974422675211234,0.974422675211234,0.05,0.05,0,0,200,200,200,200,0,0,0.0572792083333333,0.0572792083333333

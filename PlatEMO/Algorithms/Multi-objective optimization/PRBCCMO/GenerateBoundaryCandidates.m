@@ -1,17 +1,13 @@
-function [Pool,Diag] = GenerateBoundaryCandidates(Problem,FeasibleAnchors,PopulationU,W,RuntimeOptions)
+function Pool = GenerateBoundaryCandidates(Problem,FeasibleAnchors,PopulationU,W,RuntimeOptions)
 % Build bridge records for active feasible-infeasible sector pairs.
 
     if nargin < 5 || ~isstruct(RuntimeOptions)
         RuntimeOptions = struct();
     end
     Pool = InitBridgePool(Problem);
-    Diag = InitBridgeGenerationDiag();
 
     FeasibleC   = FilterFeasiblePopulation(FeasibleAnchors);
     InfeasibleU = PopulationU(~all(PopulationU.cons<=0,2));
-    Diag.feasibleAnchorCount = numel(FeasibleC);
-    Diag.infeasibleHelperCount = numel(InfeasibleU);
-    Diag.deltaG = ResolveBridgeActivationGap(RuntimeOptions);
     if isempty(FeasibleC) || isempty(InfeasibleU)
         return;
     end
@@ -21,13 +17,9 @@ function [Pool,Diag] = GenerateBoundaryCandidates(Problem,FeasibleAnchors,Popula
     SectorU = AssociateSectors(InfeasibleU.objs,W,RefObj);
     ScalarF = ComputeSectorScalar(FeasibleC.objs,W,RefObj,SectorF);
     ScalarU = ComputeSectorScalar(InfeasibleU.objs,W,RefObj,SectorU);
-    DeltaG  = Diag.deltaG;
-    FeasibleSector = unique(SectorF(:),'stable');
-    InfeasibleSector = unique(SectorU(:),'stable');
-    Diag.feasibleSectorCount = numel(FeasibleSector);
-    Diag.infeasibleSectorCount = numel(InfeasibleSector);
-    SharedSector = intersect(FeasibleSector,InfeasibleSector,'stable');
-    Diag.sharedSectorCount = numel(SharedSector);
+    DeltaG  = ResolveBridgeActivationGap(RuntimeOptions);
+
+    SharedSector = intersect(unique(SectorF(:),'stable'),unique(SectorU(:),'stable'),'stable');
     if isempty(SharedSector)
         return;
     end
@@ -37,26 +29,12 @@ function [Pool,Diag] = GenerateBoundaryCandidates(Problem,FeasibleAnchors,Popula
     Margin = RawMargin - DeltaG;
     StrictActive = Margin > 0;
     WeakActive = RawMargin > 0;
-    UseWeakGate = ~any(StrictActive) && any(WeakActive);
-    if UseWeakGate
+    if ~any(StrictActive) && any(WeakActive)
         Active = WeakActive;
     else
         Active = StrictActive;
     end
 
-    Diag.strictActiveSectorCount = nnz(StrictActive);
-    Diag.weakActiveSectorCount = nnz(WeakActive);
-    Diag.usedWeakGate = UseWeakGate;
-    Diag.minRawMargin = SafeMarginStat(RawMargin,@min);
-    Diag.medianRawMargin = SafeMarginStat(RawMargin,@median);
-    Diag.maxRawMargin = SafeMarginStat(RawMargin,@max);
-    Diag.minActivationMargin = SafeMarginStat(Margin,@min);
-    Diag.medianActivationMargin = SafeMarginStat(Margin,@median);
-    Diag.maxActivationMargin = SafeMarginStat(Margin,@max);
-    Diag.activeSectorCount = nnz(Active);
-    Diag.positiveMarginPairCount = nnz(WeakActive);
-    Diag.strictPositivePairCount = nnz(StrictActive);
-    Diag.gatePassedPairCount = nnz(Active);
     SharedSector = SharedSector(Active);
     Count = numel(SharedSector);
     if Count == 0
@@ -69,41 +47,6 @@ function [Pool,Diag] = GenerateBoundaryCandidates(Problem,FeasibleAnchors,Popula
     Pool.anchorObj = FeasibleC(BestFIdx(Active)).objs;
     Pool.helperDec = InfeasibleU(BestUIdx(Active)).decs;
     Pool.helperObj = InfeasibleU(BestUIdx(Active)).objs;
-end
-
-function Diag = InitBridgeGenerationDiag()
-    Diag = struct( ...
-        'feasibleAnchorCount',0, ...
-        'infeasibleHelperCount',0, ...
-        'feasibleSectorCount',0, ...
-        'infeasibleSectorCount',0, ...
-        'sharedSectorCount',0, ...
-        'activeSectorCount',0, ...
-        'strictActiveSectorCount',0, ...
-        'weakActiveSectorCount',0, ...
-        'usedWeakGate',false, ...
-        'deltaG',0, ...
-        'positiveMarginPairCount',0, ...
-        'strictPositivePairCount',0, ...
-        'gatePassedPairCount',0, ...
-        'minRawMargin',NaN, ...
-        'medianRawMargin',NaN, ...
-        'maxRawMargin',NaN, ...
-        'minActivationMargin',NaN, ...
-        'medianActivationMargin',NaN, ...
-        'maxActivationMargin',NaN);
-end
-
-function Value = SafeMarginStat(Data,Func)
-    Value = NaN;
-    if isempty(Data)
-        return;
-    end
-    Data = Data(isfinite(Data));
-    if isempty(Data)
-        return;
-    end
-    Value = Func(Data);
 end
 
 function Population = FilterFeasiblePopulation(Population)

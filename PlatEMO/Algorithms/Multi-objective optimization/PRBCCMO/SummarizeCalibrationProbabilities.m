@@ -32,8 +32,6 @@ function Summary = SummarizeCalibrationProbabilities(Prob,Label,BinCount)
     ProbClip             = min(max(Prob,1e-12),1-1e-12);
     Summary.logLoss      = -mean(Label.*log(ProbClip) + (1-Label).*log(1-ProbClip));
     Summary.ece          = ComputeECE(Prob,Label,Edges);
-    Summary.prob         = Prob;
-    Summary.label        = Label;
     Summary.bin          = SummarizeBins(Prob,Label,Edges);
 
     ValidBins = Summary.bin.count > 0;
@@ -48,7 +46,6 @@ function Summary = SummarizeCalibrationProbabilities(Prob,Label,BinCount)
         Summary.relaxedNearFeasibleRate,Summary.relaxedNearGap] = ...
         SummarizeNearBand(Prob,Label,[0.40,0.60]);
 
-    % Keep the legacy near-band fields mapped to the core band.
     Summary.nearBand         = Summary.coreNearBand;
     Summary.nearCount        = Summary.coreNearCount;
     Summary.nearMeanProb     = Summary.coreNearMeanProb;
@@ -83,22 +80,20 @@ function Summary = InitCalibrationSummary(Edges)
     Summary.classCount              = 0;
     Summary.singleClass             = false;
     Summary.invalidReason           = '';
-    Summary.binEdges         = Edges(:)';
-    Summary.prob             = zeros(0,1);
-    Summary.label            = zeros(0,1);
-    Summary.reliabilityX     = zeros(0,1);
-    Summary.reliabilityY     = zeros(0,1);
-    Summary.reliabilityWeight = zeros(0,1);
-    Summary.bin.left         = Edges(1:end-1)';
-    Summary.bin.right        = Edges(2:end)';
-    Summary.bin.center       = 0.5*(Summary.bin.left + Summary.bin.right);
-    Summary.bin.count        = zeros(BinCount,1);
-    Summary.bin.weight       = zeros(BinCount,1);
-    Summary.bin.probSum      = zeros(BinCount,1);
-    Summary.bin.labelSum     = zeros(BinCount,1);
-    Summary.bin.meanProb     = NaN(BinCount,1);
-    Summary.bin.feasibleRate = NaN(BinCount,1);
-    Summary.bin.gap          = NaN(BinCount,1);
+    Summary.binEdges                = Edges(:)';
+    Summary.reliabilityX            = zeros(0,1);
+    Summary.reliabilityY            = zeros(0,1);
+    Summary.reliabilityWeight       = zeros(0,1);
+    Summary.bin.left                = Edges(1:end-1)';
+    Summary.bin.right               = Edges(2:end)';
+    Summary.bin.center              = 0.5*(Summary.bin.left + Summary.bin.right);
+    Summary.bin.count               = zeros(BinCount,1);
+    Summary.bin.weight              = zeros(BinCount,1);
+    Summary.bin.probSum             = zeros(BinCount,1);
+    Summary.bin.labelSum            = zeros(BinCount,1);
+    Summary.bin.meanProb            = NaN(BinCount,1);
+    Summary.bin.feasibleRate        = NaN(BinCount,1);
+    Summary.bin.gap                 = NaN(BinCount,1);
 end
 
 function Bin = SummarizeBins(Prob,Label,Edges)

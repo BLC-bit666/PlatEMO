@@ -1,1 +1,0 @@
-problem,family,run,seed,seedIndex,generation,FE,source,seedFeasible,prob,absProbHalf,queryScore,disagreement,paretoValue,reliability,boundaryTrust,utility,localEvalCount,feasibleForwardSuccess,ubySuccess,frrSuccess,initialBracketGap,bracketGap,shrinkSuccess,tightSuccess,hardNegativeConfirmed,tightenBracket,tightBracket,m2Success,m3Success,m3Downstream,m4Success,m4Tight,m4Recover

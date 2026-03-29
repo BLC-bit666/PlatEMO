@@ -1,4 +1,4 @@
-function [Offspring,Info,FeasiblePool,BracketPairs,HardNegativeBatch,WorkerAudit] = RefineBoundaryWorkers( ...
+function [Offspring,Info,FeasiblePool,BracketPairs,HardNegativeBatch] = RefineBoundaryWorkers( ...
     Problem,BoundarySeeds,BoundaryInfo,FeasibleObj,Model,W,HardNegativeArchive,Budget,RuntimeOptions)
 % Execute one-step feasible exploit / infeasible bracket shrink around bridge seeds.
 
@@ -12,7 +12,6 @@ function [Offspring,Info,FeasiblePool,BracketPairs,HardNegativeBatch,WorkerAudit
     HardNegativeBatch.Dec    = zeros(0,Problem.D);
     HardNegativeBatch.Radius = zeros(0,1);
     Info = EmptyBoundaryInfo(Problem.M);
-    WorkerAudit = repmat(InitWorkerAudit(Problem.D),0,1);
     if isempty(BoundarySeeds)
         return;
     end
@@ -23,49 +22,25 @@ function [Offspring,Info,FeasiblePool,BracketPairs,HardNegativeBatch,WorkerAudit
     if nargin < 4 || isempty(FeasibleObj)
         FeasibleObj = zeros(0,Problem.M);
     end
-    WorkerAudit = repmat(InitWorkerAudit(Problem.D),numel(BoundarySeeds),1);
 
     for i = 1 : numel(BoundarySeeds)
-        WorkerAudit(i) = InitWorkerAudit(Problem.D);
-        WorkerAudit(i).seedIndex = i;
-        WorkerAudit(i).seedFeasible = all(BoundarySeeds(i).cons<=0,2);
-
         Seed   = BoundarySeeds(i);
         Source = SafeBoundaryInfo(BoundaryInfo,'source',i,0);
         Anchor = ResolveEndpoint(BoundaryInfo,'anchor',i);
         Helper = ResolveEndpoint(BoundaryInfo,'helper',i);
 
         if all(Seed.cons<=0,2)
-            [Desc,FeasibleAdd,DescBoundaryLocal,DescTrainKeep,ForwardSuccess] = HandleFeasibleSeed( ...
+            [Desc,FeasibleAdd,DescBoundaryLocal,DescTrainKeep] = HandleFeasibleSeed( ...
                 Problem,Seed,Helper,Remaining,RuntimeOptions);
             NewBracket = EmptyBracketPairs();
             NewHardNeg.Dec    = zeros(0,Problem.D);
             NewHardNeg.Radius = zeros(0,1);
-            InitialGap = NaN;
-            FinalGap = NaN;
-            ShrinkSuccess = false;
-            TightSuccess = false;
         else
-            [Desc,FeasibleAdd,NewBracket,NewHardNeg,DescBoundaryLocal,DescTrainKeep, ...
-                InitialGap,FinalGap,ShrinkSuccess,TightSuccess] = HandleInfeasibleSeed( ...
-                Problem,Seed,Anchor,Helper,Remaining,RuntimeOptions);
-            ForwardSuccess = false;
+            [Desc,FeasibleAdd,NewBracket,NewHardNeg,DescBoundaryLocal,DescTrainKeep] = ...
+                HandleInfeasibleSeed(Problem,Seed,Anchor,Remaining,RuntimeOptions);
         end
 
         Remaining = max(0,Remaining - numel(Desc));
-        WorkerAudit(i).localEvalCount = numel(Desc);
-        WorkerAudit(i).initialBracketGap = InitialGap;
-        WorkerAudit(i).bracketGap = FinalGap;
-        WorkerAudit(i).shrinkSuccess = ShrinkSuccess;
-        WorkerAudit(i).tightSuccess = TightSuccess;
-        WorkerAudit(i).feasibleForwardSuccess = ForwardSuccess;
-        WorkerAudit(i).hardNegativeConfirmed = ~isempty(NewHardNeg.Dec);
-        DescFeasibleMask = SolutionFeasibleMask(Desc);
-        WorkerAudit(i).frrSuccess = ~all(Seed.cons<=0,2) && any(DescFeasibleMask);
-        WorkerAudit(i).lineageFeasibleDec = GetSeedLineageFeasibleDec(Seed,Desc);
-        WorkerAudit(i).lineageDescDec = SolutionDecMatrix(Desc,Problem.D);
-        WorkerAudit(i).lineageDescLabel = double(DescFeasibleMask);
-
         BracketPairs = MergeBracketPairs(BracketPairs,NewBracket);
         HardNegativeBatch = MergeHardNegBatch(HardNegativeBatch,NewHardNeg);
         FeasibleCell{i}  = FeasibleAdd;
@@ -84,13 +59,12 @@ function [Offspring,Info,FeasiblePool,BracketPairs,HardNegativeBatch,WorkerAudit
     Info         = MergeBoundaryInfoCells(InfoCell,Problem.M);
 end
 
-function [Desc,FeasiblePool,BoundaryLocal,TrainKeep,ForwardSuccess] = HandleFeasibleSeed( ...
+function [Desc,FeasiblePool,BoundaryLocal,TrainKeep] = HandleFeasibleSeed( ...
     Problem,Seed,Helper,Remaining,RuntimeOptions)
     Desc = [];
     FeasiblePool = Seed;
     BoundaryLocal = false(0,1);
     TrainKeep = false(0,1);
-    ForwardSuccess = false;
     if ResolveDisableFeasibleForward(RuntimeOptions) || Remaining <= 0 ...
             || isempty(Helper) || ~isfield(Helper,'dec') || isempty(Helper.dec)
         return;
@@ -102,17 +76,13 @@ function [Desc,FeasiblePool,BoundaryLocal,TrainKeep,ForwardSuccess] = HandleFeas
     Desc = TrialSol;
     BoundaryLocal = false(numel(Desc),1);
     TrainKeep = false(numel(Desc),1);
-    ForwardSuccess = IsForwardImproved(Seed,TrialSol);
-    if ForwardSuccess
-        % idea.md requires an exclusive keep rule: retain z only when it is
-        % still feasible and locally better; otherwise keep x*.
+    if IsForwardImproved(Seed,TrialSol)
         FeasiblePool = TrialSol;
     end
 end
 
-function [Desc,FeasiblePool,BracketPairs,HardNegativeBatch,BoundaryLocal,TrainKeep, ...
-    InitialGap,FinalGap,ShrinkSuccess,TightSuccess] = HandleInfeasibleSeed( ...
-    Problem,Seed,Anchor,~,Remaining,RuntimeOptions)
+function [Desc,FeasiblePool,BracketPairs,HardNegativeBatch,BoundaryLocal,TrainKeep] = ...
+    HandleInfeasibleSeed(Problem,Seed,Anchor,Remaining,RuntimeOptions)
     Desc = [];
     FeasiblePool = [];
     BracketPairs  = EmptyBracketPairs();
@@ -120,10 +90,6 @@ function [Desc,FeasiblePool,BracketPairs,HardNegativeBatch,BoundaryLocal,TrainKe
     HardNegativeBatch.Radius = zeros(0,1);
     BoundaryLocal = false(0,1);
     TrainKeep = false(0,1);
-    InitialGap = NaN;
-    FinalGap = NaN;
-    ShrinkSuccess = false;
-    TightSuccess = false;
 
     if isempty(Anchor) || isempty(Anchor.dec)
         HardNegativeBatch = AppendHardNegative( ...
@@ -132,14 +98,11 @@ function [Desc,FeasiblePool,BracketPairs,HardNegativeBatch,BoundaryLocal,TrainKe
     end
 
     BaseGap = ResolveNegativeRadius(Problem,Seed.dec,Anchor.dec);
-    InitialGap = BaseGap;
-    FinalGap = BaseGap;
     HardNegativeBatch = AppendHardNegative(HardNegativeBatch,Seed.dec,BaseGap);
     if ResolveDisableInfeasibleShrink(RuntimeOptions) || Remaining <= 0
         BracketPairs.FeasibleDec   = Anchor.dec;
         BracketPairs.InfeasibleDec = Seed.dec;
-        BracketPairs.Gap        = BaseGap;
-        TightSuccess = isfinite(FinalGap) && FinalGap <= ResolveBracketTightGap(RuntimeOptions);
+        BracketPairs.Gap           = BaseGap;
         return;
     end
 
@@ -151,19 +114,15 @@ function [Desc,FeasiblePool,BracketPairs,HardNegativeBatch,BoundaryLocal,TrainKe
         NewGap = ComputeDecisionGap(Problem,MidSol.dec,Seed.dec);
         BracketPairs.FeasibleDec   = MidSol.dec;
         BracketPairs.InfeasibleDec = Seed.dec;
-        BracketPairs.Gap        = NewGap;
+        BracketPairs.Gap           = NewGap;
     else
         HardNegativeBatch = AppendHardNegative( ...
             HardNegativeBatch,MidSol.dec,ResolveNegativeRadius(Problem,MidSol.dec,Anchor.dec));
         NewGap = ComputeDecisionGap(Problem,Anchor.dec,MidSol.dec);
         BracketPairs.FeasibleDec   = Anchor.dec;
         BracketPairs.InfeasibleDec = MidSol.dec;
-        BracketPairs.Gap        = NewGap;
+        BracketPairs.Gap           = NewGap;
     end
-    FinalGap = NewGap;
-    ShrinkSuccess = isfinite(InitialGap) && isfinite(FinalGap) ...
-        && FinalGap < InitialGap - ResolveGapImproveTolerance();
-    TightSuccess = isfinite(FinalGap) && FinalGap <= TightGap;
     BoundaryLocal = repmat(isfinite(NewGap) && NewGap <= TightGap,numel(Desc),1);
     TrainKeep = BoundaryLocal;
 end
@@ -279,10 +238,6 @@ function Flag = ResolveDisableInfeasibleShrink(RuntimeOptions)
         && logical(RuntimeOptions.DisableInfeasibleShrink);
 end
 
-function Tol = ResolveGapImproveTolerance()
-    Tol = 1e-12;
-end
-
 function Radius = ResolveNegativeRadius(Problem,Dec1,Dec2)
     Radius = 0.10;
     if nargin >= 3 && ~isempty(Dec1) && ~isempty(Dec2)
@@ -329,7 +284,7 @@ function Pairs = MergeBracketPairs(Pairs,NewPairs)
     elseif ~isempty(NewPairs.InfeasibleDec)
         Pairs.InfeasibleDec = [Pairs.InfeasibleDec;NewPairs.InfeasibleDec];
     end
-    Pairs.Gap        = [Pairs.Gap(:);NewPairs.Gap(:)];
+    Pairs.Gap = [Pairs.Gap(:);NewPairs.Gap(:)];
 end
 
 function Batch = MergeHardNegBatch(Batch,NewBatch)
@@ -382,56 +337,4 @@ function Info = EmptyBoundaryInfo(M)
     Info.boundaryLocal = false(0,1);
     Info.trainKeep     = false(0,1);
     Info.proxyObjs     = zeros(0,M);
-end
-
-function Audit = InitWorkerAudit(D)
-    Audit = struct( ...
-        'seedIndex',0, ...
-        'seedFeasible',false, ...
-        'localEvalCount',0, ...
-        'feasibleForwardSuccess',false, ...
-        'frrSuccess',false, ...
-        'initialBracketGap',NaN, ...
-        'bracketGap',NaN, ...
-        'shrinkSuccess',false, ...
-        'tightSuccess',false, ...
-        'hardNegativeConfirmed',false, ...
-        'lineageFeasibleDec',zeros(0,D), ...
-        'lineageDescDec',zeros(0,D), ...
-        'lineageDescLabel',zeros(0,1));
-end
-
-function Dec = SolutionDecMatrix(Solutions,D)
-    if isempty(Solutions)
-        Dec = zeros(0,D);
-        return;
-    end
-    Dec = Solutions.decs;
-end
-
-function Mask = SolutionFeasibleMask(Solutions)
-    Mask = false(0,1);
-    if isempty(Solutions)
-        return;
-    end
-    Mask = all(Solutions.cons<=0,2);
-end
-
-function FeasibleDec = GetSeedLineageFeasibleDec(Seed,Desc)
-    D = numel(Seed.dec);
-    FeasibleDec = zeros(0,D);
-    if all(Seed.cons<=0,2)
-        FeasibleDec = Seed.dec;
-    end
-    if ~isempty(Desc)
-        DescFeasible = Desc(SolutionFeasibleMask(Desc));
-        if ~isempty(DescFeasible)
-            FeasibleDec = [FeasibleDec;DescFeasible.decs];
-        end
-    end
-    if isempty(FeasibleDec)
-        return;
-    end
-    Keep = KeepLatestDecisionRows(FeasibleDec);
-    FeasibleDec = FeasibleDec(Keep,:);
 end

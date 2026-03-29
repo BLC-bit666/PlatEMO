@@ -1,3 +1,0 @@
-variant,label,algorithm,parameter
-boundarycore_beta,PRBCCMO BoundaryCore mainline,PRBCCMO,"{""calibratorCandidates"":[""beta""]}"
-no_boundary,PRBCCMO without boundary budget,PRBCCMO,"{""bRho"":0,""calibratorCandidates"":[""beta""]}"

@@ -1,3 +1,0 @@
-problem,family,run,seed,updateIndex,generation,FE,reason,calibrator,valid,auditReady,auditPhase,boundaryCount,eceBd,gapBd,trainCount,calCount,testCount,strictSeparation,trainCalOverlap,trainTestOverlap,calTestOverlap
-DASCMOP1_BC,DASCMOP_BC,1,1001,1,0,40,initial_train,raw,0,0,not_yet_auditable,0,NaN,NaN,0,0,0,1,0,0,0
-DASCMOP1_BC,DASCMOP_BC,1,1001,2,1,80,missing_model,raw,0,0,not_yet_auditable,0,NaN,NaN,0,0,0,1,0,0,0

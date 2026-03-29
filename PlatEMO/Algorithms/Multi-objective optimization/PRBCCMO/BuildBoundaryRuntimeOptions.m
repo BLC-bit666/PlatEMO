@@ -2,8 +2,6 @@ function Options = BuildBoundaryRuntimeOptions(varargin)
 % Build PRBCCMO-BoundaryCore runtime options.
 
     Options = struct();
-    Options.TraceFlag      = false;
-    Options.TraceProbLabel = false;
     Options.BridgeActivationGap = 0.01;
     Options.BridgeScanLambda    = [0.25,0.50,0.75];
     Options.BridgeRefineStep    = 0.125;

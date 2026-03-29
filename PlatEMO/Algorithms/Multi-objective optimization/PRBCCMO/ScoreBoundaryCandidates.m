@@ -1,6 +1,6 @@
 function Detail = ScoreBoundaryCandidates( ...
     Problem,CandidateDec,CandidateObj,FeasibleObj,Model,W,HardNegativeArchive,RuntimeOptions)
-% Compute Pareto and boundary audit scores for bridge candidates.
+% Compute Pareto and boundary ranking scores for bridge candidates.
 
     if nargin < 8 || ~isstruct(RuntimeOptions)
         RuntimeOptions = struct();
