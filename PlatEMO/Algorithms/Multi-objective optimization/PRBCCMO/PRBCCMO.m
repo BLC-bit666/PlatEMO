@@ -1,20 +1,24 @@
 classdef PRBCCMO < ALGORITHM
-% <2026> <multi> <real/integer/label/binary/permutation> <constrained>
-% Pareto-relevant boundary CCMO
+% <2026> <multi> <real> <constrained>
+% PRBCCMO1
+% Pareto-relevant bridge-driven CCMO for binary feasible/infeasible feedback
 % bRho     --- 0.2  --- Boundary evaluation ratio relative to N
 % trainRho --- 2    --- Training archive size ratio
 % hidden   --- 20   --- Hidden units of the boundary MLP
 % epoch    --- 25   --- Training epochs of the boundary MLP
 % lr       --- 0.01 --- Learning rate of the boundary MLP
-% mRho     --- 0.4  --- Seed-query ratio within each boundary budget
-% ensK     --- 3    --- Committee size of shallow boundary MLPs
-% dLambda  --- 1    --- Committee disagreement weight in boundary utility
-% pairM    --- 0.05 --- Margin for tight bracket pair loss
-% lPair    --- 1    --- Weight of bracket pair loss
-% lMid     --- 1    --- Weight of midpoint-to-0.5 loss
-% calibrator --- 'beta' --- Boundary calibrator candidates ('beta'/'raw')
-% PRBCCMO1 removes the legacy bookkeeping and keeps only the
-% core boundary-search, trust, and update logic for normal runs.
+%
+% PRBCCMO1 keeps only:
+%   1) dual populations with independent DE,
+%   2) one binary MLP for feasible/infeasible classification,
+%   3) one feasible-infeasible bridge per sector,
+%   4) three coarse probes {0.25,0.5,0.75} for boundary localization,
+%   5) one local 0.5-neighborhood refine after coarse probing,
+%   6) one midpoint shrink if the selected refined seed stays infeasible,
+%   7) one migration rule: move a new feasible point into P_C only if it
+%      replaces the current sector champion.
+% The paper-facing scope is real-coded CMOP/BC with binary feasible /
+% infeasible feedback. Runtime overrides keep only the shrink ablation.
 
 %------------------------------- Copyright --------------------------------
 % Copyright (c) 2026 BIMK Group. You are free to use the PlatEMO for
@@ -27,847 +31,81 @@ classdef PRBCCMO < ALGORITHM
 
     methods
         function main(Algorithm,Problem)
-            %% Parameter setting
-            Params = ResolvePRBCCMOParameters(Algorithm.parameter);
-            bRho      = Params.bRho;
-            trainRho  = Params.trainRho;
-            hidden    = Params.hidden;
-            epoch     = Params.epoch;
-            lr        = Params.lr;
-            mRho      = Params.mRho;
-            ensK      = Params.ensK;
-            dLambda   = Params.dLambda;
-            pairM     = Params.pairM;
-            lPair     = Params.lPair;
-            lMid      = Params.lMid;
-            CalibratorCandidates = Params.calibratorCandidates;
+            Params         = ResolvePRBCCMOParameters(Algorithm.parameter);
             RuntimeOptions = BuildBoundaryRuntimeOptions(Params.runtimeOptions);
-
-            BoundaryBudget = max(0,floor(bRho*Problem.N));
-            TrainMax       = max(1,round(trainRho*Problem.N));
-            CalibMax       = max(1,Problem.N);
-            TestMax        = max(1,Problem.N);
-            BracketMax     = max(1,Problem.N);
-            HardNegMax     = max(20,ceil(0.25*TrainMax));
-            SeedRatio      = min(max(mRho,0),1);
             [W,~]          = UniformPoint(max(Problem.N,2),Problem.M);
-            UpdateGap      = 5;
-            RestartGap     = 25;
-            WarmEpoch      = min(epoch,max(5,round(epoch/3)));
-            TriggerCount   = max(1,ceil(0.1*TrainMax));
-            TightGap       = SafeRuntimeOption(RuntimeOptions,'BracketTightGap',0.03);
 
-            %% Generate random populations
+            BoundaryBudget = max(0,floor(double(Params.bRho)*Problem.N));
+            TrainMax       = max(8,round(double(Params.trainRho)*Problem.N));
+            MaxArchive     = max(2*TrainMax,2*Problem.N);
+            UpdateGap      = 5;
+            TriggerCount   = max(1,ceil(0.1*TrainMax));
+
             PopulationC = Problem.Initialization();
             PopulationU = Problem.Initialization();
 
-            %% Initialize boundary memories
-            BracketArchive = EmptyBracketArchive(Problem.D);
-            HardNegativeArchive.Dec    = zeros(0,Problem.D);
-            HardNegativeArchive.Radius = zeros(0,1);
-            TrainDec       = zeros(0,Problem.D);
-            TrainLabel     = zeros(0,1);
-            CalibDec       = zeros(0,Problem.D);
-            CalibLabel     = zeros(0,1);
-            CalibNear      = false(0,1);
-            TestDec        = zeros(0,Problem.D);
-            TestLabel      = zeros(0,1);
-            TestNear       = false(0,1);
-            Model          = [];
-            LastCalMetric  = EvaluateBoundaryCalibration(Model,TestDec,TestLabel,TestNear);
-            PendingLabels  = 0;
-            Generation     = 0;
-            InitSolutions  = [PopulationC,PopulationU];
-            [ExternalArchive,~] = UpdateExternalArchive([],FilterFeasiblePopulation(InitSolutions));
+            ExternalArchive = UpdateExternalArchiveLocal([], ...
+                FilterFeasiblePopulation([PopulationC,PopulationU]));
+            LabelArchive = InitLabelArchive(Problem.D);
+            LabelArchive = AppendLabelArchive(LabelArchive,[PopulationC,PopulationU], ...
+                false(numel([PopulationC,PopulationU]),1),MaxArchive);
 
-            %% Optimization
+            Model = RefitBoundaryModel( ...
+                [],LabelArchive,Params.hidden,Params.epoch,Params.lr,TrainMax);
+
+            PendingBoundaryLabels = 0;
+            Generation           = 0;
+
             while Algorithm.NotTerminated(PopulationC)
                 Generation = Generation + 1;
 
                 [OffspringC,OffspringU] = GenerateRegularOffspring( ...
-                    Problem,PopulationC,PopulationU);
-                RegularFeasible = FilterFeasiblePopulation([OffspringC,OffspringU]);
-                FeasibleAnchorPool = BuildFeasibleAnchorPool( ...
-                    PopulationC,RegularFeasible,ExternalArchive);
-                FeasibleAnchorObj = SolutionObjs(FeasibleAnchorPool,Problem.M);
+                    Problem,PopulationC,PopulationU,RuntimeOptions);
+                LabelArchive = AppendLabelArchive( ...
+                    LabelArchive,[OffspringC,OffspringU], ...
+                    false(numel([OffspringC,OffspringU]),1),MaxArchive);
 
-                CandidatePool = GenerateBoundaryCandidates( ...
-                    Problem,FeasibleAnchorPool,PopulationU,W,RuntimeOptions);
+                RemainingFE = max(0,Problem.maxFE-Problem.FE);
+                BoundaryBudgetNow = min(BoundaryBudget,RemainingFE);
+                FeasibleAnchors = BuildFeasibleAnchorPool( ...
+                    PopulationC,OffspringC,OffspringU,ExternalArchive);
+                HelperPool = BuildHelperPool(PopulationU,OffspringU);
 
-                BoundaryBudgetNow = min(BoundaryBudget,max(0,Problem.maxFE-Problem.FE));
-                SeedBudget = min(BoundaryBudgetNow,max(0,round(SeedRatio*BoundaryBudgetNow)));
-                if BoundaryBudgetNow >= 2
-                    % Reserve one post-label local evaluation slot per selected seed whenever possible.
-                    SeedBudget = min(SeedBudget,BoundaryBudgetNow-SeedBudget);
+                [MigrationPool,BoundaryBatch] = ExecuteBoundaryCore( ...
+                    Problem,FeasibleAnchors,HelperPool,Model,W, ...
+                    BoundaryBudgetNow,RuntimeOptions);
+
+                LabelArchive = AppendLabelArchive( ...
+                    LabelArchive,BoundaryBatch.population,BoundaryBatch.Boundary,MaxArchive);
+                PendingBoundaryLabels = PendingBoundaryLabels + BoundaryBatch.count;
+
+                PopulationC = EnvironmentalSelectionCored( ...
+                    [PopulationC,OffspringC],Problem.N,MigrationPool,W);
+                PopulationU = EnvironmentalSelectionHelper( ...
+                    [PopulationU,OffspringU],Problem.N);
+
+                ExternalArchive = UpdateExternalArchiveLocal( ...
+                    ExternalArchive,FilterFeasiblePopulation([OffspringC,OffspringU]));
+                ExternalArchive = UpdateExternalArchiveLocal( ...
+                    ExternalArchive,MigrationPool);
+
+                NeedUpdate = isempty(Model) || PendingBoundaryLabels >= TriggerCount ...
+                    || mod(Generation,UpdateGap) == 0;
+                if NeedUpdate
+                    Model = RefitBoundaryModel( ...
+                        Model,LabelArchive,Params.hidden,Params.epoch,Params.lr,TrainMax);
+                    PendingBoundaryLabels = 0;
                 end
-                if BoundaryBudgetNow > 0 && SeedBudget == 0
-                    SeedBudget = 1;
-                end
-                [BoundarySeeds,SeedInfo] = SelectBoundaryCandidates( ...
-                    Problem,CandidatePool,FeasibleAnchorObj,Model,W,HardNegativeArchive, ...
-                    SeedBudget,RuntimeOptions);
-
-                WorkerBudget = max(0,BoundaryBudgetNow-numel(BoundarySeeds));
-                [WorkerOffspring,WorkerInfo,WorkerFeasiblePool,BracketBatch,HardNegBatch] = ...
-                    RefineBoundaryWorkers( ...
-                        Problem,BoundarySeeds,SeedInfo,FeasibleAnchorObj,Model,W, ...
-                        HardNegativeArchive,WorkerBudget,RuntimeOptions);
-                [BoundaryOffspring,BoundaryInfo] = MergeBoundaryResults( ...
-                    BoundarySeeds,SeedInfo,WorkerOffspring,WorkerInfo,Problem.M);
-                MigrationPool = ScreenBoundaryMigrants(PopulationC,WorkerFeasiblePool,W);
-
-                HardNegativeArchive = UpdateHardNegativeArchive( ...
-                    HardNegativeArchive,HardNegBatch,HardNegMax);
-                BracketArchive = UpdateBracketArchive( ...
-                    BracketArchive,BracketBatch,BracketMax,Problem.D,TightGap);
-
-                ConstrainedBase = KeepUniquePopulation([PopulationC,OffspringC]);
-                PopulationC = EnvironmentalSelectionC(ConstrainedBase,Problem.N,MigrationPool,W);
-                PopulationU = EnvironmentalSelectionU( ...
-                    KeepUniquePopulation([PopulationU,OffspringU]),Problem.N);
-                ExternalArchive = UpdateSectionBExternalArchive( ...
-                    ExternalArchive,OffspringC,OffspringU,MigrationPool);
-
-                [HoldoutSolutions,HoldoutInfo] = PrepareHoldoutFeed( ...
-                    BoundaryOffspring,BoundaryInfo,Problem.M);
-                [TrainBatch,~,CalibBatch,CalibInfo,TestBatch,TestInfo] = SplitHeldOutBatch( ...
-                    HoldoutSolutions,HoldoutInfo,CalibMax,TestMax,Problem.M);
-                [ProtectedBracketDec,ProtectedBracketLabel] = BuildBracketProtectedBuffer( ...
-                    BracketArchive,HardNegativeArchive,Problem.D);
-                [CalibFallbackDec,CalibFallbackLabel,TestFallbackDec,TestFallbackLabel] = ...
-                    BuildFallbackCalibrationPools(ProtectedBracketDec,ProtectedBracketLabel);
-                [CalibDec,CalibLabel,CalibNear] = ExcludeBufferRows(CalibDec,CalibLabel,CalibNear,TestDec);
-                CalibBatch = ExcludeSolutionsByDec(CalibBatch,TestDec);
-                [CalibFallbackDec,CalibFallbackLabel] = ExcludeLabeledRows( ...
-                    CalibFallbackDec,CalibFallbackLabel,TestDec);
-                [CalibDec,CalibLabel,CalibNear,~] = UpdateCalibrationBuffer( ...
-                    CalibDec,CalibLabel,CalibNear,CalibBatch,CalibInfo,CalibMax, ...
-                    CalibFallbackDec,CalibFallbackLabel);
-                [TestDec,TestLabel,TestNear] = ExcludeBufferRows(TestDec,TestLabel,TestNear,CalibDec);
-                TestBatch = ExcludeSolutionsByDec(TestBatch,CalibDec);
-                [TestFallbackDec,TestFallbackLabel] = ExcludeLabeledRows( ...
-                    TestFallbackDec,TestFallbackLabel,CalibDec);
-                [TestDec,TestLabel,TestNear,~] = UpdateCalibrationBuffer( ...
-                    TestDec,TestLabel,TestNear,TestBatch,TestInfo,TestMax, ...
-                    TestFallbackDec,TestFallbackLabel);
-                HoldoutDec = [CalibDec;TestDec];
-                [ProtectedBracketDec,ProtectedBracketLabel] = ExcludeLabeledRows( ...
-                    ProtectedBracketDec,ProtectedBracketLabel, ...
-                    [CalibFallbackDec;TestFallbackDec;HoldoutDec]);
-                [TrainDec,TrainLabel] = UpdateTrainingArchive( ...
-                    TrainDec,TrainLabel,ProtectedBracketDec,ProtectedBracketLabel, ...
-                    TrainBatch,HoldoutDec,TrainMax);
-                AssertBoundaryBufferSeparation(TrainDec,CalibDec,TestDec);
-
-                PendingLabels = PendingLabels + numel(HoldoutSolutions);
-                TrainOptions = BuildBoundaryTrainingOptions( ...
-                    Problem,BracketArchive,ensK,dLambda,pairM,lPair,lMid,TightGap, ...
-                    CalibratorCandidates);
-                [Model,PendingLabels,LastCalMetric] = UpdateBoundaryModel( ...
-                    Model,TrainDec,TrainLabel,CalibDec,CalibLabel,TestDec,TestLabel,TestNear, ...
-                    hidden,epoch,WarmEpoch,lr,Generation,PendingLabels,TriggerCount, ...
-                    UpdateGap,RestartGap,LastCalMetric,TrainOptions,RuntimeOptions);
             end
         end
     end
 end
 
-function [OffspringC,OffspringU] = GenerateRegularOffspring(Problem,PopulationC,PopulationU)
-    OffspringC = Problem.Evaluation(OperatorDE_current_rand_1(Problem,PopulationC.decs));
-    OffspringU = Problem.Evaluation(OperatorDE_current_rand_1(Problem,PopulationU.decs));
-end
-
-function Population = KeepUniquePopulation(Population)
-    if isempty(Population)
-        return;
-    end
-    Keep = KeepLatestDecisionRows(Population.decs);
-    Population = Population(Keep);
-end
-
-function Population = FilterFeasiblePopulation(Population)
-    if isempty(Population)
-        return;
-    end
-    Population = Population(all(Population.cons<=0,2));
-end
-
-function Population = BuildFeasibleAnchorPool(PopulationC,RegularFeasible,ExternalArchive)
-    Population = KeepUniquePopulation([ ...
-        FilterFeasiblePopulation(PopulationC), ...
-        FilterFeasiblePopulation(RegularFeasible), ...
-        FilterFeasiblePopulation(ExternalArchive)]);
-end
-
-function Obj = SolutionObjs(Solutions,M)
-    if nargin < 2
-        M = 0;
-    end
-    if isempty(Solutions)
-        Obj = zeros(0,M);
-        return;
-    end
-    Obj = Solutions.objs;
-end
-
-function [HoldoutSolutions,HoldoutInfo] = PrepareHoldoutFeed(BoundaryOffspring,BoundaryInfo,M)
-    HoldoutInfo = NormalizeBoundaryInfo(BoundaryInfo,M);
-    HoldoutSolutions = BoundaryOffspring;
-    if isempty(BoundaryOffspring)
-        return;
-    end
-
-    Keep = true(numel(BoundaryOffspring),1);
-    if isfield(HoldoutInfo,'trainKeep') && numel(HoldoutInfo.trainKeep) == numel(BoundaryOffspring)
-        % Keep selected bridge probes and tight bracket refinements for model updates.
-        Keep = logical(HoldoutInfo.trainKeep(:));
-    end
-    HoldoutSolutions = BoundaryOffspring(Keep);
-    HoldoutInfo = SliceBoundaryInfo(HoldoutInfo,find(Keep),M);
-end
-
-function [TrainSolutions,TrainInfo,CalibSolutions,CalibInfo,TestSolutions,TestInfo] = ...
-    SplitHeldOutBatch(Solutions,Info,CalibMax,TestMax,M)
-    TrainSolutions = Solutions;
-    TrainInfo = NormalizeBoundaryInfo(Info,M);
-    CalibSolutions = [];
-    CalibInfo = NormalizeBoundaryInfo([],M);
-    TestSolutions = [];
-    TestInfo = NormalizeBoundaryInfo([],M);
-    Count = numel(Solutions);
-    if Count <= 1 || (CalibMax <= 0 && TestMax <= 0)
-        return;
-    end
-
-    Info = NormalizeBoundaryInfo(Info,M);
-    if numel(Info.source) ~= Count
-        Info = DefaultBoundaryInfo(Solutions,M);
-    end
-    Label = double(all(Solutions.cons<=0,2));
-    NearMask = ResolveBoundaryNearMask(Info,Count,0.10);
-
-    CalibQuota = min(max(1,round(0.2*Count)),min(CalibMax,Count-1));
-    CalibIdx = SelectCalibrationHoldout(Label,NearMask,CalibQuota);
-    RemainingMask = true(Count,1);
-    RemainingMask(CalibIdx) = false;
-
-    RemainingIdx = find(RemainingMask);
-    TestQuota = min(max(1,round(0.2*Count)),TestMax);
-    TestQuota = min(TestQuota,max(0,numel(RemainingIdx)-1));
-    if TestQuota > 0
-        TestLocalIdx = SelectCalibrationHoldout(Label(RemainingIdx),NearMask(RemainingIdx),TestQuota);
-        TestIdx = RemainingIdx(TestLocalIdx);
-    else
-        TestIdx = zeros(0,1);
-    end
-
-    TrainMask = true(Count,1);
-    TrainMask(CalibIdx) = false;
-    TrainMask(TestIdx) = false;
-    TrainIdx = find(TrainMask);
-    TrainSolutions = Solutions(TrainIdx);
-    TrainInfo = SliceBoundaryInfo(Info,TrainIdx,M);
-    CalibSolutions = Solutions(CalibIdx);
-    CalibInfo = SliceBoundaryInfo(Info,CalibIdx,M);
-    TestSolutions = Solutions(TestIdx);
-    TestInfo = SliceBoundaryInfo(Info,TestIdx,M);
-end
-
-function NearMask = ResolveBoundaryNearMask(Info,Count,Delta)
-    if nargin < 3 || isempty(Delta)
-        Delta = 0.10;
-    end
-    NearMask = false(Count,1);
-    if isstruct(Info) && isfield(Info,'prob') && numel(Info.prob) == Count
-        NearMask = NearMask | abs(Info.prob(:)-0.5) <= Delta;
-    end
-    if isstruct(Info) && isfield(Info,'boundaryLocal') && numel(Info.boundaryLocal) == Count
-        NearMask = NearMask | logical(Info.boundaryLocal(:));
-    end
-    if ~any(NearMask) && Count > 0
-        NearMask = true(Count,1);
-    end
-end
-
-function HoldoutIdx = SelectCalibrationHoldout(Label,NearMask,Quota)
-    HoldoutIdx = zeros(0,1);
-    Total = numel(Label);
-    if Total <= 1 || Quota <= 0
-        return;
-    end
-
-    Quota = min(Quota,Total-1);
-    ClassOrder = [1,0];
-    BaseQuota = floor(Quota/2);
-    HoldoutCell = cell(1,numel(ClassOrder)+1);
-    HoldCount = 0;
-    for i = 1 : numel(ClassOrder)
-        ClassIdx = FindCalibrationCandidates(Label,NearMask,ClassOrder(i));
-        Take = min(numel(ClassIdx),BaseQuota);
-        if Take > 0
-            HoldCount = HoldCount + 1;
-            HoldoutCell{HoldCount} = ClassIdx(1:Take);
-        end
-    end
-    HoldoutIdx = vertcat(HoldoutCell{1:HoldCount});
-
-    if numel(HoldoutIdx) < Quota
-        Remaining = setdiff((1:Total)',HoldoutIdx,'stable');
-        NearFirst = [Remaining(NearMask(Remaining));Remaining(~NearMask(Remaining))];
-        Extra = NearFirst(1:min(Quota-numel(HoldoutIdx),numel(NearFirst)));
-        HoldoutIdx = [HoldoutIdx;Extra(:)];
-    end
-
-    HoldoutIdx = unique(HoldoutIdx,'stable');
-end
-
-function Idx = FindCalibrationCandidates(Label,NearMask,ClassValue)
-    NearIdx = find(NearMask & Label==ClassValue);
-    FarIdx  = find(~NearMask & Label==ClassValue);
-    Idx = [NearIdx(:);FarIdx(:)];
-end
-
-function Info = DefaultBoundaryInfo(Solutions,M)
-    Count = numel(Solutions);
-    D = 0;
-    if Count > 0
-        D = size(Solutions.decs,2);
-    end
-    Info = NormalizeBoundaryInfo([],M,D);
-    Info.source        = zeros(Count,1);
-    Info.score         = zeros(Count,1);
-    Info.prob          = 0.5*ones(Count,1);
-    Info.queryScore    = zeros(Count,1);
-    Info.disagreement  = zeros(Count,1);
-    Info.paretoValue   = zeros(Count,1);
-    Info.reliability   = zeros(Count,1);
-    Info.boundaryTrust = zeros(Count,1);
-    Info.utility       = zeros(Count,1);
-    Info.sector        = zeros(Count,1);
-    Info.eligible      = true(Count,1);
-    Info.boundaryLocal = false(Count,1);
-    Info.trainKeep     = false(Count,1);
-    Info.proxyObjs     = Solutions.objs;
-    Info.anchorDec     = zeros(Count,D);
-    Info.anchorObj     = zeros(Count,M);
-    Info.helperDec     = zeros(Count,D);
-    Info.helperObj     = zeros(Count,M);
-end
-
-function [Dec,Label] = ExcludeLabeledRows(Dec,Label,ExcludeDec)
-    if isempty(Dec) || isempty(ExcludeDec)
-        return;
-    end
-    Keep = ~ismember(Dec,ExcludeDec,'rows');
-    Dec = Dec(Keep,:);
-    Label = Label(Keep);
-end
-
-function [Dec,Label,Near] = ExcludeBufferRows(Dec,Label,Near,ExcludeDec)
-    if isempty(Dec) || isempty(ExcludeDec)
-        return;
-    end
-    Keep = ~ismember(Dec,ExcludeDec,'rows');
-    Dec = Dec(Keep,:);
-    Label = Label(Keep);
-    Near = Near(Keep);
-end
-
-function Solutions = ExcludeSolutionsByDec(Solutions,ExcludeDec)
-    if isempty(Solutions) || isempty(ExcludeDec)
-        return;
-    end
-    Keep = ~ismember(Solutions.decs,ExcludeDec,'rows');
-    Solutions = Solutions(Keep);
-end
-
-function Dec = SolutionDecs(Solutions,D)
-    if isempty(Solutions)
-        Dec = zeros(0,D);
-        return;
-    end
-    if isstruct(Solutions) && isfield(Solutions,'dec')
-        Dec = vertcat(Solutions.dec);
-    elseif isstruct(Solutions) && isfield(Solutions,'decs')
-        Dec = Solutions.decs;
-    else
-        Dec = Solutions.decs;
-    end
-end
-
-function [ProtectedDec,ProtectedLabel] = BuildBracketProtectedBuffer(BracketArchive,HardNegativeArchive,D)
-    ProtectedDec = zeros(0,D);
-    ProtectedLabel = zeros(0,1);
-    if nargin < 2
-        HardNegativeArchive = [];
-    end
-    if ~isempty(BracketArchive) && isfield(BracketArchive,'FeasibleDec') ...
-            && ~isempty(BracketArchive.FeasibleDec)
-        ProtectedDec = [ProtectedDec;BracketArchive.FeasibleDec;BracketArchive.InfeasibleDec];
-        ProtectedLabel = [ProtectedLabel; ...
-            ones(size(BracketArchive.FeasibleDec,1),1); ...
-            zeros(size(BracketArchive.InfeasibleDec,1),1)];
-    end
-    if nargin >= 2 && ~isempty(HardNegativeArchive) && isfield(HardNegativeArchive,'Dec') ...
-            && ~isempty(HardNegativeArchive.Dec)
-        ProtectedDec = [ProtectedDec;HardNegativeArchive.Dec];
-        ProtectedLabel = [ProtectedLabel;zeros(size(HardNegativeArchive.Dec,1),1)];
-    end
-end
-
-function [CalibDec,CalibLabel,TestDec,TestLabel] = BuildFallbackCalibrationPools(ProtectedDec,ProtectedLabel)
-    if nargin < 2
-        ProtectedLabel = zeros(0,1);
-    end
-    D = 0;
-    if ~isempty(ProtectedDec)
-        D = size(ProtectedDec,2);
-    end
-    CalibDec = zeros(0,D);
-    CalibLabel = zeros(0,1);
-    TestDec = zeros(0,D);
-    TestLabel = zeros(0,1);
-    if isempty(ProtectedDec)
-        return;
-    end
-
-    PerClassPerPool = 2;
-    for ClassValue = [1,0]
-        ClassIdx = find(ProtectedLabel == ClassValue);
-        if isempty(ClassIdx)
-            continue;
-        end
-        ClassIdx = flipud(ClassIdx(:));
-        CalTake = ClassIdx(1:2:min(numel(ClassIdx),2*PerClassPerPool));
-        TestTake = ClassIdx(2:2:min(numel(ClassIdx),2*PerClassPerPool));
-        CalTake = sort(CalTake,'ascend');
-        TestTake = sort(TestTake,'ascend');
-        if ~isempty(CalTake)
-            CalibDec = [CalibDec;ProtectedDec(CalTake,:)]; %#ok<AGROW>
-            CalibLabel = [CalibLabel;ProtectedLabel(CalTake)]; %#ok<AGROW>
-        end
-        if ~isempty(TestTake)
-            TestDec = [TestDec;ProtectedDec(TestTake,:)]; %#ok<AGROW>
-            TestLabel = [TestLabel;ProtectedLabel(TestTake)]; %#ok<AGROW>
-        end
-    end
-end
-
-function Archive = EmptyBracketArchive(D)
-    Archive.FeasibleDec   = zeros(0,D);
-    Archive.InfeasibleDec = zeros(0,D);
-    Archive.Gap           = zeros(0,1);
-end
-
-function Archive = UpdateBracketArchive(Archive,NewPairs,MaxPairs,D,TightGap)
-    if nargin < 1 || isempty(Archive)
-        Archive = EmptyBracketArchive(D);
-    end
-    if nargin < 3 || MaxPairs <= 0
-        Archive = EmptyBracketArchive(D);
-        return;
-    end
-    if nargin < 5 || isempty(TightGap)
-        TightGap = 0.03;
-    end
-
-    NewF = zeros(0,D);
-    NewI = zeros(0,D);
-    NewG = zeros(0,1);
-    if ~isempty(NewPairs) && isfield(NewPairs,'FeasibleDec') && ~isempty(NewPairs.FeasibleDec)
-        NewF = NewPairs.FeasibleDec;
-        NewI = NewPairs.InfeasibleDec;
-        NewG = NewPairs.Gap(:);
-    elseif ~isempty(NewPairs) && isfield(NewPairs,'Feasible') && ~isempty(NewPairs.Feasible)
-        NewF = SolutionDecs(NewPairs.Feasible,D);
-        NewI = SolutionDecs(NewPairs.Infeasible,D);
-        NewG = NewPairs.Gap(:);
-    end
-
-    AllF = [Archive.FeasibleDec;NewF];
-    AllI = [Archive.InfeasibleDec;NewI];
-    AllG = [Archive.Gap(:);NewG];
-    KeepTight = isfinite(AllG) & AllG <= TightGap;
-    AllF = AllF(KeepTight,:);
-    AllI = AllI(KeepTight,:);
-    AllG = AllG(KeepTight);
-    if isempty(AllF)
-        Archive = EmptyBracketArchive(D);
-        return;
-    end
-
-    PairKey = [AllF,AllI];
-    Keep = KeepLatestDecisionRows(PairKey);
-    AllF = AllF(Keep,:);
-    AllI = AllI(Keep,:);
-    AllG = AllG(Keep);
-    [~,Order] = sort(AllG,'ascend');
-    Order = Order(1:min(MaxPairs,numel(Order)));
-    Archive.FeasibleDec   = AllF(Order,:);
-    Archive.InfeasibleDec = AllI(Order,:);
-    Archive.Gap           = AllG(Order);
-end
-
-function Options = BuildBoundaryTrainingOptions( ...
-    Problem,BracketArchive,EnsembleSize,DisagreementWeight,PairMargin,LambdaPair,LambdaMid, ...
-    TightGap,CalibratorCandidates)
-
-    Options = struct();
-    Options.EnsembleSize         = EnsembleSize;
-    Options.CalibratorCandidates = {'beta'};
-    if nargin >= 9 && ~isempty(CalibratorCandidates)
-        Options.CalibratorCandidates = CalibratorCandidates;
-    end
-    Options.DisagreementWeight   = max(DisagreementWeight,0);
-    Options.PairMargin           = max(PairMargin,0);
-    Options.LambdaPair           = max(LambdaPair,0);
-    Options.LambdaMid            = max(LambdaMid,0);
-    Options.BracketOversampleFactor = 3;
-    D = Problem.D;
-    Options.PairFeasibleDec      = zeros(0,D);
-    Options.PairInfeasibleDec    = zeros(0,D);
-    Options.MidDec               = zeros(0,D);
-    if nargin < 8 || isempty(TightGap)
-        TightGap = 0.03;
-    end
-
-    if ~isempty(BracketArchive) && ~isempty(BracketArchive.FeasibleDec)
-        TightMask = true(size(BracketArchive.FeasibleDec,1),1);
-        if isfield(BracketArchive,'Gap') && numel(BracketArchive.Gap) == size(BracketArchive.FeasibleDec,1)
-            TightMask = isfinite(BracketArchive.Gap(:)) & BracketArchive.Gap(:) <= TightGap;
-        end
-        if any(TightMask)
-            Options.PairFeasibleDec = BracketArchive.FeasibleDec(TightMask,:);
-            Options.PairInfeasibleDec = BracketArchive.InfeasibleDec(TightMask,:);
-            Options.MidDec = BuildTrainingMidpoints( ...
-                Problem,Options.PairFeasibleDec,Options.PairInfeasibleDec);
-        end
-    end
-end
-
-function MidDec = BuildTrainingMidpoints(Problem,FeasibleDec,InfeasibleDec)
-    Count = min(size(FeasibleDec,1),size(InfeasibleDec,1));
-    MidDec = zeros(Count,Problem.D);
-    for i = 1 : Count
-        MidDec(i,:) = InterpolateBoundaryPoint( ...
-            Problem,FeasibleDec(i,:),InfeasibleDec(i,:),0.5);
-    end
-end
-
-function [Model,PendingLabels,LastCalMetric] = UpdateBoundaryModel( ...
-    Model,TrainDec,TrainLabel,CalibDec,CalibLabel,TestDec,TestLabel,TestNear, ...
-    Hidden,Epoch,WarmEpoch,LR,Generation,PendingLabels,TriggerCount, ...
-    UpdateGap,RestartGap,LastCalMetric,TrainOptions,RuntimeOptions)
-
-    CurrentMetric = EvaluateBoundaryCalibration(Model,TestDec,TestLabel,TestNear);
-    NeedUpdate = isempty(Model) || PendingLabels >= TriggerCount ...
-        || mod(Generation,UpdateGap) == 0 ...
-        || IsCalibrationDrifting(CurrentMetric,LastCalMetric);
-    if ~NeedUpdate
-        return;
-    end
-
-    UseWarmStart = ~isempty(Model) && mod(Generation,RestartGap) ~= 0;
-    TrainEpoch   = Epoch;
-    PrevModel    = [];
-    if UseWarmStart
-        PrevModel  = Model;
-        TrainEpoch = WarmEpoch;
-    end
-
-    if nargin < 19 || ~isstruct(TrainOptions)
-        TrainOptions = struct();
-    end
-    TrainOptions.WarmStart = UseWarmStart;
-    UpdatedModel = TrainBoundaryMLP( ...
-        TrainDec,TrainLabel,Hidden,TrainEpoch,LR,PrevModel,CalibDec,CalibLabel, ...
-        TrainOptions);
-    if isempty(UpdatedModel)
-        LastCalMetric = CurrentMetric;
-        return;
-    end
-
-    UpdatedModel.BoundaryLocalDelta = SafeRuntimeOption(RuntimeOptions,'BoundaryLocalDelta',0.10);
-    Model = RefreshBoundaryTrust(UpdatedModel,TestDec,TestLabel,TestNear,RuntimeOptions);
-    PendingLabels = 0;
-    LastCalMetric = EvaluateBoundaryCalibration(Model,TestDec,TestLabel,TestNear);
-end
-
-function Model = RefreshBoundaryTrust(Model,TestDec,TestLabel,TestNear,RuntimeOptions)
-    if isempty(Model)
-        return;
-    end
-
-    Metric = EvaluateBoundaryCalibration(Model,TestDec,TestLabel,TestNear);
-    if nargin < 5 || ~isstruct(RuntimeOptions)
-        RuntimeOptions = struct();
-    end
-    TauE = SafeRuntimeOption(RuntimeOptions,'TrustTauE',0.10);
-    TauN = SafeRuntimeOption(RuntimeOptions,'TrustTauN',0.10);
-    MinCoreCount = SafeRuntimeOption(RuntimeOptions,'TrustMinCoreCount',20);
-    BoundaryEce = FieldOrDefaultMetric(Metric,'boundaryEce',FieldOrDefaultMetric(Metric,'ece',inf));
-    BoundaryGap = FieldOrDefaultMetric( ...
-        Metric,'boundaryGap',FieldOrDefaultMetric(Metric,'coreNearGap',FieldOrDefaultMetric(Metric,'nearGap',inf)));
-    RawTrustWeight = 0;
-    if logical(FieldOrDefaultMetric(Metric,'valid',false)) ...
-            && isfinite(BoundaryEce) && isfinite(BoundaryGap)
-        RawTrustWeight = max(0,1-BoundaryEce/TauE) * max(0,1-BoundaryGap/TauN);
-        RawTrustWeight = min(max(RawTrustWeight,0),1);
-    end
-    AuditPass = logical(FieldOrDefaultMetric(Metric,'valid',false)) ...
-        && isfinite(BoundaryEce) && BoundaryEce <= TauE ...
-        && isfinite(BoundaryGap) && BoundaryGap <= TauN ...
-        && FieldOrDefaultMetric(Metric,'boundaryCount',FieldOrDefaultMetric(Metric,'coreNearCount',0)) >= MinCoreCount;
-    Model.TrustWeightRaw = RawTrustWeight;
-    Model.TrustWeight = RawTrustWeight;
-    Model.TrustAuditPass = AuditPass;
-    Model.TrustMinCoreCount = MinCoreCount;
-    Model.TrustGate = RawTrustWeight > 0;
-    Model.TrustMetric = PruneBoundaryTrustMetric(Metric);
-    if isfield(Metric,'binEdges') && isfield(Metric,'bin') && isfield(Metric.bin,'count')
-        Model.ReliabilityBinEdges = Metric.binEdges;
-        Reliability = zeros(numel(Metric.bin.count),1);
-        Valid = Metric.bin.count > 0 & isfinite(Metric.bin.feasibleRate);
-        Reliability(Valid) = max(0,1 - 2*abs(Metric.bin.feasibleRate(Valid)-0.5));
-        if any(Valid)
-            Reliability = FillReliabilityGaps(Reliability,Valid);
-        end
-        Model.ReliabilityScore = Reliability;
-    else
-        Model.ReliabilityBinEdges = linspace(0,1,11);
-        Model.ReliabilityScore = zeros(10,1);
-    end
-end
-
-function Compact = PruneBoundaryTrustMetric(Metric)
-    Compact = struct();
-    Compact.valid = logical(FieldOrDefaultMetric(Metric,'valid',false));
-    Compact.ece = FieldOrDefaultMetric(Metric,'ece',inf);
-    Compact.nearGap = FieldOrDefaultMetric(Metric,'nearGap',inf);
-    Compact.coreNearGap = FieldOrDefaultMetric( ...
-        Metric,'coreNearGap',FieldOrDefaultMetric(Metric,'nearGap',inf));
-    Compact.boundaryEce = FieldOrDefaultMetric( ...
-        Metric,'boundaryEce',FieldOrDefaultMetric(Metric,'ece',inf));
-    Compact.boundaryGap = FieldOrDefaultMetric( ...
-        Metric,'boundaryGap',FieldOrDefaultMetric(Metric,'coreNearGap',FieldOrDefaultMetric(Metric,'nearGap',inf)));
-    Compact.boundaryCount = FieldOrDefaultMetric( ...
-        Metric,'boundaryCount',FieldOrDefaultMetric(Metric,'coreNearCount',0));
-end
-
-function Reliability = FillReliabilityGaps(Reliability,Valid)
-    ValidIdx = find(Valid);
-    for i = 1 : numel(Reliability)
-        if Valid(i)
-            continue;
-        end
-        [~,Best] = min(abs(ValidIdx-i));
-        Reliability(i) = Reliability(ValidIdx(Best));
-    end
-end
-
-function Flag = IsCalibrationDrifting(CurrentMetric,LastMetric)
-    if isempty(LastMetric) || ~isfinite(LastMetric.brier)
-        Flag = CurrentMetric.nearCount >= 5 && CurrentMetric.nearGap > 0.15;
-        return;
-    end
-
-    Flag = false;
-    if CurrentMetric.nearCount >= 5 && CurrentMetric.nearGap > 0.15
-        Flag = true;
-        return;
-    end
-    if isfinite(CurrentMetric.brier) && CurrentMetric.brier > LastMetric.brier + 0.02
-        Flag = true;
-        return;
-    end
-    if isfinite(CurrentMetric.ece) && CurrentMetric.ece > LastMetric.ece + 0.02
-        Flag = true;
-        return;
-    end
-    if CurrentMetric.nearCount >= 5 && CurrentMetric.nearGap > LastMetric.nearGap + 0.05
-        Flag = true;
-    end
-end
-
-function [AllOffspring,AllInfo] = MergeBoundaryResults(Primary,PrimaryInfo,Extra,ExtraInfo,M)
-    if isempty(Primary)
-        AllOffspring = Extra;
-        AllInfo      = NormalizeBoundaryInfo(ExtraInfo,M);
-        return;
-    end
-    if isempty(Extra)
-        AllOffspring = Primary;
-        AllInfo      = NormalizeBoundaryInfo(PrimaryInfo,M);
-        return;
-    end
-
-    AllOffspring = [Primary,Extra];
-    D = max(ResolveBoundaryInfoDecisionWidth(PrimaryInfo),ResolveBoundaryInfoDecisionWidth(ExtraInfo));
-    PrimaryInfo = NormalizeBoundaryInfo(PrimaryInfo,M,D);
-    ExtraInfo   = NormalizeBoundaryInfo(ExtraInfo,M,D);
-    AllInfo     = NormalizeBoundaryInfo([],M,D);
-    VectorFields = BoundaryInfoVectorFields();
-    for i = 1 : numel(VectorFields)
-        Field = VectorFields{i};
-        AllInfo.(Field) = [PrimaryInfo.(Field);ExtraInfo.(Field)];
-    end
-    MatrixFields = BoundaryInfoMatrixFields();
-    for i = 1 : numel(MatrixFields)
-        Field = MatrixFields{i};
-        AllInfo.(Field) = [PrimaryInfo.(Field);ExtraInfo.(Field)];
-    end
-end
-
-function Info = NormalizeBoundaryInfo(Info,M,D)
-    if nargin < 2
-        M = 0;
-    end
-    if nargin < 3 || isempty(D)
-        D = ResolveBoundaryInfoDecisionWidth(Info);
-    end
-    Count = ResolveBoundaryInfoCount(Info);
-    if isempty(Info)
-        Info = struct();
-    end
-
-    Info.source        = ResolveBoundaryVector(Info,'source',Count,0);
-    Info.score         = ResolveBoundaryVector(Info,'score',Count,0);
-    Info.prob          = ResolveBoundaryVector(Info,'prob',Count,0);
-    Info.queryScore    = ResolveBoundaryVector(Info,'queryScore',Count,0);
-    Info.disagreement  = ResolveBoundaryVector(Info,'disagreement',Count,0);
-    Info.paretoValue   = ResolveBoundaryVector(Info,'paretoValue',Count,0);
-    Info.reliability   = ResolveBoundaryVector(Info,'reliability',Count,0);
-    Info.boundaryTrust = ResolveBoundaryVector(Info,'boundaryTrust',Count,[]);
-    if isempty(Info.boundaryTrust)
-        Info.boundaryTrust = Info.reliability .* Info.queryScore;
-    end
-    Info.utility       = ResolveBoundaryVector(Info,'utility',Count,[]);
-    if isempty(Info.utility)
-        Info.utility = Info.score;
-    end
-    Info.sector        = ResolveBoundaryVector(Info,'sector',Count,0);
-    Info.eligible      = ResolveBoundaryEligible(Info,Count);
-    Info.boundaryLocal = ResolveBoundaryEligible( ...
-        struct('eligible',ResolveBoundaryVector(Info,'boundaryLocal',Count,false)),Count);
-    Info.trainKeep     = ResolveBoundaryEligible( ...
-        struct('eligible',ResolveBoundaryVector(Info,'trainKeep',Count,false)),Count);
-    Info.proxyObjs     = ResolveBoundaryMatrix(Info,'proxyObjs',Count,M);
-    Info.anchorDec     = ResolveBoundaryMatrix(Info,'anchorDec',Count,D);
-    Info.anchorObj     = ResolveBoundaryMatrix(Info,'anchorObj',Count,M);
-    Info.helperDec     = ResolveBoundaryMatrix(Info,'helperDec',Count,D);
-    Info.helperObj     = ResolveBoundaryMatrix(Info,'helperObj',Count,M);
-end
-
-function Info = SliceBoundaryInfo(Info,Idx,M)
-    D = ResolveBoundaryInfoDecisionWidth(Info);
-    Info = NormalizeBoundaryInfo(Info,M,D);
-    if isempty(Idx)
-        Info = NormalizeBoundaryInfo([],M,D);
-        return;
-    end
-    VectorFields = BoundaryInfoVectorFields();
-    for i = 1 : numel(VectorFields)
-        Field = VectorFields{i};
-        Info.(Field) = Info.(Field)(Idx);
-    end
-    MatrixFields = BoundaryInfoMatrixFields();
-    for i = 1 : numel(MatrixFields)
-        Field = MatrixFields{i};
-        Info.(Field) = Info.(Field)(Idx,:);
-    end
-end
-
-function Fields = BoundaryInfoVectorFields()
-    Fields = {'source','score','prob','queryScore','disagreement','paretoValue', ...
-        'reliability','boundaryTrust','utility','sector','eligible','boundaryLocal','trainKeep'};
-end
-
-function Fields = BoundaryInfoMatrixFields()
-    Fields = {'proxyObjs','anchorDec','anchorObj','helperDec','helperObj'};
-end
-
-function Count = ResolveBoundaryInfoCount(Info)
-    Count = 0;
-    if ~isstruct(Info)
-        return;
-    end
-    VectorFields = BoundaryInfoVectorFields();
-    for i = 1 : numel(VectorFields)
-        Field = VectorFields{i};
-        if isfield(Info,Field) && ~isempty(Info.(Field))
-            Count = numel(Info.(Field));
-            return;
-        end
-    end
-    MatrixFields = BoundaryInfoMatrixFields();
-    for i = 1 : numel(MatrixFields)
-        Field = MatrixFields{i};
-        if isfield(Info,Field) && ~isempty(Info.(Field))
-            Count = size(Info.(Field),1);
-            return;
-        end
-    end
-end
-
-function D = ResolveBoundaryInfoDecisionWidth(Info)
-    D = 0;
-    if ~isstruct(Info)
-        return;
-    end
-    if isfield(Info,'anchorDec') && ~isempty(Info.anchorDec)
-        D = size(Info.anchorDec,2);
-        return;
-    end
-    if isfield(Info,'helperDec') && ~isempty(Info.helperDec)
-        D = size(Info.helperDec,2);
-    end
-end
-
-function Value = ResolveBoundaryVector(Info,Field,Count,Default)
-    if nargin < 4
-        Default = 0;
-    end
-    if isstruct(Info) && isfield(Info,Field) && ~isempty(Info.(Field))
-        Value = Info.(Field)(:);
-        return;
-    end
-    if isempty(Default)
-        Value = [];
-    else
-        Value = repmat(Default,Count,1);
-    end
-end
-
-function Value = ResolveBoundaryEligible(Info,Count)
-    if isstruct(Info) && isfield(Info,'eligible') && ~isempty(Info.eligible)
-        Value = logical(Info.eligible(:));
-        return;
-    end
-    Value = true(Count,1);
-end
-
-function Value = ResolveBoundaryMatrix(Info,Field,Count,Width)
-    if nargin < 4
-        Width = 0;
-    end
-    if isstruct(Info) && isfield(Info,Field) && ~isempty(Info.(Field))
-        Value = Info.(Field);
-        return;
-    end
-    Value = zeros(Count,Width);
-end
-
 function Params = ResolvePRBCCMOParameters(ParameterCell)
-    ActiveNames = {'bRho','trainRho','hidden','epoch','lr','mRho','ensK', ...
-        'dLambda','pairM','lPair','lMid'};
-    ActiveDefaults = {0.2,2,20,25,0.01,0.4,3,1,0.05,1,1};
-    LegacyMap = struct( ...
-        'bRho',2,'trainRho',5,'hidden',6,'epoch',7,'lr',8,'mRho',11, ...
-        'ensK',12,'dLambda',14,'pairM',15,'lPair',16,'lMid',17);
-    LegacyThreshold = max(struct2array(LegacyMap));
+    ActiveNames = {'bRho','trainRho','hidden','epoch','lr'};
+    ActiveDefaults = {0.2,2,20,25,0.01};
 
     Params = cell2struct(ActiveDefaults,ActiveNames,2);
-    Params.calibratorCandidates = {'beta'};
     Params.runtimeOptions = struct();
 
     if nargin < 1 || isempty(ParameterCell)
@@ -889,15 +127,13 @@ function Params = ResolvePRBCCMOParameters(ParameterCell)
         end
     end
 
-    if numel(ParameterCell) >= LegacyThreshold
-        for i = 1 : numel(ActiveNames)
-            Name = ActiveNames{i};
-            Index = LegacyMap.(Name);
-            if numel(ParameterCell) >= Index && ~StructMask(Index) && ~isempty(ParameterCell{Index})
-                Params.(Name) = ParameterCell{Index};
-            end
-        end
-        return;
+    NonStructMask = ~StructMask & ~cellfun(@isempty,ParameterCell);
+    NonStructMask = NonStructMask(:);
+    UnsupportedIndex = find(NonStructMask & (1:numel(ParameterCell))' > numel(ActiveNames),1);
+    if ~isempty(UnsupportedIndex)
+        error('PRBCCMO:UnsupportedParameter', ...
+            'Unsupported positional parameter at index %d. PRBCCMO1 only accepts the core 5 parameters.', ...
+            UnsupportedIndex);
     end
 
     Limit = min(numel(ParameterCell),numel(ActiveNames));
@@ -910,9 +146,6 @@ function Params = ResolvePRBCCMOParameters(ParameterCell)
 end
 
 function Params = ApplyPRBCCMOParameterStruct(Params,Overrides,ActiveNames)
-    if nargin < 3
-        ActiveNames = fieldnames(Params);
-    end
     Fields = fieldnames(Overrides);
     for i = 1 : numel(Fields)
         Field = Fields{i};
@@ -921,113 +154,865 @@ function Params = ApplyPRBCCMOParameterStruct(Params,Overrides,ActiveNames)
             continue;
         end
         if strcmpi(Field,'runtimeOptions')
-            Params.runtimeOptions = BuildBoundaryRuntimeOptions( ...
-                Params.runtimeOptions,Value);
-        elseif strcmpi(Field,'calibratorCandidates')
-            Params.calibratorCandidates = NormalizeCalibratorCandidates(Value);
-        elseif strcmpi(Field,'calibrator')
-            Params.calibratorCandidates = NormalizeCalibratorCandidates(Value);
-        elseif any(strcmp(Field,ActiveNames))
-            Params.(Field) = Value;
+            Params.runtimeOptions = BuildBoundaryRuntimeOptions(Params.runtimeOptions,Value);
+        else
+            FieldIndex = find(strcmpi(Field,ActiveNames),1);
+            if ~isempty(FieldIndex)
+                Params.(ActiveNames{FieldIndex}) = Value;
+            else
+                error('PRBCCMO:UnsupportedParameterField', ...
+                    'Unsupported PRBCCMO1 parameter ''%s''.',Field);
+            end
         end
     end
 end
 
-function Candidates = NormalizeCalibratorCandidates(Value)
-    if isempty(Value)
-        Candidates = {'beta'};
+function Options = BuildBoundaryRuntimeOptions(varargin)
+    Defaults = struct( ...
+        'DisableInfeasibleShrink',false);
+    Options = Defaults;
+    if nargin == 0
+        Options = NormalizeRuntimeOptions(Options,Defaults);
         return;
     end
-    if ischar(Value) || (isstring(Value) && isscalar(Value))
-        Value = {char(Value)};
-    end
-    if ~iscell(Value)
-        error('PRBCCMO:InvalidCalibratorCandidates', ...
-            'Calibrator candidates must be a string or a cell array of strings.');
-    end
-    Candidates = cell(1,0);
-    for i = 1 : numel(Value)
-        Name = lower(strtrim(char(Value{i})));
-        switch Name
-            case {'beta','raw'}
-                if ~any(strcmp(Candidates,Name))
-                    Candidates{end+1} = Name; %#ok<AGROW>
+
+    Override = struct();
+    if all(cellfun(@isstruct,varargin))
+        for i = 1 : nargin
+            Fields = fieldnames(varargin{i});
+            for j = 1 : numel(Fields)
+                Field = Fields{j};
+                Value = varargin{i}.(Field);
+                if isempty(Value)
+                    continue;
                 end
-            otherwise
-                error('PRBCCMO:UnsupportedCalibrator', ...
-                    'Unsupported calibrator candidate ''%s''.',char(Value{i}));
+                Override.(Field) = Value;
+            end
+        end
+    else
+        if mod(nargin,2) ~= 0
+            error('PRBCCMO:RuntimeOptionsInput', ...
+                'Runtime overrides must be a struct or name-value pairs.');
+        end
+        for i = 1 : 2 : nargin
+            Name = varargin{i};
+            if ~(ischar(Name) || (isstring(Name) && isscalar(Name)))
+                error('PRBCCMO:RuntimeOptionsInput', ...
+                    'Runtime override names must be character vectors or scalars.');
+            end
+            Override.(char(Name)) = varargin{i+1};
         end
     end
-    if isempty(Candidates)
-        Candidates = {'beta'};
+
+    Fields = fieldnames(Override);
+    for i = 1 : numel(Fields)
+        if ~isfield(Defaults,Fields{i})
+            error('PRBCCMO:UnsupportedRuntimeOption', ...
+                'Unsupported PRBCCMO1 runtime option ''%s''.',Fields{i});
+        end
+        Options.(Fields{i}) = Override.(Fields{i});
     end
+    Options = NormalizeRuntimeOptions(Options,Defaults);
 end
 
-function AssertBoundaryBufferSeparation(TrainDec,CalibDec,TestDec)
-    D = 0;
-    Inputs = {TrainDec,CalibDec,TestDec};
-    for i = 1 : numel(Inputs)
-        Dec = Inputs{i};
-        if isempty(Dec)
+function Options = NormalizeRuntimeOptions(Options,~)
+    Options.DisableInfeasibleShrink = logical(Options.DisableInfeasibleShrink);
+end
+
+function Lambdas = NormalizeProbeLambdas(Lambdas,DefaultLambdas)
+    if nargin < 2 || isempty(DefaultLambdas)
+        DefaultLambdas = [0.25,0.50,0.75];
+    end
+    if isempty(Lambdas)
+        Lambdas = DefaultLambdas;
+    end
+    Lambdas = double(Lambdas(:)');
+    Lambdas = Lambdas(isfinite(Lambdas));
+    Lambdas = Lambdas(Lambdas > 0 & Lambdas < 1);
+    if isempty(Lambdas)
+        Lambdas = DefaultLambdas;
+    end
+    Lambdas = unique(Lambdas,'stable');
+end
+
+function [OffspringC,OffspringU] = GenerateRegularOffspring( ...
+    Problem,PopulationC,PopulationU,~)
+    OffspringC = Problem.Evaluation(OperatorDECurrentRand1(Problem,PopulationC.decs,PopulationC.decs));
+    OffspringU = Problem.Evaluation(OperatorDECurrentRand1(Problem,PopulationU.decs,PopulationU.decs));
+end
+
+function Offspring = OperatorDECurrentRand1(Problem,BaseDec,PoolDec)
+    [N,D] = size(BaseDec);
+    if nargin < 3 || isempty(PoolDec)
+        PoolDec = BaseDec;
+    end
+    PoolSize = size(PoolDec,1);
+    Fm       = [0.6,0.8,1.0];
+    CRm      = [0.1,0.2,1.0];
+    F        = Fm(randi(numel(Fm),N,1));
+    CR       = CRm(randi(numel(CRm),N,1));
+    F        = F(:);
+    CR       = CR(:);
+    F        = F(:,ones(1,D));
+
+    P1 = PoolDec(randi(PoolSize,N,1),:);
+    P2 = PoolDec(randi(PoolSize,N,1),:);
+    P3 = PoolDec(randi(PoolSize,N,1),:);
+    Site = rand(N,D) < CR(:,ones(1,D));
+    Offspring = BaseDec;
+    Offspring(Site) = BaseDec(Site) + F(Site).*(P1(Site)-BaseDec(Site)) ...
+        + F(Site).*(P2(Site)-P3(Site));
+
+    proM  = 1;
+    disM  = 20;
+    Lower = repmat(Problem.lower,N,1);
+    Upper = repmat(Problem.upper,N,1);
+    Site  = rand(N,D) < proM/D;
+    mu    = rand(N,D);
+    temp  = Site & mu<=0.5;
+    Offspring       = min(max(Offspring,Lower),Upper);
+    Offspring(temp) = Offspring(temp) + (Upper(temp)-Lower(temp)).*((2.*mu(temp) + ...
+        (1-2.*mu(temp)).*(1-(Offspring(temp)-Lower(temp))./(Upper(temp)-Lower(temp))).^(disM+1)).^(1/(disM+1)) - 1);
+    temp = Site & mu>0.5;
+    Offspring(temp) = Offspring(temp) + (Upper(temp)-Lower(temp)).*(1 - (2.*(1-mu(temp)) + ...
+        2.*(mu(temp)-0.5).*(1-(Upper(temp)-Offspring(temp))./(Upper(temp)-Lower(temp))).^(disM+1)).^(1/(disM+1)));
+    Offspring = Problem.CalDec(Offspring);
+end
+
+function Pool = BuildFeasibleAnchorPool(PopulationC,OffspringC,OffspringU,ExternalArchive)
+    Pool = KeepUniquePopulation([ ...
+        FilterFeasiblePopulation(PopulationC), ...
+        FilterFeasiblePopulation(OffspringC), ...
+        FilterFeasiblePopulation(OffspringU), ...
+        FilterFeasiblePopulation(ExternalArchive)]);
+end
+
+function Pool = BuildHelperPool(PopulationU,OffspringU)
+    Pool = KeepUniquePopulation([PopulationU,OffspringU]);
+    if isempty(Pool)
+        return;
+    end
+    Pool = Pool(any(Pool.cons>0,2));
+end
+
+function [MigrationPool,BoundaryBatch] = ExecuteBoundaryCore( ...
+    Problem,FeasibleAnchors,HelperPool,Model,W,Budget,RuntimeOptions)
+
+    BoundaryBatch  = InitBoundaryBatch();
+    MigrationPool  = [];
+
+    [BridgePool,Order] = BuildSingleBridgePool(FeasibleAnchors,HelperPool,W);
+    if isempty(BridgePool.sector) || Budget <= 0
+        return;
+    end
+
+    RemainingBudget = Budget;
+    Lambdas         = ResolveProbeLambda(RuntimeOptions);
+    RefineStep      = ResolveRefineStep();
+    DisableShrink   = SafeRuntimeOption(RuntimeOptions,'DisableInfeasibleShrink',false);
+    BestMigrants    = InitBestMigrants();
+
+    for i = 1 : numel(Order)
+        Index = Order(i);
+        ProbeCost = numel(Lambdas);
+        if RemainingBudget < ProbeCost
+            break;
+        end
+
+        AnchorDec = BridgePool.anchorDec(Index,:);
+        HelperDec = BridgePool.helperDec(Index,:);
+        [ProbeDec,ProbeLambda] = BuildProbeDecisions(Problem,AnchorDec,HelperDec,Lambdas);
+        ProbeSolutions = Problem.Evaluation(ProbeDec);
+        RemainingBudget = RemainingBudget - ProbeCost;
+
+        [~,ProbeScore] = EvaluateProbeScores(Model,ProbeDec,ProbeLambda);
+        [CoarseBoundaryMask,LocalBracket] = ResolveCoarseBoundaryBracket( ...
+            ProbeSolutions,ProbeLambda,ProbeScore);
+        BoundaryBatch = AppendBoundaryBatch( ...
+            BoundaryBatch,ProbeSolutions,CoarseBoundaryMask);
+
+        % Once a sign-flip bracket exists, refine must stay inside that
+        % locally verified interval instead of drifting back to a coarse-best
+        % probe outside the bracket.
+        [BestLocal,~]  = ResolveRefineSeedIndex( ...
+            ProbeScore,ProbeLambda,LocalBracket);
+        Seed = ProbeSolutions(BestLocal);
+        SeedSector = BridgePool.sector(Index);
+
+        if RemainingBudget > 0
+            RefineLambda = BuildLocalRefineLambdas( ...
+                ProbeLambda(BestLocal),ProbeLambda,LocalBracket,RefineStep);
+            RefineLambda = RefineLambda(1:min(numel(RefineLambda),RemainingBudget));
+            if ~isempty(RefineLambda)
+                [RefineDec,RefineLambda] = BuildProbeDecisions( ...
+                    Problem,AnchorDec,HelperDec,RefineLambda);
+                RefineSolutions = Problem.Evaluation(RefineDec);
+                RemainingBudget = RemainingBudget - numel(RefineLambda);
+                BoundaryBatch = AppendBoundaryBatch( ...
+                    BoundaryBatch,RefineSolutions,true(numel(RefineSolutions),1));
+                [~,RefineScore] = EvaluateProbeScores(Model,RefineDec,RefineLambda);
+                [BestRefine,~] = SelectBestProbe(RefineScore,RefineLambda);
+                Seed = RefineSolutions(BestRefine);
+            end
+        end
+
+        if all(Seed.cons<=0,2)
+            SeedScalar = ComputeSectorScalar(Seed.obj,W,BridgePool.refObj,SeedSector);
+            if SeedScalar < BridgePool.anchorScalar(Index)
+                BestMigrants = UpdateBestMigrant( ...
+                    BestMigrants,SeedSector,Seed,SeedScalar,BridgePool.anchorScalar(Index));
+            end
             continue;
         end
-        if D == 0
-            D = size(Dec,2);
-        elseif size(Dec,2) ~= D
-            error('PRBCCMO:BoundaryBufferDimension', ...
-                'Boundary buffers must share the same decision width.');
+        if DisableShrink || RemainingBudget <= 0
+            continue;
+        end
+
+        ShrinkDec = InterpolateBoundaryPointLocal(Problem,AnchorDec,Seed.dec,0.5);
+        ShrinkSol = Problem.Evaluation(ShrinkDec);
+        RemainingBudget = RemainingBudget - 1;
+        BoundaryBatch = AppendBoundaryBatch(BoundaryBatch,ShrinkSol,true);
+        if ~all(ShrinkSol.cons<=0,2)
+            continue;
+        end
+
+        ShrinkScalar = ComputeSectorScalar(ShrinkSol.obj,W,BridgePool.refObj,SeedSector);
+        if ShrinkScalar < BridgePool.anchorScalar(Index)
+            BestMigrants = UpdateBestMigrant( ...
+                BestMigrants,SeedSector,ShrinkSol,ShrinkScalar,BridgePool.anchorScalar(Index));
         end
     end
-    if isempty(TrainDec)
-        TrainDec = zeros(0,D);
-    end
-    if isempty(CalibDec)
-        CalibDec = zeros(0,D);
-    end
-    if isempty(TestDec)
-        TestDec = zeros(0,D);
-    end
 
-    TrainCalOverlap = CountDecisionOverlap(TrainDec,CalibDec);
-    TrainTestOverlap = CountDecisionOverlap(TrainDec,TestDec);
-    CalTestOverlap = CountDecisionOverlap(CalibDec,TestDec);
-    if TrainCalOverlap > 0 || TrainTestOverlap > 0 || CalTestOverlap > 0
-        error('PRBCCMO:BoundaryBufferLeakage', ...
-            'Boundary buffers overlap: train-cal=%d, train-test=%d, cal-test=%d.', ...
-            TrainCalOverlap,TrainTestOverlap,CalTestOverlap);
-    end
+    MigrationPool = BestMigrants.population;
 end
 
-function Count = CountDecisionOverlap(A,B)
-    Count = 0;
-    if isempty(A) || isempty(B)
+function [BridgePool,Order] = BuildSingleBridgePool(FeasibleAnchors,HelperPool,W)
+    BridgePool = InitBridgePool();
+    Order = zeros(0,1);
+    if isempty(FeasibleAnchors) || isempty(HelperPool)
         return;
     end
-    if size(A,2) ~= size(B,2)
-        error('PRBCCMO:BoundaryBufferDimension', ...
-            'Boundary buffers must share the same decision width.');
+
+    RefObj  = [FeasibleAnchors.objs;HelperPool.objs];
+    SectorF = AssociateSectorsLocal(FeasibleAnchors.objs,W,RefObj);
+    SectorU = AssociateSectorsLocal(HelperPool.objs,W,RefObj);
+    ScalarF = ComputeSectorScalar(FeasibleAnchors.objs,W,RefObj,SectorF);
+    ScalarU = ComputeSectorScalar(HelperPool.objs,W,RefObj,SectorU);
+    SharedSector = intersect(unique(SectorF(:),'stable'),unique(SectorU(:),'stable'),'stable');
+    if isempty(SharedSector)
+        return;
     end
-    A = unique(A,'rows','stable');
-    B = unique(B,'rows','stable');
-    Count = sum(ismember(A,B,'rows'));
+
+    Count = numel(SharedSector);
+    BridgePool.sector      = SharedSector(:);
+    BridgePool.anchorDec   = zeros(Count,size(FeasibleAnchors.decs,2));
+    BridgePool.helperDec   = zeros(Count,size(HelperPool.decs,2));
+    BridgePool.anchorScalar = zeros(Count,1);
+    BridgePool.refObj       = RefObj;
+
+    for i = 1 : Count
+        SectorID = SharedSector(i);
+        FIdx = find(SectorF == SectorID);
+        UIdx = find(SectorU == SectorID);
+        [BestAnchorScalar,AnchorLocal] = min(ScalarF(FIdx));
+        [~,HelperLocal] = min(ScalarU(UIdx));
+        AnchorIdx = FIdx(AnchorLocal);
+        HelperIdx = UIdx(HelperLocal);
+        BridgePool.anchorDec(i,:) = FeasibleAnchors(AnchorIdx).dec;
+        BridgePool.helperDec(i,:) = HelperPool(HelperIdx).dec;
+        BridgePool.anchorScalar(i) = BestAnchorScalar;
+    end
+
+    [~,Order] = sortrows([BridgePool.anchorScalar,BridgePool.sector],[1 2]);
 end
 
-function ExternalArchive = UpdateSectionBExternalArchive(ExternalArchive,OffspringC,OffspringU,BoundaryMigrants)
-    if nargin < 1 || isempty(ExternalArchive)
-        ExternalArchive = [];
+function Pool = InitBridgePool()
+    Pool = struct( ...
+        'sector',zeros(0,1), ...
+        'anchorDec',zeros(0,0), ...
+        'helperDec',zeros(0,0), ...
+        'anchorScalar',zeros(0,1), ...
+        'refObj',zeros(0,0));
+end
+
+function [ProbeDec,ProbeLambda] = BuildProbeDecisions(Problem,AnchorDec,HelperDec,Lambdas)
+    Count = numel(Lambdas);
+    ProbeDec = zeros(Count,Problem.D);
+    for i = 1 : Count
+        ProbeDec(i,:) = InterpolateBoundaryPointLocal(Problem,AnchorDec,HelperDec,Lambdas(i));
     end
-    if nargin < 2 || isempty(OffspringC)
-        OffspringC = [];
+    ProbeLambda = Lambdas(:);
+end
+
+function Lambdas = ResolveProbeLambda(~)
+    DefaultLambdas = [0.25,0.50,0.75];
+    Lambdas = NormalizeProbeLambdas(DefaultLambdas,DefaultLambdas);
+end
+
+function Step = ResolveRefineStep()
+    Step = 0.125;
+end
+
+function [Prob,Score] = EvaluateProbeScores(Model,ProbeDec,ProbeLambda)
+    if isempty(ProbeDec)
+        Prob  = zeros(0,1);
+        Score = zeros(0,1);
+        return;
     end
-    if nargin < 3 || isempty(OffspringU)
-        OffspringU = [];
+    if isempty(Model)
+        Prob  = 0.5*ones(size(ProbeDec,1),1);
+        Score = abs(ProbeLambda(:) - 0.5);
+        return;
     end
-    if nargin < 4 || isempty(BoundaryMigrants)
-        BoundaryMigrants = [];
+    [Prob,Stats] = PredictBoundaryMLP(Model,ProbeDec);
+    if isfield(Stats,'logit') && ~isempty(Stats.logit)
+        Score = abs(Stats.logit(:));
+    else
+        Score = abs(Prob(:)-0.5);
+    end
+end
+
+function [BoundaryMask,Bracket] = ResolveCoarseBoundaryBracket( ...
+    ProbeSolutions,ProbeLambda,ProbeScore)
+    Count = numel(ProbeLambda);
+    BoundaryMask = false(Count,1);
+    Bracket = InitLocalBracket();
+    if Count < 2 || isempty(ProbeSolutions)
+        return;
     end
 
-    [ExternalArchive,~] = UpdateExternalArchive(ExternalArchive,[OffspringC,OffspringU]);
-    [ExternalArchive,~] = UpdateExternalArchive(ExternalArchive,BoundaryMigrants);
+    FeasibleMask = all(ProbeSolutions.cons<=0,2);
+    FlipIdx = find(FeasibleMask(1:end-1) ~= FeasibleMask(2:end));
+    if isempty(FlipIdx)
+        return;
+    end
+
+    for i = 1 : numel(FlipIdx)
+        BoundaryMask([FlipIdx(i);FlipIdx(i)+1]) = true;
+    end
+
+    [BestLocal,~] = SelectBestProbe(ProbeScore,ProbeLambda);
+    PairPos = SelectPreferredBracketPair(FlipIdx,ProbeLambda,BestLocal);
+    LowerIdx = FlipIdx(PairPos);
+    Bracket.active = true;
+    Bracket.lower = ProbeLambda(LowerIdx);
+    Bracket.upper = ProbeLambda(LowerIdx+1);
+    Bracket.indices = [LowerIdx;LowerIdx+1];
+end
+
+function [BestLocal,BestScore] = ResolveRefineSeedIndex( ...
+    ProbeScore,ProbeLambda,Bracket)
+    CandidateIdx = [];
+    if nargin >= 3 && isstruct(Bracket) && isfield(Bracket,'active') ...
+            && Bracket.active && isfield(Bracket,'indices') ...
+            && ~isempty(Bracket.indices)
+        CandidateIdx = unique(Bracket.indices(:),'stable');
+    end
+    [BestLocal,BestScore] = SelectBestProbe( ...
+        ProbeScore,ProbeLambda,CandidateIdx);
+end
+
+function PairPos = SelectPreferredBracketPair(FlipIdx,ProbeLambda,BestLocal)
+    Candidate = find(FlipIdx == BestLocal | FlipIdx+1 == BestLocal);
+    if isempty(Candidate)
+        Candidate = (1:numel(FlipIdx))';
+    else
+        Candidate = Candidate(:);
+    end
+    MidLambda = 0.5*(ProbeLambda(FlipIdx(Candidate)) + ProbeLambda(FlipIdx(Candidate)+1));
+    Key = [ ...
+        abs(MidLambda - ProbeLambda(BestLocal)), ...
+        abs(MidLambda - 0.5), ...
+        FlipIdx(Candidate)];
+    [LocalIdx,~] = minrows(Key);
+    PairPos = Candidate(LocalIdx);
+end
+
+function Bracket = InitLocalBracket()
+    Bracket = struct( ...
+        'active',false, ...
+        'lower',0, ...
+        'upper',1, ...
+        'indices',zeros(0,1));
+end
+
+function RefineLambda = BuildLocalRefineLambdas( ...
+    SeedLambda,ExistingLambda,Bracket,Step)
+    Lower = 0;
+    Upper = 1;
+    if nargin >= 3 && isstruct(Bracket) && isfield(Bracket,'active') && Bracket.active
+        Lower = Bracket.lower;
+        Upper = Bracket.upper;
+    end
+    RefineLambda = [ ...
+        min(max(SeedLambda-Step,Lower),Upper), ...
+        min(max(SeedLambda+Step,Lower),Upper)];
+    RefineLambda = unique(RefineLambda,'stable');
+    RefineLambda = RemoveKnownLambdas(RefineLambda,ExistingLambda);
+end
+
+function Lambda = RemoveKnownLambdas(Lambda,KnownLambda)
+    if isempty(Lambda) || isempty(KnownLambda)
+        return;
+    end
+    Tol = 1e-12;
+    Keep = true(size(Lambda));
+    for i = 1 : numel(Lambda)
+        Keep(i) = ~any(abs(KnownLambda(:)-Lambda(i)) <= Tol);
+    end
+    Lambda = Lambda(Keep);
+end
+
+function [BestIndex,BestScore] = SelectBestProbe(Score,Lambda,CandidateIdx)
+    if nargin < 3 || isempty(CandidateIdx)
+        CandidateIdx = (1:numel(Score))';
+    else
+        CandidateIdx = CandidateIdx(:);
+    end
+    if isempty(Score) || isempty(CandidateIdx)
+        BestIndex = 1;
+        BestScore = NaN;
+        return;
+    end
+    OrderKey = [ ...
+        Score(CandidateIdx), ...
+        abs(Lambda(CandidateIdx)-0.5), ...
+        Lambda(CandidateIdx)];
+    [LocalIdx,~] = minrows(OrderKey);
+    BestIndex = CandidateIdx(LocalIdx);
+    BestScore = Score(BestIndex);
+end
+
+function [Index,Value] = minrows(Key)
+    [~,Order] = sortrows(Key,[1 2 3]);
+    Index = Order(1);
+    Value = Key(Index,1);
+end
+
+function Population = EnvironmentalSelectionCored(Population,N,MigrationPool,W)
+    Population    = KeepUniquePopulation(Population);
+    MigrationPool = KeepUniquePopulation(MigrationPool);
+    Reserved      = SelectReservedMigrants(Population,MigrationPool,W);
+    if numel(Reserved) > N
+        Reserved = Reserved(1:N);
+    end
+
+    Pool = KeepUniquePopulation([Population,MigrationPool]);
+    Pool = RemovePopulationByDecision(Pool,Reserved);
+    Next = Reserved;
+    Need = max(0,N-numel(Next));
+    if Need > 0
+        FeasiblePool = FilterFeasiblePopulation(Pool);
+        Next = [Next,SelectByNSGA2(FeasiblePool,min(Need,numel(FeasiblePool)),true)];
+    end
+    Need = max(0,N-numel(Next));
+    if Need > 0
+        Remain = RemovePopulationByDecision(Pool,Next);
+        Next = [Next,SelectByNSGA2(Remain,min(Need,numel(Remain)),false)];
+    end
+    if isempty(Next)
+        Population = Population([]);
+        return;
+    end
+    if numel(Next) < N
+        Next = [Next,Next(mod(0:N-numel(Next)-1,numel(Next))+1)];
+    end
+    Population = Next(1:N);
+end
+
+function Population = EnvironmentalSelectionHelper(Population,N)
+    Population = KeepUniquePopulation(Population);
+    Population = SelectByNSGA2(Population,min(N,numel(Population)),false);
+    if isempty(Population)
+        return;
+    end
+    if numel(Population) < N
+        Population = [Population,Population(mod(0:N-numel(Population)-1,numel(Population))+1)];
+    end
+    Population = Population(1:N);
+end
+
+function Reserved = SelectReservedMigrants(BasePool,MigrationPool,W)
+    Reserved = [];
+    if isempty(MigrationPool)
+        return;
+    end
+    FeasibleBase = FilterFeasiblePopulation(BasePool);
+    FeasibleMig  = FilterFeasiblePopulation(MigrationPool);
+    if isempty(FeasibleMig)
+        return;
+    end
+    if isempty(W)
+        W = ones(1,size(FeasibleMig.objs,2));
+    end
+
+    RefObj = FeasibleMig.objs;
+    if ~isempty(FeasibleBase)
+        RefObj = [FeasibleBase.objs;FeasibleMig.objs];
+    end
+    SectorMig = AssociateSectorsLocal(FeasibleMig.objs,W,RefObj);
+    MigValue  = ComputeSectorScalar(FeasibleMig.objs,W,RefObj,SectorMig);
+    if isempty(FeasibleBase)
+        SectorBase = zeros(0,1);
+        BaseValue  = zeros(0,1);
+    else
+        SectorBase = AssociateSectorsLocal(FeasibleBase.objs,W,RefObj);
+        BaseValue  = ComputeSectorScalar(FeasibleBase.objs,W,RefObj,SectorBase);
+    end
+
+    Keep = false(1,numel(FeasibleMig));
+    Improve = -inf(1,numel(FeasibleMig));
+    for s = unique(SectorMig(:))'
+        MIdx = find(SectorMig == s);
+        [BestMig,Local] = min(MigValue(MIdx));
+        BestIdx = MIdx(Local);
+        BIdx = find(SectorBase == s);
+        if isempty(BIdx)
+            Keep(BestIdx) = true;
+            Improve(BestIdx) = inf;
+        else
+            Champion = min(BaseValue(BIdx));
+            if BestMig < Champion
+                Keep(BestIdx) = true;
+                Improve(BestIdx) = Champion - BestMig;
+            end
+        end
+    end
+    Reserved = FeasibleMig(Keep);
+    if isempty(Reserved)
+        return;
+    end
+    Improve = Improve(Keep);
+    [~,Order] = sort(Improve,'descend');
+    Reserved = Reserved(Order);
+end
+
+function Population = SelectByNSGA2(Population,N,UseConstraint)
+    if isempty(Population) || N <= 0
+        Population = Population([]);
+        return;
+    end
+    N = min(N,numel(Population));
+    if UseConstraint
+        [FrontNo,MaxFNo] = NDSort(Population.objs,Population.cons,N);
+    else
+        [FrontNo,MaxFNo] = NDSort(Population.objs,N);
+    end
+    Next     = FrontNo < MaxFNo;
+    CrowdDis = CrowdingDistance(Population.objs,FrontNo);
+    Last     = find(FrontNo == MaxFNo);
+    Need     = N - sum(Next);
+    if Need > 0
+        [~,Rank] = sort(CrowdDis(Last),'descend');
+        Next(Last(Rank(1:Need))) = true;
+    end
+    Population = Population(Next);
+    FrontNo  = FrontNo(Next);
+    CrowdDis = CrowdDis(Next);
+    [~,Order] = sortrows([FrontNo(:),-CrowdDis(:)],[1 2]);
+    Population = Population(Order);
+end
+
+function Population = FilterFeasiblePopulation(Population)
+    if isempty(Population)
+        return;
+    end
+    Population = Population(all(Population.cons<=0,2));
+end
+
+function Population = KeepUniquePopulation(Population)
+    if isempty(Population)
+        return;
+    end
+    Keep = KeepLatestDecisionRowsLocal(Population.decs);
+    Population = Population(Keep);
+end
+
+function Population = RemovePopulationByDecision(Population,Remove)
+    if isempty(Population) || isempty(Remove)
+        return;
+    end
+    Keep = ~ismember(Population.decs,Remove.decs,'rows');
+    Population = Population(Keep);
+end
+
+function Keep = KeepLatestDecisionRowsLocal(Dec)
+    if isempty(Dec)
+        Keep = zeros(0,1);
+        return;
+    end
+    [~,Keep] = unique(double(Dec),'rows','last');
+    Keep = sort(Keep);
+end
+
+function [Archive,Added] = UpdateExternalArchiveLocal(Archive,NewSolutions)
+    Added = [];
+    if nargin < 1 || isempty(Archive)
+        Archive = [];
+    end
+    if nargin < 2 || isempty(NewSolutions)
+        return;
+    end
+    NewSolutions = FilterFeasiblePopulation(NewSolutions);
+    if isempty(NewSolutions)
+        return;
+    end
+    Previous = Archive;
+    Pool = [Archive,NewSolutions];
+    Pool = KeepUniquePopulation(Pool);
+    if isempty(Pool)
+        Archive = [];
+        return;
+    end
+    FrontNo = NDSort(Pool.objs,1);
+    Archive = Pool(FrontNo == 1);
+    if isempty(Previous)
+        Added = Archive;
+        return;
+    end
+    Keep = ~ismember(Archive.decs,Previous.decs,'rows');
+    Added = Archive(Keep);
+end
+
+function LabelArchive = InitLabelArchive(D)
+    LabelArchive = struct( ...
+        'Dec',zeros(0,D), ...
+        'Label',zeros(0,1), ...
+        'Boundary',false(0,1));
+end
+
+function LabelArchive = AppendLabelArchive(LabelArchive,Population,IsBoundary,MaxCount)
+    if isempty(Population)
+        return;
+    end
+    Dec = Population.decs;
+    Label = double(all(Population.cons<=0,2));
+    if nargin < 3 || isempty(IsBoundary)
+        IsBoundary = false(size(Label));
+    end
+    IsBoundary = logical(IsBoundary(:));
+    if numel(IsBoundary) ~= numel(Label)
+        error('PRBCCMO:LabelArchiveSizeMismatch', ...
+            'Boundary flags must align with the appended label batch.');
+    end
+    LabelArchive.Dec = [LabelArchive.Dec;Dec];
+    LabelArchive.Label = [LabelArchive.Label;Label(:)];
+    LabelArchive.Boundary = [LabelArchive.Boundary;IsBoundary];
+    Keep = KeepLatestDecisionRowsLocal(LabelArchive.Dec);
+    LabelArchive.Dec = LabelArchive.Dec(Keep,:);
+    LabelArchive.Label = LabelArchive.Label(Keep);
+    LabelArchive.Boundary = LabelArchive.Boundary(Keep);
+    LabelArchive = TrimLabelArchive(LabelArchive,MaxCount);
+end
+
+function LabelArchive = TrimLabelArchive(LabelArchive,MaxCount)
+    Count = size(LabelArchive.Dec,1);
+    if Count <= MaxCount
+        return;
+    end
+    Pos = find(LabelArchive.Label == 1);
+    Neg = find(LabelArchive.Label == 0);
+    Quota = floor(MaxCount/2);
+    Keep = [ ...
+        Pos(max(1,end-Quota+1):end); ...
+        Neg(max(1,end-Quota+1):end)];
+    Keep = unique(Keep,'stable');
+    if numel(Keep) < MaxCount
+        Rest = setdiff((1:Count)',Keep,'stable');
+        Need = MaxCount - numel(Keep);
+        Keep = [Keep;Rest(max(1,end-Need+1):end)];
+    elseif numel(Keep) > MaxCount
+        Keep = Keep(end-MaxCount+1:end);
+    end
+    Keep = sort(Keep);
+    LabelArchive.Dec = LabelArchive.Dec(Keep,:);
+    LabelArchive.Label = LabelArchive.Label(Keep);
+    LabelArchive.Boundary = LabelArchive.Boundary(Keep);
+end
+
+function [TrainSplit,EvalSplit,TestSplit] = SplitLabelArchive(LabelArchive,TrainMax,TestMax)
+    TrainSplit = struct('Dec',zeros(0,size(LabelArchive.Dec,2)),'Label',zeros(0,1),'Boundary',false(0,1));
+    EvalSplit  = TrainSplit;
+    TestSplit  = TrainSplit;
+    if isempty(LabelArchive.Dec)
+        return;
+    end
+
+    BoundaryIdx = find(LabelArchive.Boundary);
+    TestIdx = SelectLatestBalancedIndices(BoundaryIdx,LabelArchive.Label,min(TestMax,numel(BoundaryIdx)));
+    if numel(TestIdx) < min(TestMax,size(LabelArchive.Dec,1))
+        Remain = setdiff((1:size(LabelArchive.Dec,1))',TestIdx,'stable');
+        Fill = SelectLatestBalancedIndices(Remain,LabelArchive.Label, ...
+            min(TestMax-numel(TestIdx),numel(Remain)));
+        TestIdx = unique([TestIdx;Fill],'stable');
+    end
+    RemainIdx = setdiff((1:size(LabelArchive.Dec,1))',TestIdx,'stable');
+    TrainIdx = SelectLatestBalancedIndices(RemainIdx,LabelArchive.Label,min(TrainMax,numel(RemainIdx)));
+    EvalIdx  = TestIdx;
+
+    TrainSplit = BuildLabelSplit(LabelArchive,TrainIdx);
+    EvalSplit  = BuildLabelSplit(LabelArchive,EvalIdx);
+    TestSplit  = EvalSplit;
+end
+
+function Idx = SelectLatestBalancedIndices(CandidateIdx,Label,Count)
+    Idx = zeros(0,1);
+    if isempty(CandidateIdx) || Count <= 0
+        return;
+    end
+    CandidateIdx = CandidateIdx(:);
+    Pos = CandidateIdx(Label(CandidateIdx)==1);
+    Neg = CandidateIdx(Label(CandidateIdx)==0);
+    Quota = floor(Count/2);
+    KeepPos = Pos(max(1,end-Quota+1):end);
+    KeepNeg = Neg(max(1,end-Quota+1):end);
+    Idx = unique([KeepPos;KeepNeg],'stable');
+    if numel(Idx) < Count
+        Rest = setdiff(CandidateIdx,Idx,'stable');
+        Need = Count - numel(Idx);
+        Idx = [Idx;Rest(max(1,end-Need+1):end)];
+    elseif numel(Idx) > Count
+        Idx = Idx(end-Count+1:end);
+    end
+    Idx = sort(Idx);
+end
+
+function Split = BuildLabelSplit(LabelArchive,Idx)
+    D = size(LabelArchive.Dec,2);
+    Split = struct('Dec',zeros(0,D),'Label',zeros(0,1),'Boundary',false(0,1));
+    if isempty(Idx)
+        return;
+    end
+    Split.Dec = LabelArchive.Dec(Idx,:);
+    Split.Label = LabelArchive.Label(Idx);
+    Split.Boundary = LabelArchive.Boundary(Idx);
+end
+
+function BoundaryBatch = InitBoundaryBatch()
+    BoundaryBatch = struct( ...
+        'population',[], ...
+        'count',0, ...
+        'Boundary',false(0,1));
+end
+
+function BoundaryBatch = AppendBoundaryBatch(BoundaryBatch,Population,IsBoundary)
+    if isempty(Population)
+        return;
+    end
+    if isempty(BoundaryBatch.population)
+        BoundaryBatch.population = Population;
+    else
+        BoundaryBatch.population = [BoundaryBatch.population,Population];
+    end
+    BoundaryBatch.count = BoundaryBatch.count + numel(Population);
+    BoundaryBatch.Boundary = [BoundaryBatch.Boundary;logical(IsBoundary(:))];
+end
+
+function Model = RefitBoundaryModel( ...
+    PrevModel,LabelArchive,Hidden,Epoch,LR,TrainMax)
+
+    [TrainSplit,~,~] = SplitLabelArchive(LabelArchive,TrainMax,0);
+    Model = TrainBoundaryMLP(TrainSplit.Dec,TrainSplit.Label,Hidden,Epoch,LR,PrevModel);
+end
+
+function Model = TrainBoundaryMLP(X,Y,Hidden,Epoch,LR,PrevModel)
+    if nargin < 6
+        PrevModel = [];
+    end
+    Model = PrevModel;
+    if isempty(X) || size(X,1) < 4
+        return;
+    end
+    X = double(X);
+    Y = double(Y(:) > 0);
+    if numel(unique(Y)) < 2
+        return;
+    end
+
+    Hidden = max(2,round(Hidden));
+    Epoch  = max(1,round(Epoch));
+    LR     = max(double(LR),1e-4);
+    [N,D]  = size(X);
+    LambdaReg = 1e-4;
+
+    % Always recompute normalization from the current training set;
+    % only warm-start the weights (W1,b1,W2,b2) from the previous model.
+    Mu    = mean(X,1);
+    Sigma = std(X,0,1);
+    Sigma(Sigma<1e-12) = 1;
+    if ~isempty(PrevModel) && IsWarmStartCompatible(PrevModel,D,Hidden)
+        W1    = PrevModel.W1;
+        b1    = PrevModel.b1;
+        W2    = PrevModel.W2;
+        b2    = PrevModel.b2;
+    else
+        W1 = 0.1*randn(D,Hidden);
+        b1 = zeros(1,Hidden);
+        W2 = 0.1*randn(Hidden,1);
+        b2 = 0;
+    end
+    Xn = (X-Mu)./Sigma;
+    [Weight,NormWeight] = BuildClassWeights(Y);
+
+    for e = 1 : Epoch
+        H = tanh(Xn*W1 + repmat(b1,N,1));
+        Z = H*W2 + b2;
+        P = 1./(1+exp(-Z));
+        Delta2 = Weight.*(P-Y)./NormWeight;
+        dW2 = H'*Delta2 + LambdaReg*W2;
+        db2 = sum(Delta2);
+        D1  = (Delta2*W2').*(1-H.^2);
+        dW1 = Xn'*D1 + LambdaReg*W1;
+        db1 = sum(D1,1);
+        Step = LR/sqrt(e);
+        W1 = W1 - Step*dW1;
+        b1 = b1 - Step*db1;
+        W2 = W2 - Step*dW2;
+        b2 = b2 - Step*db2;
+    end
+
+    Model = struct();
+    Model.Mu = Mu;
+    Model.Sigma = Sigma;
+    Model.W1 = W1;
+    Model.b1 = b1;
+    Model.W2 = W2;
+    Model.b2 = b2;
+end
+
+function Flag = IsWarmStartCompatible(Model,D,Hidden)
+    Flag = ~isempty(Model) && isfield(Model,'W1') && isfield(Model,'W2') ...
+        && size(Model.W1,1) == D && size(Model.W1,2) == Hidden ...
+        && size(Model.W2,1) == Hidden;
+end
+
+function [Weight,NormWeight] = BuildClassWeights(Y)
+    N = numel(Y);
+    Pos = sum(Y==1);
+    Neg = N - Pos;
+    WPos = N/(2*max(1,Pos));
+    WNeg = N/(2*max(1,Neg));
+    Weight = WNeg + (WPos-WNeg).*Y;
+    NormWeight = max(sum(Weight),1);
+end
+
+function [Prob,Stats] = PredictBoundaryMLP(Model,X)
+    if nargin < 2 || isempty(X)
+        Prob = zeros(0,1);
+        Stats = struct('logit',zeros(0,1));
+        return;
+    end
+    if isempty(Model) || ~isfield(Model,'Mu')
+        Prob = 0.5*ones(size(X,1),1);
+        Stats = struct('logit',zeros(size(X,1),1));
+        return;
+    end
+    Xn = (double(X)-Model.Mu)./Model.Sigma;
+    H  = tanh(Xn*Model.W1 + repmat(Model.b1,size(Xn,1),1));
+    Z  = H*Model.W2 + Model.b2;
+    Prob = 1./(1+exp(-Z));
+    Prob = min(max(Prob,1e-6),1-1e-6);
+    Stats = struct('logit',Z(:));
 end
 
 function Value = SafeRuntimeOption(RuntimeOptions,Field,Default)
@@ -1038,10 +1023,99 @@ function Value = SafeRuntimeOption(RuntimeOptions,Field,Default)
     end
 end
 
-function Value = FieldOrDefaultMetric(S,Field,Default)
-    if isstruct(S) && isfield(S,Field) && ~isempty(S.(Field))
-        Value = S.(Field);
+function [Sector,Count] = AssociateSectorsLocal(PopObj,W,RefObj)
+    if nargin < 3 || isempty(RefObj)
+        RefObj = PopObj;
+    end
+    if isempty(PopObj)
+        Sector = zeros(0,1);
+        Count = zeros(size(W,1),1);
+        return;
+    end
+    if isempty(W)
+        Sector = ones(size(PopObj,1),1);
+        Count  = size(PopObj,1);
+        return;
+    end
+
+    MinObj = min(RefObj,[],1);
+    MaxObj = max(RefObj,[],1);
+    Range = MaxObj - MinObj;
+    Range(Range<1e-12) = 1;
+
+    Obj = (PopObj-MinObj)./Range;
+    ObjNorm = sqrt(sum(Obj.^2,2));
+    ZeroMask = ObjNorm < 1e-12;
+    Obj(ZeroMask,:) = 1;
+    ObjNorm(ZeroMask) = sqrt(size(Obj,2));
+    Obj = Obj./ObjNorm(:,ones(1,size(Obj,2)));
+
+    WNorm = sqrt(sum(W.^2,2));
+    WNorm(WNorm<1e-12) = 1;
+    Wn = W./WNorm(:,ones(1,size(W,2)));
+    Cosine = Obj*Wn';
+    [~,Sector] = max(Cosine,[],2);
+    Count = accumarray(Sector,1,[size(W,1),1]);
+end
+
+function Value = ComputeSectorScalar(Obj,W,RefObj,Sector)
+    if isempty(Obj)
+        Value = zeros(0,1);
+        return;
+    end
+    if nargin < 2 || isempty(W)
+        W = ones(1,size(Obj,2));
+    end
+    if nargin < 3 || isempty(RefObj)
+        RefObj = Obj;
+    end
+    if nargin < 4 || isempty(Sector)
+        Weight = repmat(W(1,:),size(Obj,1),1);
     else
-        Value = Default;
+        Weight = W(Sector,:);
+    end
+    MinObj = min(RefObj,[],1);
+    MaxObj = max(RefObj,[],1);
+    Range = MaxObj - MinObj;
+    Range(Range<1e-12) = 1;
+    NormObj = (Obj-MinObj)./Range;
+    Value = sum(NormObj.*Weight,2);
+end
+
+function Dec = InterpolateBoundaryPointLocal(Problem,FeasibleDec,InfeasibleDec,Lambda)
+    Dec = FeasibleDec;
+    RealIdx = find(Problem.encoding<=2);
+    if ~isempty(RealIdx)
+        Dec(RealIdx) = FeasibleDec(RealIdx) + Lambda*(InfeasibleDec(RealIdx)-FeasibleDec(RealIdx));
+    end
+    OtherIdx = setdiff(1:Problem.D,RealIdx);
+    if ~isempty(OtherIdx) && Lambda > 0.5
+        Dec(OtherIdx) = InfeasibleDec(OtherIdx);
+    end
+    Dec = Problem.CalDec(Dec);
+end
+
+function State = InitBestMigrants()
+    State = struct('sector',zeros(0,1),'scalar',zeros(0,1),'population',[]);
+end
+
+function State = UpdateBestMigrant(State,SectorID,Solution,Scalar,AnchorScalar)
+    if Scalar >= AnchorScalar
+        return;
+    end
+    Idx = find(State.sector == SectorID,1,'first');
+    if isempty(Idx)
+        State.sector(end+1,1) = SectorID;
+        State.scalar(end+1,1) = Scalar;
+        if isempty(State.population)
+            State.population = Solution;
+        else
+            State.population(end+1) = Solution;
+        end
+        return;
+    end
+    if Scalar < State.scalar(Idx)
+        State.scalar(Idx) = Scalar;
+        State.population(Idx) = Solution;
     end
 end
