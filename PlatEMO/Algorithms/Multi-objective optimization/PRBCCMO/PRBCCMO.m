@@ -2,8 +2,8 @@ classdef PRBCCMO < ALGORITHM
 % <2026> <multi> <real> <constrained>
 % PRBCCMO1
 % Pareto-relevant bridge-driven CCMO for binary feasible/infeasible feedback
-% bRho     --- 0.2  --- Boundary evaluation ratio relative to N
-% trainRho --- 2    --- Training archive size ratio
+% bRho     --- 0.25 --- Boundary evaluation ratio relative to N
+% trainRho --- 3    --- Training archive size ratio
 % hidden   --- 20   --- Hidden units of the boundary MLP
 % epoch    --- 25   --- Training epochs of the boundary MLP
 % lr       --- 0.01 --- Learning rate of the boundary MLP
@@ -105,7 +105,7 @@ end
 
 function Params = ResolvePRBCCMOParameters(ParameterCell)
     ActiveNames = {'bRho','trainRho','hidden','epoch','lr'};
-    ActiveDefaults = {0.2,2,20,25,0.01};
+    ActiveDefaults = {0.25,3,20,25,0.01};
 
     Params = cell2struct(ActiveDefaults,ActiveNames,2);
     Params.runtimeOptions = struct();

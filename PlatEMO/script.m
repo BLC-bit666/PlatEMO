@@ -1,31 +1,19 @@
-platemo('algorithm',@PRBCCMO,'problem',@DASCMOP1_BC,'n','100','maxFE',200000);
-platemo('algorithm',@PRBCCMO,'problem',@DASCMOP2_BC,'n','100','maxFE',200000);
-platemo('algorithm',@PRBCCMO,'problem',@DASCMOP3_BC,'n','100','maxFE',200000);
-platemo('algorithm',@PRBCCMO,'problem',@DASCMOP4_BC,'n','100','maxFE',200000);
-platemo('algorithm',@PRBCCMO,'problem',@DASCMOP5_BC,'n','100','maxFE',200000);
-platemo('algorithm',@PRBCCMO,'problem',@DASCMOP6_BC,'n','100','maxFE',200000);
-platemo('algorithm',@PRBCCMO,'problem',@DASCMOP7_BC,'n','100','maxFE',200000);
-platemo('algorithm',@PRBCCMO,'problem',@DASCMOP8_BC,'n','100','maxFE',200000);
-platemo('algorithm',@PRBCCMO,'problem',@DASCMOP9_BC,'n','100','maxFE',200000);
+for i = 1:9
+    prob = str2func(sprintf('DASCMOP%d_BC', i));
+    platemo( ...
+        'algorithm', @PRBCCMO1, ...
+        'problem',   prob, ...
+        'N',         100, ...
+        'maxFE',     200000);
+end
 
-platemo('algorithm',@CCMO,'problem',@DASCMOP1_BC,'n','100','maxFE',200000);
-platemo('algorithm',@CCMO,'problem',@DASCMOP2_BC,'n','100','maxFE',200000);
-platemo('algorithm',@CCMO,'problem',@DASCMOP3_BC,'n','100','maxFE',200000);
-platemo('algorithm',@CCMO,'problem',@DASCMOP4_BC,'n','100','maxFE',200000);
-platemo('algorithm',@CCMO,'problem',@DASCMOP5_BC,'n','100','maxFE',200000);
-platemo('algorithm',@CCMO,'problem',@DASCMOP6_BC,'n','100','maxFE',200000);
-platemo('algorithm',@CCMO,'problem',@DASCMOP7_BC,'n','100','maxFE',200000);
-platemo('algorithm',@CCMO,'problem',@DASCMOP8_BC,'n','100','maxFE',200000);
-platemo('algorithm',@CCMO,'problem',@DASCMOP9_BC,'n','100','maxFE',200000);
+for i = 4:9
+    prob = str2func(sprintf('DASCMOP%d_BC', i));
+    platemo( ...
+        'algorithm', @PRBCCMO1, ...
+        'problem',   prob, ...
+        'N',         100, ...
+        'maxFE',     200000);
+end
 
-
-platemo('algorithm',@MCCMO,'problem',@DASCMOP1_BC,'n','100','maxFE',200000);
-platemo('algorithm',@MCCMO,'problem',@DASCMOP2_BC,'n','100','maxFE',200000);
-platemo('algorithm',@MCCMO,'problem',@DASCMOP3_BC,'n','100','maxFE',200000);
-platemo('algorithm',@MCCMO,'problem',@DASCMOP4_BC,'n','100','maxFE',200000);
-platemo('algorithm',@MCCMO,'problem',@DASCMOP5_BC,'n','100','maxFE',200000);
-platemo('algorithm',@MCCMO,'problem',@DASCMOP6_BC,'n','100','maxFE',200000);
-platemo('algorithm',@MCCMO,'problem',@DASCMOP7_BC,'n','100','maxFE',200000);
-platemo('algorithm',@MCCMO,'problem',@DASCMOP8_BC,'n','100','maxFE',200000);
-platemo('algorithm',@MCCMO,'problem',@DASCMOP9_BC,'n','100','maxFE',200000);
-
+platemo('algorithm', @PRBCCMO1, 'problem',@DASCMOP1_BC,'N',100, 'maxFE',200000);
