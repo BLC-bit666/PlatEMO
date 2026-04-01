@@ -1,6 +1,6 @@
 classdef PRBCCMO1 < ALGORITHM
 % <2026> <multi> <real> <constrained>
-% PRBCCMO
+% PRBCCMO1
 % Dual-population CCMO with an explicit sectorized boundary archive
 %
 % type      --- 1    --- 1.GA, 2.DE
@@ -12,20 +12,18 @@ classdef PRBCCMO1 < ALGORITHM
 % lateGap   --- 15   --- Model update gap in late stage
 % switchRho --- 0.5  --- Early/late switch FE ratio
 %
-% Main design:
-%   1) Pop_C x Pop_C -> Pop_C
-%   2) Pop_U x Pop_U -> Pop_U
-%   3) Pop_C x Pop_U -> boundary candidates
-%   4) B x opposite-side main population -> active boundary search
-%   5) Boundary archive B keeps sector-wise "between" samples only
-%   6) Feasible boundary offspring migrate back to Pop_C only if they
-%      truly improve the current sector champion
+% Core fixes relative to the previous PRBCCMO1:
+%   1) B is redefined as a sector-local boundary corridor between Pop_C and Pop_U;
+%   2) exact-between points are preferred, nearest-outside points are used only
+%      when exact-between points are insufficient, so that B can be filled;
+%   3) B x opposite uses geometric side (lambda), not feasible/infeasible label;
+%   4) sector coverage is also used in Pop_C / Pop_U truncation to improve IGD.
 
     methods
         function main(Algorithm,Problem)
             [W,Problem.N] = UniformPoint(Problem.N,Problem.M);
             [type,hidden,epoch,lr,minClass,earlyGap,lateGap,switchRho] = ...
-                Algorithm.ParameterSet(2,20,20,0.01,20,5,15,0.5);
+                Algorithm.ParameterSet(1,20,20,0.01,20,5,15,0.5);
 
             MaxB         = 2*Problem.N;
             MaxTrain     = 6*Problem.N;
@@ -33,12 +31,12 @@ classdef PRBCCMO1 < ALGORITHM
 
             PopulationC  = Problem.Initialization();
             PopulationU  = Problem.Initialization();
-            B            = [];
+            B            = PopulationC([]);
             Model        = [];
             TrainArchive = InitTrainArchive(Problem.D);
 
             % Initial boundary seeding
-            SeedB        = GenerateCrossBoundaryOffspring(Problem,PopulationC,PopulationU,W,type);
+            SeedB        = GenerateCrossBoundaryOffspring(Problem,PopulationC,PopulationU,W,type,Problem.N);
             B            = UpdateBoundaryArchive([B,SeedB],PopulationC,PopulationU,W,Model,MaxB);
             TrainArchive = UpdateTrainArchive(TrainArchive,B,PopulationC,PopulationU,W,MaxTrain);
             if CanTrainBoundaryModel(TrainArchive,minClass)
@@ -56,8 +54,8 @@ classdef PRBCCMO1 < ALGORITHM
                 PoolU = KeepUniquePopulation([PopulationU,OffspringU]);
 
                 % 2) Boundary generation
-                CrossB     = GenerateCrossBoundaryOffspring(Problem,PoolC,PoolU,W,type);
-                SearchB    = GenerateArchiveBoundaryOffspring(Problem,B,PoolC,PoolU,W,Model,type);
+                CrossB     = GenerateCrossBoundaryOffspring(Problem,PoolC,PoolU,W,type,Problem.N);
+                SearchB    = GenerateArchiveBoundaryOffspring(Problem,B,PoolC,PoolU,W,Model,type,Problem.N);
                 BoundaryOff = KeepUniquePopulation([CrossB,SearchB]);
 
                 % 3) Boundary -> Pop_C migration (feasible only, sector improvement only)
@@ -67,8 +65,8 @@ classdef PRBCCMO1 < ALGORITHM
                 B = UpdateBoundaryArchive([B,BoundaryOff],PoolC,PoolU,W,Model,MaxB);
 
                 % 5) Environmental selection of two main populations
-                PopulationC = EnvironmentalSelectionC([PopulationC,OffspringC,Migrants],Problem.N);
-                PopulationU = EnvironmentalSelectionU([PopulationU,OffspringU],Problem.N);
+                PopulationC = EnvironmentalSelectionC([PopulationC,OffspringC,Migrants],Problem.N,W);
+                PopulationU = EnvironmentalSelectionU([PopulationU,OffspringU],Problem.N,W);
 
                 % 6) Warm-start MLP update
                 TrainArchive = UpdateTrainArchive(TrainArchive,B,PopulationC,PopulationU,W,MaxTrain);
@@ -111,12 +109,12 @@ function Offspring = GenerateWithinOffspring(Problem,Population,type,isConstrain
     end
 end
 
-function Offspring = GenerateCrossBoundaryOffspring(Problem,PopulationC,PopulationU,W,type)
-    if isempty(PopulationC) || isempty(PopulationU)
-        Offspring = [];
+function Offspring = GenerateCrossBoundaryOffspring(Problem,PopulationC,PopulationU,W,type,NOff)
+    if isempty(PopulationC) || isempty(PopulationU) || NOff <= 0
+        Offspring = PopulationC([]);
         return;
     end
-    RefObj = [PopulationC.objs;PopulationU.objs];
+    RefObj = BuildReferenceObj(PopulationC,PopulationU,[]);
     RepC   = BuildSectorRepresentatives(PopulationC,W,RefObj,true);
     RepU   = BuildSectorRepresentatives(PopulationU,W,RefObj,false);
     Shared = find(RepC.has & RepU.has);
@@ -126,67 +124,48 @@ function Offspring = GenerateCrossBoundaryOffspring(Problem,PopulationC,Populati
         return;
     end
 
-    ParentC  = PopulationC(RepC.idx(Shared));
-    ParentU  = PopulationU(RepU.idx(Shared));
+    Shared = Shared(randperm(numel(Shared)));
+    Use    = Shared(mod(0:NOff-1,numel(Shared))+1);
+
+    ParentC  = PopulationC(RepC.idx(Use));
+    ParentU  = PopulationU(RepU.idx(Use));
     Offspring = CrossTwoSets(Problem,ParentC,ParentU,type);
 end
 
-function Offspring = GenerateArchiveBoundaryOffspring(Problem,B,PopulationC,PopulationU,W,Model,type)
-    if isempty(B) || isempty(PopulationC) || isempty(PopulationU)
-        Offspring = [];
+function Offspring = GenerateArchiveBoundaryOffspring(Problem,B,PopulationC,PopulationU,W,Model,type,NOff)
+    if isempty(B) || isempty(PopulationC) || isempty(PopulationU) || NOff <= 0
+        Offspring = B([]);
         return;
     end
 
-    RefObj  = [B.objs;PopulationC.objs;PopulationU.objs];
-    SectorB = AssociateSectorsLocal(B.objs,W,RefObj);
-    ScalarB = ComputeSectorScalar(B.objs,W,RefObj,SectorB);
-    RepC    = BuildSectorRepresentatives(PopulationC,W,RefObj,true);
-    RepU    = BuildSectorRepresentatives(PopulationU,W,RefObj,false);
-    [ProbB,~] = PredictBoundaryMLP(Model,B.decs);
-
-    ParentB  = B([]);
-    Opposite = PopulationC([]);
-
-    for s = 1 : size(W,1)
-        if ~RepC.has(s) || ~RepU.has(s)
-            continue;
-        end
-        idx = find(SectorB == s);
-        if isempty(idx)
-            continue;
-        end
-
-        % Keep only samples still lying between Pop_C and Pop_U in this sector
-        idx = idx(IsBetween(ScalarB(idx),RepC.scalar(s),RepU.scalar(s)));
-        if isempty(idx)
-            continue;
-        end
-
-        Mid   = 0.5*(RepC.scalar(s) + RepU.scalar(s));
-        Span  = max(abs(RepC.scalar(s) - RepU.scalar(s)),1e-12);
-        Score1 = abs(ProbB(idx) - 0.5);
-        Score2 = abs(ScalarB(idx) - Mid)./Span;
-        [~,order] = sortrows([Score1(:),Score2(:)],[1 2]);
-        pick = idx(order(1));
-
-        ParentB(end+1) = B(pick); %#ok<AGROW>
-        if all(B(pick).cons <= 0,2)
-            Opposite(end+1) = PopulationU(RepU.idx(s)); %#ok<AGROW>
-        else
-            Opposite(end+1) = PopulationC(RepC.idx(s)); %#ok<AGROW>
-        end
-    end
-
-    if isempty(ParentB)
+    [Meta,RepC,RepU] = BuildBoundaryMeta(B,PopulationC,PopulationU,W,Model);
+    Ranked = BuildBoundaryRankLists(Meta,size(W,1));
+    Pick   = SectorRoundRobinPick(Ranked,NOff);
+    if isempty(Pick)
         Offspring = B([]);
-    else
-        Offspring = CrossTwoSets(Problem,ParentB,Opposite,type);
+        return;
     end
+
+    ParentB  = B(Pick);
+    Opposite = PopulationC([]);
+    for i = 1 : numel(Pick)
+        idx = Pick(i);
+        s   = Meta.sector(idx);
+        % Geometric opposite:
+        % lambda = 0 at U-side, lambda = 1 at C-side
+        if Meta.lambda(idx) <= 0.5
+            Opposite(end+1) = PopulationC(RepC.idx(s)); %#ok<AGROW>
+        else
+            Opposite(end+1) = PopulationU(RepU.idx(s)); %#ok<AGROW>
+        end
+    end
+
+    Offspring = CrossTwoSets(Problem,ParentB,Opposite,type);
 end
 
 function Offspring = CrossTwoSets(Problem,Parent1,Parent2,type)
     if isempty(Parent1) || isempty(Parent2)
-        Offspring = [];
+        Offspring = Parent1([]);
         return;
     end
     K = min(numel(Parent1),numel(Parent2));
@@ -194,10 +173,9 @@ function Offspring = CrossTwoSets(Problem,Parent1,Parent2,type)
     Parent2 = Parent2(1:K);
 
     if type == 1
-        % Pair Parent1(i) with Parent2(i)
         Offspring = OperatorGAhalf(Problem,[Parent1,Parent2]);
     else
-        % DE midpoint pull: Parent1 + 0.5*(Parent2-Parent1)
+        % midpoint pull in decision space, but still only as a candidate generator
         Offspring = OperatorDE(Problem,Parent1,Parent2,Parent1);
     end
 end
@@ -211,60 +189,10 @@ function B = UpdateBoundaryArchive(CandidateB,PopulationC,PopulationU,W,Model,Ma
     end
 
     CandidateB = KeepUniquePopulation(CandidateB);
-    RefObj  = [CandidateB.objs;PopulationC.objs;PopulationU.objs];
-    SectorB = AssociateSectorsLocal(CandidateB.objs,W,RefObj);
-    ScalarB = ComputeSectorScalar(CandidateB.objs,W,RefObj,SectorB);
-    RepC    = BuildSectorRepresentatives(PopulationC,W,RefObj,true);
-    RepU    = BuildSectorRepresentatives(PopulationU,W,RefObj,false);
-    [Prob,~] = PredictBoundaryMLP(Model,CandidateB.decs);
+    [Meta,~,~] = BuildBoundaryMeta(CandidateB,PopulationC,PopulationU,W,Model);
 
-    % Sector-local ranking:
-    %   1) |p-0.5| smaller -> better
-    %   2) closer to the middle of Pop_C and Pop_U -> better
-    Ranked = cell(size(W,1),1);
-    for s = 1 : size(W,1)
-        if ~RepC.has(s) || ~RepU.has(s)
-            continue;
-        end
-        idx = find(SectorB == s);
-        if isempty(idx)
-            continue;
-        end
-
-        idx = idx(IsBetween(ScalarB(idx),RepC.scalar(s),RepU.scalar(s)));
-        if isempty(idx)
-            continue;
-        end
-
-        Mid   = 0.5*(RepC.scalar(s) + RepU.scalar(s));
-        Span  = max(abs(RepC.scalar(s) - RepU.scalar(s)),1e-12);
-        Score1 = abs(Prob(idx) - 0.5);
-        Score2 = abs(ScalarB(idx) - Mid)./Span;
-        [~,order] = sortrows([Score1(:),Score2(:)],[1 2]);
-        Ranked{s} = idx(order);
-    end
-
-    % Sector-round-robin truncation:
-    % equivalent to keeping the best samples inside each sector and
-    % removing the worst samples of overloaded sectors.
-    Pick  = zeros(0,1);
-    Round = 1;
-    while numel(Pick) < MaxB
-        Changed = false;
-        for s = 1 : numel(Ranked)
-            if numel(Ranked{s}) >= Round
-                Pick(end+1,1) = Ranked{s}(Round); %#ok<AGROW>
-                Changed = true;
-                if numel(Pick) >= MaxB
-                    break;
-                end
-            end
-        end
-        if ~Changed
-            break;
-        end
-        Round = Round + 1;
-    end
+    Ranked = BuildBoundaryRankLists(Meta,size(W,1));
+    Pick   = SectorRoundRobinPick(Ranked,MaxB);
 
     if isempty(Pick)
         B = CandidateB([]);
@@ -273,9 +201,123 @@ function B = UpdateBoundaryArchive(CandidateB,PopulationC,PopulationU,W,Model,Ma
     end
 end
 
+function Ranked = BuildBoundaryRankLists(Meta,K)
+    Ranked = cell(K,1);
+    if isempty(Meta.sector)
+        return;
+    end
+    for s = 1 : K
+        idx = find(Meta.hasPair & Meta.sector == s);
+        if isempty(idx)
+            continue;
+        end
+        % Priority:
+        %   1) exact-between first
+        %   2) nearest-to-corridor next
+        %   3) |p-0.5| small
+        %   4) close to middle of the corridor
+        Key = [double(~Meta.inside(idx)), Meta.bandDist(idx), Meta.absp05(idx), Meta.midDist(idx)];
+        [~,ord] = sortrows(Key,[1 2 3 4]);
+        Ranked{s} = idx(ord);
+    end
+end
+
+function Pick = SectorRoundRobinPick(Ranked,MaxPick)
+    Pick = zeros(0,1);
+    if isempty(Ranked) || MaxPick <= 0
+        return;
+    end
+    Ptr = ones(numel(Ranked),1);
+    while numel(Pick) < MaxPick
+        Changed = false;
+        for s = 1 : numel(Ranked)
+            if Ptr(s) <= numel(Ranked{s})
+                Pick(end+1,1) = Ranked{s}(Ptr(s)); %#ok<AGROW>
+                Ptr(s) = Ptr(s) + 1;
+                Changed = true;
+                if numel(Pick) >= MaxPick
+                    break;
+                end
+            end
+        end
+        if ~Changed
+            break;
+        end
+    end
+end
+
+function [Meta,RepC,RepU] = BuildBoundaryMeta(Candidates,PopulationC,PopulationU,W,Model)
+    Meta = struct();
+    Meta.sector   = zeros(0,1);
+    Meta.scalar   = zeros(0,1);
+    Meta.prob     = zeros(0,1);
+    Meta.absp05   = zeros(0,1);
+    Meta.hasPair  = false(0,1);
+    Meta.lambda   = zeros(0,1);
+    Meta.inside   = false(0,1);
+    Meta.bandDist = zeros(0,1);
+    Meta.midDist  = zeros(0,1);
+
+    if isempty(Candidates)
+        RepC = BuildSectorRepresentatives(PopulationC,W,[],true);
+        RepU = BuildSectorRepresentatives(PopulationU,W,[],false);
+        return;
+    end
+
+    % IMPORTANT FIX:
+    % RefObj only uses current main populations, not CandidateB itself.
+    RefObj = BuildReferenceObj(PopulationC,PopulationU,[]);
+    if isempty(RefObj)
+        RefObj = Candidates.objs;
+    end
+
+    RepC = BuildSectorRepresentatives(PopulationC,W,RefObj,true);
+    RepU = BuildSectorRepresentatives(PopulationU,W,RefObj,false);
+
+    Sector = AssociateSectorsLocal(Candidates.objs,W,RefObj);
+    Scalar = ComputeSectorScalar(Candidates.objs,W,RefObj,Sector);
+    [Prob,~] = PredictBoundaryMLP(Model,Candidates.decs);
+
+    N = numel(Candidates);
+    HasPair  = false(N,1);
+    Lambda   = nan(N,1);
+    Inside   = false(N,1);
+    BandDist = inf(N,1);
+    MidDist  = inf(N,1);
+
+    for i = 1 : N
+        s = Sector(i);
+        if s <= 0 || s > numel(RepC.has) || ~RepC.has(s) || ~RepU.has(s)
+            continue;
+        end
+        HasPair(i) = true;
+        gC = RepC.scalar(s);
+        gU = RepU.scalar(s);
+        if abs(gC-gU) < 1e-12
+            Lambda(i) = 0.5;
+        else
+            % lambda = 0 at U, lambda = 1 at C
+            Lambda(i) = (Scalar(i)-gU)/(gC-gU);
+        end
+        Inside(i)   = Lambda(i) >= 0 && Lambda(i) <= 1;
+        BandDist(i) = max([0,-Lambda(i),Lambda(i)-1]);
+        MidDist(i)  = abs(Lambda(i)-0.5);
+    end
+
+    Meta.sector   = Sector(:);
+    Meta.scalar   = Scalar(:);
+    Meta.prob     = Prob(:);
+    Meta.absp05   = abs(Prob(:)-0.5);
+    Meta.hasPair  = HasPair(:);
+    Meta.lambda   = Lambda(:);
+    Meta.inside   = Inside(:);
+    Meta.bandDist = BandDist(:);
+    Meta.midDist  = MidDist(:);
+end
+
 function Migrants = ExtractBoundaryMigrants(BoundaryOff,PopulationC,W)
     if isempty(BoundaryOff)
-        Migrants = [];
+        Migrants = BoundaryOff;
         return;
     end
 
@@ -285,7 +327,7 @@ function Migrants = ExtractBoundaryMigrants(BoundaryOff,PopulationC,W)
         return;
     end
 
-    RefObj   = [BoundaryOff.objs;PopulationC.objs];
+    RefObj    = BuildReferenceObj(PopulationC,[],BoundaryOff);
     SectorOff = AssociateSectorsLocal(BoundaryOff.objs,W,RefObj);
     ScalarOff = ComputeSectorScalar(BoundaryOff.objs,W,RefObj,SectorOff);
     RepC      = BuildSectorRepresentatives(PopulationC,W,RefObj,true);
@@ -303,13 +345,13 @@ function Migrants = ExtractBoundaryMigrants(BoundaryOff,PopulationC,W)
     if isempty(Pick)
         Migrants = BoundaryOff([]);
     else
-        Migrants = BoundaryOff(Pick);
+        Migrants = BoundaryOff(unique(Pick,'stable'));
     end
 end
 
 %% ========== Environmental selection ==========
 
-function Population = EnvironmentalSelectionC(Population,N)
+function Population = EnvironmentalSelectionC(Population,N,W)
     Population = KeepUniquePopulation(Population);
     if isempty(Population)
         return;
@@ -317,25 +359,25 @@ function Population = EnvironmentalSelectionC(Population,N)
 
     Feasible = FilterFeasiblePopulation(Population);
     if numel(Feasible) >= N
-        Population = SelectByObjective(Feasible,N);
+        Population = SectorSelectByObjective(Feasible,N,W);
     else
         Next   = Feasible;
         Need   = N - numel(Next);
         Remain = RemovePopulationByDecision(Population,Next);
         if Need > 0 && ~isempty(Remain)
-            Next = [Next,SelectByObjective(Remain,min(Need,numel(Remain)))];
+            Next = [Next,SectorSelectByObjective(Remain,min(Need,numel(Remain)),W)];
         end
         Population = PadPopulation(Next,N);
     end
 end
 
-function Population = EnvironmentalSelectionU(Population,N)
+function Population = EnvironmentalSelectionU(Population,N,W)
     Population = KeepUniquePopulation(Population);
-    Population = SelectByObjective(Population,min(N,numel(Population)));
+    Population = SectorSelectByObjective(Population,min(N,numel(Population)),W);
     Population = PadPopulation(Population,N);
 end
 
-function Population = SelectByObjective(Population,N)
+function Population = SectorSelectByObjective(Population,N,W)
     if isempty(Population)
         return;
     end
@@ -345,16 +387,25 @@ function Population = SelectByObjective(Population,N)
     end
 
     N = min(N,numel(Population));
-    [FrontNo,MaxFNo] = NDSort(Population.objs,N);
-    Next     = FrontNo < MaxFNo;
+    RefObj   = Population.objs;
+    Sector   = AssociateSectorsLocal(Population.objs,W,RefObj);
+    Scalar   = ComputeSectorScalar(Population.objs,W,RefObj,Sector);
+    [FrontNo,~] = NDSort(Population.objs,numel(Population));
     CrowdDis = CrowdingDistance(Population.objs,FrontNo);
-    Last     = find(FrontNo == MaxFNo);
-    Need     = N - sum(Next);
-    if Need > 0
-        [~,Rank] = sort(CrowdDis(Last),'descend');
-        Next(Last(Rank(1:Need))) = true;
+
+    Ranked = cell(size(W,1),1);
+    for s = 1 : size(W,1)
+        idx = find(Sector == s);
+        if isempty(idx)
+            continue;
+        end
+        Key = [FrontNo(idx)', Scalar(idx), -CrowdDis(idx)'];
+        [~,ord] = sortrows(Key,[1 2 3]);
+        Ranked{s} = idx(ord);
     end
-    Population = Population(Next);
+
+    Pick = SectorRoundRobinPick(Ranked,N);
+    Population = Population(Pick);
 end
 
 function Population = PadPopulation(Population,N)
@@ -390,9 +441,13 @@ function TrainArchive = InitTrainArchive(D)
 end
 
 function TrainArchive = UpdateTrainArchive(TrainArchive,B,PopulationC,PopulationU,W,MaxTrain)
-    RefObj = [PopulationC.objs;PopulationU.objs];
-    if ~isempty(B)
-        RefObj = [RefObj;B.objs];
+    RefObj = BuildReferenceObj(PopulationC,PopulationU,B);
+    if isempty(RefObj)
+        if ~isempty(B)
+            RefObj = B.objs;
+        else
+            RefObj = [];
+        end
     end
 
     RepC = BuildSectorRepresentatives(PopulationC,W,RefObj,true);
@@ -428,7 +483,6 @@ function TrainArchive = TrimTrainArchive(TrainArchive,MaxTrain)
         return;
     end
 
-    % Prefer boundary samples, but keep labels balanced
     BQuota   = min(round(0.7*MaxTrain),sum(TrainArchive.Source==1));
     KeepB    = SelectLatestBalancedIndices(find(TrainArchive.Source==1),TrainArchive.Label,BQuota);
     RemQuota = MaxTrain - numel(KeepB);
@@ -624,10 +678,17 @@ function Rep = BuildSectorRepresentatives(Population,W,RefObj,PreferFeasible)
     end
 end
 
-function Flag = IsBetween(Value,A,B)
-    lower = min(A,B) - 1e-12;
-    upper = max(A,B) + 1e-12;
-    Flag  = Value >= lower & Value <= upper;
+function RefObj = BuildReferenceObj(PopulationC,PopulationU,ExtraPop)
+    RefObj = [];
+    if nargin >= 1 && ~isempty(PopulationC)
+        RefObj = [RefObj;PopulationC.objs];
+    end
+    if nargin >= 2 && ~isempty(PopulationU)
+        RefObj = [RefObj;PopulationU.objs];
+    end
+    if nargin >= 3 && ~isempty(ExtraPop)
+        RefObj = [RefObj;ExtraPop.objs];
+    end
 end
 
 function [Sector,Count] = AssociateSectorsLocal(PopObj,W,RefObj)
