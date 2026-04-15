@@ -1,7 +1,7 @@
-classdef PRBCCMO < ALGORITHM
+classdef PRBCCMO_t < ALGORITHM
 % <2026> <multi> <real> <constrained>
-% PRBCCMO
-% MLP-driven boundary-information dual-population CCMO redesigned from fix.md
+% PRBCCMO_t
+% Traced PRBCCMO with CSV diagnostics for fix.md module validation
 %
 % type    --- 1    --- 1.GA, 2.DE
 % hidden  --- 20   --- Hidden neurons of the boundary MLP
@@ -14,6 +14,9 @@ classdef PRBCCMO < ALGORITHM
 % rhoPost --- 0.15 --- Boundary-evaluation ratio after the MLP is ready
 % gapMin  --- 3    --- Minimum model update gap
 % gapMax  --- 10   --- Maximum model update gap
+%
+% PRBCCMO_t keeps PRBCCMO logic unchanged and records CSV diagnostics under
+% Data/PRBCCMO_t/<run-folder>. No analysis MAT files are generated.
 %
 % PRBCCMO follows fix.md strictly:
 %   1) P_C approaches CPF and P_U approaches UPF with shared offspring;
@@ -55,30 +58,46 @@ classdef PRBCCMO < ALGORITHM
             RecentBoundaryOff = PopulationC([]);
 
             SectorNeighbors = BuildSectorNeighbors(W,min(max(3,2*Problem.M),max(size(W,1)-1,0)));
-            TrainArchive    = InitTrainArchive(Problem.D);
-            TrainArchive    = UpdateTrainArchive( ...
+            Generation = 0;
+            Observer   = InitObserver( ...
+                Algorithm,Problem,[type,hidden,epoch,lr,minPos,minNeg,kappa, ...
+                rhoPre,rhoPost,gapMin,gapMax],ProbeBeta,MaxTrain);
+            Algorithm.metric.analysis_folder          = Observer.folder;
+            Algorithm.metric.analysis_meta_csv        = Observer.meta_file;
+            Algorithm.metric.analysis_summary_csv     = Observer.summary_file;
+            Algorithm.metric.analysis_boundary_csv    = Observer.boundary_file;
+            Algorithm.metric.analysis_archive_csv     = Observer.archive_file;
+            Algorithm.metric.analysis_mlp_csv         = Observer.mlp_file;
+
+            TrainArchive = InitTrainArchive(Problem.D);
+            [TrainArchive,TrainDiag] = UpdateTrainArchiveWithDiagnostics( ...
                 TrainArchive,B,PopulationC,PopulationU,RecentBoundaryOff, ...
                 W,SectorNeighbors,MaxTrain,0);
-            Model           = UpdateBoundaryModelIfDue( ...
+            [Model,MLPDiag] = UpdateBoundaryModelWithDiagnostics( ...
                 Model,TrainArchive,minPos,minNeg,hidden,epoch,lr, ...
                 ResolveModelUpdateGap(gapMin,gapMax,Problem.FE/max(Problem.maxFE,1)),0);
+            Observer = LogMLPEvent(Observer,MLPDiag);
 
             while Algorithm.NotTerminated(PopulationC)
+                Generation = Generation + 1;
                 OffspringC = GenerateWithinOffspring(Problem,PopulationC,type,true);
                 OffspringU = GenerateWithinOffspring(Problem,PopulationU,type,false);
 
+                FERatio     = Problem.FE/max(Problem.maxFE,1);
                 RemainingFE = max(0,Problem.maxFE-Problem.FE);
 
                 SeedPool = KeepUniquePopulation([B,PopulationC,PopulationU,OffspringC,OffspringU]);
                 [SeedB,~] = UpdateBoundaryArchive( ...
                     SeedPool,W,Model,PopulationC,PopulationU, ...
                     TrainArchive,SectorNeighbors,kappa);
+                SeedMeta = BuildBoundaryMeta( ...
+                    SeedB,W,Model,PopulationC,PopulationU,TrainArchive,SectorNeighbors);
 
                 BoundaryBudget = ResolveBoundaryBudget( ...
                     Problem.N,rhoPre,rhoPost,RemainingFE,HasBoundaryModel(Model));
-                BoundaryOff = GenerateBoundaryOffspringModelDriven( ...
+                [BoundaryOff,BoundaryDiag] = GenerateBoundaryOffspringModelDriven( ...
                     Problem,PopulationC,PopulationU,SeedB,W,SectorNeighbors,Model, ...
-                    TrainArchive,BoundaryBudget,ProbeBeta);
+                    TrainArchive,BoundaryBudget,ProbeBeta,Generation,Problem.FE);
                 BoundaryOff = KeepUniquePopulation(BoundaryOff);
 
                 CandidateB = KeepUniquePopulation([SeedPool,BoundaryOff]);
@@ -90,15 +109,23 @@ classdef PRBCCMO < ALGORITHM
                 QU = KeepUniquePopulation([PopulationU,OffspringC,OffspringU,BoundaryOff]);
                 PopulationC = EnvironmentalSelectionC(QC,Problem.N,W);
                 PopulationU = EnvironmentalSelectionU(QU,Problem.N,W);
+                BoundarySurvival = ComputeBoundarySurvival(BoundaryOff,PopulationC,PopulationU);
 
                 RecentBoundaryOff = BoundaryOff;
-                TrainArchive = UpdateTrainArchive( ...
+                [TrainArchive,TrainDiag] = UpdateTrainArchiveWithDiagnostics( ...
                     TrainArchive,B,PopulationC,PopulationU,RecentBoundaryOff, ...
                     W,SectorNeighbors,MaxTrain,Problem.FE);
-                Model = UpdateBoundaryModelIfDue( ...
+                [Model,MLPDiag] = UpdateBoundaryModelWithDiagnostics( ...
                     Model,TrainArchive,minPos,minNeg,hidden,epoch,lr, ...
                     ResolveModelUpdateGap(gapMin,gapMax,Problem.FE/max(Problem.maxFE,1)), ...
                     Problem.FE);
+                Observer = LogMLPEvent(Observer,MLPDiag);
+                ArchiveMeta = BuildBoundaryMeta( ...
+                    B,W,Model,PopulationC,PopulationU,TrainArchive,SectorNeighbors);
+                Observer = LogGenerationDiagnostics( ...
+                    Observer,Generation,Problem,PopulationC,PopulationU, ...
+                    OffspringC,OffspringU,BoundaryBudget,SeedB,SeedMeta,BoundaryOff,BoundaryDiag, ...
+                    BoundarySurvival,B,ArchiveMeta,TrainArchive,TrainDiag,MLPDiag,Model);
             end
         end
     end
@@ -147,16 +174,27 @@ function Gap = ResolveModelUpdateGap(gapMin,gapMax,FERatio)
     Gap = max(1,Gap);
 end
 
-function Model = UpdateBoundaryModelIfDue( ...
+function [Model,Diag] = UpdateBoundaryModelWithDiagnostics( ...
     Model,TrainArchive,minPos,minNeg,hidden,epoch,lr,Gap,Tick)
-    if ~CanTrainBoundaryModel(TrainArchive,minPos,minNeg)
+
+    Diag = InitMLPDiag(Model,TrainArchive,Gap,Tick,minPos,minNeg);
+    if ~Diag.can_train
         return;
     end
 
     if isempty(Model) || mod(Tick,Gap) == 0
-        Model = TrainBoundaryMLP( ...
-            TrainArchive,hidden,epoch,lr,Model);
+        Diag.warm_start = double(HasBoundaryModel(Model));
+        Model = TrainBoundaryMLP(TrainArchive,hidden,epoch,lr,Model);
+        Diag.trained           = 1;
+        Diag.model_ready_after = double(HasBoundaryModel(Model));
+        Diag.stats_after       = EvaluateBinaryPredictions(Model,TrainArchive.Dec,TrainArchive.Label);
     end
+end
+
+function Model = UpdateBoundaryModelIfDue( ...
+    Model,TrainArchive,minPos,minNeg,hidden,epoch,lr,Gap,Tick)
+    [Model,~] = UpdateBoundaryModelWithDiagnostics( ...
+        Model,TrainArchive,minPos,minNeg,hidden,epoch,lr,Gap,Tick);
 end
 
 function Flag = HasBoundaryModel(Model)
@@ -302,9 +340,11 @@ function B = SelectTopKPerSector(Candidates,Meta,BridgeMask,kappa)
     end
 end
 
-function Offspring = GenerateBoundaryOffspringModelDriven( ...
+function [Offspring,Diag] = GenerateBoundaryOffspringModelDriven( ...
     Problem,PopulationC,PopulationU,B,W,SectorNeighbors,Model,TrainArchive, ...
-    Budget,ProbeBeta)
+    Budget,ProbeBeta,Generation,FE)
+
+    Diag = InitBoundaryDiag(Generation,FE,Budget);
 
     if isempty(B)
         Offspring = PopulationC([]);
@@ -334,47 +374,66 @@ function Offspring = GenerateBoundaryOffspringModelDriven( ...
     Attempt     = 0;
     PoolDec     = zeros(0,Problem.D);
     if ~isempty(Pool)
-        PoolDec = [PoolDec;Pool.decs];
+        PoolDec = [PoolDec;Pool.decs]; %#ok<AGROW>
     end
     if ~isempty(B)
-        PoolDec = [PoolDec;B.decs];
+        PoolDec = [PoolDec;B.decs]; %#ok<AGROW>
     end
 
     while size(ProbeDecAll,1) < Budget && Attempt < MaxAttempt
         s = SectorOrder(mod(Attempt,numel(SectorOrder))+1);
         Attempt = Attempt + 1;
+        Diag.attempts = Attempt;
 
         [Anchor,AnchorMeta,HasAnchor] = SelectBoundaryAnchor(B,ArchiveMeta,s);
         if ~HasAnchor
             continue;
         end
 
-        [Helper,HelperMeta,HasHelper] = SelectBoundaryHelper( ...
+        [Helper,HelperMeta,HasHelper,HelperInfo] = SelectBoundaryHelper( ...
             Anchor,AnchorMeta,Pool,PoolMeta,s,SectorNeighbors,Model);
         if ~HasHelper
+            Diag.skipped_no_helper = Diag.skipped_no_helper + 1;
             continue;
         end
 
         [ProbeDec,Beta] = BuildBoundaryProbeDecisions( ...
             Problem,Anchor.decs,Helper.decs,ProbeBeta);
-        [~,Score] = RankBoundaryProbeCandidates( ...
+        [Prob,Score,ProbeMeta] = RankBoundaryProbeCandidates( ...
             Model,ProbeDec,Beta,Anchor,AnchorMeta,Helper,HelperMeta,Support,SectorNeighbors);
         [~,best]  = min(Score);
         Candidate = ProbeDec(best,:);
 
         if ~isempty(PoolDec) && ismember(Candidate,PoolDec,'rows')
+            Diag.skipped_duplicate = Diag.skipped_duplicate + 1;
             continue;
         end
         if ~isempty(ProbeDecAll) && ismember(Candidate,ProbeDecAll,'rows')
+            Diag.skipped_duplicate = Diag.skipped_duplicate + 1;
             continue;
         end
         ProbeDecAll(end+1,:) = Candidate; %#ok<AGROW>
+        chosenPred = double(Prob(best) >= 0.5);
+        Diag.events = [Diag.events; { ...
+            Generation,FE,Attempt,s,HelperInfo.type,HelperInfo.feasible, ...
+            AnchorMeta.trusted,AnchorMeta.margin,AnchorMeta.oppSupport,AnchorMeta.objScore, ...
+            Beta(best),Prob(best),chosenPred,ProbeMeta.margin(best),ProbeMeta.oppSupport(best), ...
+            ProbeMeta.oppDist(best),ProbeMeta.objScore(best),Score(best),NaN,NaN}]; %#ok<AGROW>
+        Diag.helper_real_opp = Diag.helper_real_opp + double(strcmp(HelperInfo.type,'real_opposite'));
     end
 
     if isempty(ProbeDecAll)
         Offspring = B([]);
     else
         Offspring = Problem.Evaluation(ProbeDecAll);
+        Feasible = double(all(Offspring.cons<=0,2));
+        for i = 1 : min(numel(Feasible),size(Diag.events,1))
+            Diag.events{i,end-1} = Feasible(i);
+            Diag.events{i,end} = double(Diag.events{i,13} == Feasible(i));
+        end
+        Diag.selected = numel(Offspring);
+        Diag.feasible = sum(Feasible == 1);
+        Diag.infeasible = sum(Feasible == 0);
     end
 end
 
@@ -415,10 +474,11 @@ function [Anchor,AnchorMeta,Found] = SelectBoundaryAnchor(B,Meta,sector)
     Found   = true;
 end
 
-function [Helper,HelperMeta,Found] = SelectBoundaryHelper( ...
+function [Helper,HelperMeta,Found,Info] = SelectBoundaryHelper( ...
     Anchor,AnchorMeta,Pool,PoolMeta,sector,SectorNeighbors,Model)
 
     Empty    = Pool([]);
+    Info     = struct('type','none','feasible',NaN);
     Neighbor = [sector,SectorNeighbors{sector}(:)'];
     Allowed  = ismember(PoolMeta.sector,unique(Neighbor)) & ...
                ~ismember(Pool.decs,Anchor.decs,'rows');
@@ -437,6 +497,8 @@ function [Helper,HelperMeta,Found] = SelectBoundaryHelper( ...
         Pick = PickBestHelper(OppReal,PoolMeta);
         Helper     = Pool(Pick);
         HelperMeta = ExtractBoundaryMetaRow(PoolMeta,Pick);
+        Info.type  = 'real_opposite';
+        Info.feasible = Label(Pick);
         Found      = true;
         return;
     end
@@ -493,11 +555,13 @@ function [ProbeDec,Beta] = BuildBoundaryProbeDecisions( ...
     end
 end
 
-function [Prob,Score] = RankBoundaryProbeCandidates( ...
+function [Prob,Score,Meta] = RankBoundaryProbeCandidates( ...
     Model,ProbeDec,Beta,Anchor,AnchorMeta,Helper,HelperMeta,Support,SectorNeighbors)
     if isempty(ProbeDec)
         Prob  = zeros(0,1);
         Score = zeros(0,1);
+        Meta = struct('margin',zeros(0,1),'oppSupport',zeros(0,1), ...
+            'oppDist',zeros(0,1),'objScore',zeros(0,1));
         return;
     end
 
@@ -523,6 +587,8 @@ function [Prob,Score] = RankBoundaryProbeCandidates( ...
     ObjScore = (1-Mix)*AnchorMeta.objScore + Mix*HelperMeta.objScore;
     ObjScore = max(0,min(1,ObjScore));
     Score = 0.50*Margin(:) + 0.30*(1-OppSupport(:)) + 0.20*ObjScore(:);
+    Meta = struct('margin',Margin(:),'oppSupport',OppSupport(:), ...
+        'oppDist',OppDist(:),'objScore',ObjScore(:));
 end
 
 function ProxyLabel = BuildProbeProxyLabels(Beta,AnchorLabel,HelperLabel)
@@ -579,6 +645,22 @@ function TrainArchive = UpdateTrainArchive( ...
     Meta = BuildTrainMeta(Candidates,Source,W,RefObj,Stamp);
     TrainArchive = AppendTrainArchiveWithMeta(TrainArchive,Candidates,Meta);
     TrainArchive = TrimTrainArchiveBySectorQuota(TrainArchive,MaxTrain);
+end
+
+function [TrainArchive,Diag] = UpdateTrainArchiveWithDiagnostics( ...
+    TrainArchive,B,PopulationC,PopulationU,RecentBoundaryOff,W, ...
+    SectorNeighbors,MaxTrain,Stamp)
+    TrainArchive = UpdateTrainArchive( ...
+        TrainArchive,B,PopulationC,PopulationU,RecentBoundaryOff,W, ...
+        SectorNeighbors,MaxTrain,Stamp);
+    Diag = struct( ...
+        'size',size(TrainArchive.Dec,1), ...
+        'pos_count',sum(TrainArchive.Label == 1), ...
+        'neg_count',sum(TrainArchive.Label == 0), ...
+        'src_b',sum(TrainArchive.Source == 1), ...
+        'src_recent_boundary',sum(TrainArchive.Source == 2), ...
+        'src_rep_c',sum(TrainArchive.Source == 3), ...
+        'src_rep_u',sum(TrainArchive.Source == 4));
 end
 
 function TrainArchive = AppendTrainArchiveWithMeta(TrainArchive,Population,Meta)
@@ -753,6 +835,359 @@ function Flag = IsWarmStartCompatible(Model,D,Hidden)
            size(Model.W2,1) == Hidden;
 end
 
+function Diag = InitMLPDiag(Model,TrainArchive,Gap,Tick,minPos,minNeg)
+    Diag = struct( ...
+        'gap',Gap, ...
+        'tick',Tick, ...
+        'train_size',size(TrainArchive.Dec,1), ...
+        'pos_count',sum(TrainArchive.Label == 1), ...
+        'neg_count',sum(TrainArchive.Label == 0), ...
+        'src_b',sum(TrainArchive.Source == 1), ...
+        'src_recent_boundary',sum(TrainArchive.Source == 2), ...
+        'src_rep_c',sum(TrainArchive.Source == 3), ...
+        'src_rep_u',sum(TrainArchive.Source == 4), ...
+        'can_train',double(CanTrainBoundaryModel(TrainArchive,minPos,minNeg)), ...
+        'trained',0, ...
+        'warm_start',0, ...
+        'model_ready_before',double(HasBoundaryModel(Model)), ...
+        'model_ready_after',double(HasBoundaryModel(Model)), ...
+        'stats_before',EvaluateBinaryPredictions(Model,TrainArchive.Dec,TrainArchive.Label), ...
+        'stats_after',EvaluateBinaryPredictions(Model,TrainArchive.Dec,TrainArchive.Label));
+end
+
+function Stats = EvaluateBinaryPredictions(Model,Dec,Label)
+    Stats = InitPredictionStats();
+    if isempty(Dec) || isempty(Label) || ~HasBoundaryModel(Model)
+        return;
+    end
+
+    [Prob,~] = PredictBoundaryMLP(Model,Dec);
+    Prob = min(max(Prob(:),1e-6),1-1e-6);
+    Label = double(Label(:) > 0);
+    Pred = double(Prob >= 0.5);
+
+    TP = sum(Pred == 1 & Label == 1);
+    TN = sum(Pred == 0 & Label == 0);
+    FP = sum(Pred == 1 & Label == 0);
+    FN = sum(Pred == 0 & Label == 1);
+
+    Stats.acc = mean(Pred == Label);
+    Rec = SafeDivide(TP,TP+FN);
+    Spe = SafeDivide(TN,TN+FP);
+    Stats.bal_acc = mean([Rec,Spe],'omitnan');
+    Stats.brier = mean((Prob-Label).^2);
+    Stats.logloss = -mean(Label.*log(Prob) + (1-Label).*log(1-Prob));
+    Stats.precision = SafeDivide(TP,TP+FP);
+    Stats.recall = Rec;
+    Stats.specificity = Spe;
+end
+
+function Stats = InitPredictionStats()
+    Stats = struct( ...
+        'acc',NaN, ...
+        'bal_acc',NaN, ...
+        'brier',NaN, ...
+        'logloss',NaN, ...
+        'precision',NaN, ...
+        'recall',NaN, ...
+        'specificity',NaN);
+end
+
+function Value = SafeDivide(A,B)
+    if B <= 0
+        Value = NaN;
+    else
+        Value = A/B;
+    end
+end
+
+function Value = MeanOrNaN(X)
+    if isempty(X)
+        Value = NaN;
+    else
+        Value = mean(X,'omitnan');
+    end
+end
+
+%% ========== Diagnostics / logging ==========
+
+function Observer = InitObserver(Algorithm,Problem,Params,ProbeBeta,MaxTrain)
+    RootDir    = fileparts(which('platemo'));
+    BaseFolder = fullfile(RootDir,'Data','PRBCCMO_t');
+    [~,~]      = mkdir(BaseFolder);
+    [~,Token]  = fileparts(tempname(BaseFolder));
+    RunFolder  = fullfile(BaseFolder,sprintf('%s_%s_N%d_FE%d_%s', ...
+        class(Algorithm),class(Problem),Problem.N,Problem.maxFE,Token));
+    [~,~]      = mkdir(RunFolder);
+
+    Observer = struct( ...
+        'folder',RunFolder, ...
+        'meta_file',fullfile(RunFolder,'run_meta.csv'), ...
+        'summary_file',fullfile(RunFolder,'generation_summary.csv'), ...
+        'boundary_file',fullfile(RunFolder,'boundary_event.csv'), ...
+        'archive_file',fullfile(RunFolder,'archive_members.csv'), ...
+        'mlp_file',fullfile(RunFolder,'mlp_events.csv'));
+
+    WriteCsvHeader(Observer.meta_file,{ ...
+        'algorithm','problem','M','D','N','maxFE','maxTrain', ...
+        'type','hidden','epoch','lr','minPos','minNeg','kappa', ...
+        'rhoPre','rhoPost','gapMin','gapMax','probe_beta','output_folder'});
+    AppendCsvRows(Observer.meta_file,{ ...
+        class(Algorithm),class(Problem),Problem.M,Problem.D,Problem.N,Problem.maxFE, ...
+        MaxTrain,Params(1),Params(2),Params(3),Params(4),Params(5), ...
+        Params(6),Params(7),Params(8),Params(9),Params(10),Params(11), ...
+        ProbeBeta(:)',RunFolder});
+
+    WriteCsvHeader(Observer.summary_file,{ ...
+        'generation','fe','fe_ratio', ...
+        'popc_feasible_ratio','popu_feasible_ratio', ...
+        'offspringc_feasible_ratio','offspringu_feasible_ratio', ...
+        'boundary_budget','boundary_attempts','boundary_selected','boundary_feasible_ratio', ...
+        'boundary_survive_c','boundary_survive_u', ...
+        'helper_real_opp_ratio','helper_skip_no_helper', ...
+        'seed_b_size','seed_b_sector_coverage','seed_b_mixed_sectors', ...
+        'b_size','b_feasible_ratio','b_sector_coverage','b_mixed_sectors', ...
+        'b_trusted_count','b_trusted_sector_coverage','b_trusted_lowmargin_count', ...
+        'b_mean_margin','b_mean_opp_support','b_mean_oppdist','b_mean_score', ...
+        'lowmargin_count','lowmargin_feasible_ratio','lowmargin_mix_score','lowmargin_oppdist', ...
+        'boundary_bal_acc','b_bal_acc','b_brier', ...
+        'train_size','train_pos','train_neg', ...
+        'train_src_b','train_src_recent_boundary','train_src_rep_c','train_src_rep_u', ...
+        'model_ready_before','model_trained','model_ready_after', ...
+        'train_bal_acc_after','train_minus_boundary_bal_gap','train_minus_b_bal_gap'});
+    WriteCsvHeader(Observer.boundary_file,{ ...
+        'generation','fe','attempt','sector','helper_type','helper_feasible', ...
+        'anchor_trusted', ...
+        'anchor_margin','anchor_opp_support','anchor_obj_score', ...
+        'beta','chosen_prob','chosen_pred_label','chosen_margin','chosen_opp_support','chosen_oppdist', ...
+        'chosen_obj_score','chosen_score','chosen_feasible','chosen_correct'});
+    WriteCsvHeader(Observer.archive_file,{ ...
+        'generation','fe','member_index','sector','feasible','trusted','prob','pred_label','correct', ...
+        'margin','obj_score','opp_support','opp_dist','score'});
+    WriteCsvHeader(Observer.mlp_file,{ ...
+        'tick','gap','can_train','trained','warm_start', ...
+        'model_ready_before','model_ready_after', ...
+        'train_size','pos_count','neg_count', ...
+        'src_b','src_recent_boundary','src_rep_c','src_rep_u', ...
+        'acc_before','bal_acc_before','brier_before','logloss_before', ...
+        'acc_after','bal_acc_after','brier_after','logloss_after'});
+end
+
+function Observer = LogMLPEvent(Observer,Diag)
+    AppendCsvRows(Observer.mlp_file,{ ...
+        Diag.tick,Diag.gap,Diag.can_train,Diag.trained,Diag.warm_start, ...
+        Diag.model_ready_before,Diag.model_ready_after, ...
+        Diag.train_size,Diag.pos_count,Diag.neg_count, ...
+        Diag.src_b,Diag.src_recent_boundary,Diag.src_rep_c,Diag.src_rep_u, ...
+        Diag.stats_before.acc,Diag.stats_before.bal_acc,Diag.stats_before.brier,Diag.stats_before.logloss, ...
+        Diag.stats_after.acc,Diag.stats_after.bal_acc,Diag.stats_after.brier,Diag.stats_after.logloss});
+end
+
+function Observer = LogGenerationDiagnostics( ...
+    Observer,Generation,Problem,PopulationC,PopulationU,OffspringC,OffspringU, ...
+    BoundaryBudget,SeedB,SeedMeta,BoundaryOff,BoundaryDiag,BoundarySurvival,B,ArchiveMeta, ...
+    TrainArchive,TrainDiag,MLPDiag,Model)
+
+    SeedStats = SummarizeArchive(SeedB,SeedMeta);
+    ArchiveStats = SummarizeArchive(B,ArchiveMeta);
+    if isempty(BoundaryOff)
+        BoundaryPred = InitPredictionStats();
+    else
+        BoundaryPred = EvaluateBinaryPredictions( ...
+            Model,BoundaryOff.decs,double(all(BoundaryOff.cons<=0,2)));
+    end
+    ArchivePred = EvaluateBinaryPredictions(Model,B.decs,double(all(B.cons<=0,2)));
+
+    PopCFea = SafeDivide(sum(all(PopulationC.cons<=0,2)),max(numel(PopulationC),1));
+    PopUFea = SafeDivide(sum(all(PopulationU.cons<=0,2)),max(numel(PopulationU),1));
+    OffCFea = SafeDivide(sum(all(OffspringC.cons<=0,2)),max(numel(OffspringC),1));
+    OffUFea = SafeDivide(sum(all(OffspringU.cons<=0,2)),max(numel(OffspringU),1));
+    BoundaryFea = SafeDivide(BoundaryDiag.feasible,BoundaryDiag.selected);
+    HelperReal = SafeDivide(BoundaryDiag.helper_real_opp,BoundaryDiag.selected);
+    TrainMinusBoundaryGap = MLPDiag.stats_after.bal_acc - BoundaryPred.bal_acc;
+    TrainMinusArchiveGap  = MLPDiag.stats_after.bal_acc - ArchivePred.bal_acc;
+
+    AppendCsvRows(Observer.summary_file,{ ...
+        Generation,Problem.FE,Problem.FE/max(Problem.maxFE,1), ...
+        PopCFea,PopUFea,OffCFea,OffUFea, ...
+        BoundaryBudget,BoundaryDiag.attempts,BoundaryDiag.selected,BoundaryFea, ...
+        BoundarySurvival.selected_c,BoundarySurvival.selected_u, ...
+        HelperReal,BoundaryDiag.skipped_no_helper, ...
+        SeedStats.size,SeedStats.sector_coverage,SeedStats.mixed_sectors, ...
+        ArchiveStats.size,ArchiveStats.feasible_ratio,ArchiveStats.sector_coverage,ArchiveStats.mixed_sectors, ...
+        ArchiveStats.trusted_count,ArchiveStats.trusted_sector_coverage,ArchiveStats.trusted_lowmargin_count, ...
+        ArchiveStats.mean_margin,ArchiveStats.mean_opp_support,ArchiveStats.mean_oppdist,ArchiveStats.mean_score, ...
+        ArchiveStats.lowmargin_count,ArchiveStats.lowmargin_feasible_ratio, ...
+        ArchiveStats.lowmargin_mix_score,ArchiveStats.lowmargin_oppdist, ...
+        BoundaryPred.bal_acc,ArchivePred.bal_acc,ArchivePred.brier, ...
+        TrainDiag.size,TrainDiag.pos_count,TrainDiag.neg_count, ...
+        TrainDiag.src_b,TrainDiag.src_recent_boundary,TrainDiag.src_rep_c,TrainDiag.src_rep_u, ...
+        MLPDiag.model_ready_before,MLPDiag.trained,MLPDiag.model_ready_after, ...
+        MLPDiag.stats_after.bal_acc,TrainMinusBoundaryGap,TrainMinusArchiveGap});
+
+    Observer = LogBoundaryEvents(Observer,BoundaryDiag);
+    Observer = LogArchiveMembers(Observer,Generation,Problem.FE,B,ArchiveMeta);
+end
+
+function Observer = LogBoundaryEvents(Observer,Diag)
+    if isempty(Diag.events)
+        return;
+    end
+    AppendCsvRows(Observer.boundary_file,Diag.events);
+end
+
+function Observer = LogArchiveMembers(Observer,Generation,FE,B,Meta)
+    if isempty(B)
+        return;
+    end
+    Rows = cell(numel(B),14);
+    for i = 1 : numel(B)
+        predLabel = double(Meta.prob(i) >= 0.5);
+        Rows(i,:) = { ...
+            Generation,FE,i,Meta.sector(i),Meta.feasible(i),Meta.trusted(i),Meta.prob(i), ...
+            predLabel,double(predLabel == Meta.feasible(i)),Meta.margin(i), ...
+            Meta.objScore(i),Meta.oppSupport(i),Meta.oppDist(i),Meta.score(i)};
+    end
+    AppendCsvRows(Observer.archive_file,Rows);
+end
+
+function Stats = SummarizeArchive(B,Meta)
+    Stats = struct( ...
+        'size',numel(B), ...
+        'feasible_ratio',NaN, ...
+        'sector_coverage',0, ...
+        'mixed_sectors',0, ...
+        'trusted_count',0, ...
+        'trusted_sector_coverage',0, ...
+        'mean_margin',NaN, ...
+        'mean_opp_support',NaN, ...
+        'mean_oppdist',NaN, ...
+        'mean_score',NaN, ...
+        'lowmargin_count',0, ...
+        'trusted_lowmargin_count',0, ...
+        'lowmargin_feasible_ratio',NaN, ...
+        'lowmargin_mix_score',NaN, ...
+        'lowmargin_oppdist',NaN);
+    if isempty(B)
+        return;
+    end
+
+    Stats.feasible_ratio = SafeDivide(sum(Meta.feasible == 1),numel(B));
+    Stats.sector_coverage = numel(unique(Meta.sector(Meta.sector > 0)));
+    Stats.trusted_count = sum(Meta.trusted > 0);
+    Stats.trusted_sector_coverage = numel(unique(Meta.sector(Meta.sector > 0 & Meta.trusted(:) > 0)));
+    Stats.mean_margin = MeanOrNaN(Meta.margin);
+    Stats.mean_opp_support = MeanOrNaN(Meta.oppSupport);
+    Stats.mean_oppdist = MeanOrNaN(Meta.oppDist(isfinite(Meta.oppDist)));
+    Stats.mean_score = MeanOrNaN(Meta.score);
+
+    Sectors = unique(Meta.sector(Meta.sector > 0))';
+    Mixed = 0;
+    for s = Sectors
+        idx = find(Meta.sector == s);
+        if any(Meta.feasible(idx) == 1) && any(Meta.feasible(idx) == 0)
+            Mixed = Mixed + 1;
+        end
+    end
+    Stats.mixed_sectors = Mixed;
+
+    LowMask = Meta.margin <= 0.10;
+    Stats.lowmargin_count = sum(LowMask);
+    Stats.trusted_lowmargin_count = sum(LowMask & Meta.trusted(:) > 0);
+    if any(LowMask)
+        Stats.lowmargin_feasible_ratio = SafeDivide(sum(Meta.feasible(LowMask) == 1),sum(LowMask));
+        Stats.lowmargin_mix_score = MeanOrNaN(Meta.oppSupport(LowMask));
+        Stats.lowmargin_oppdist = MeanOrNaN(Meta.oppDist(LowMask & isfinite(Meta.oppDist)));
+    end
+end
+
+function Diag = InitBoundaryDiag(Generation,FE,Budget)
+    Diag = struct( ...
+        'generation',Generation, ...
+        'fe',FE, ...
+        'budget',Budget, ...
+        'attempts',0, ...
+        'selected',0, ...
+        'feasible',0, ...
+        'infeasible',0, ...
+        'helper_real_opp',0, ...
+        'skipped_no_helper',0, ...
+        'skipped_duplicate',0, ...
+        'events',{cell(0,20)});
+end
+
+function Stats = ComputeBoundarySurvival(BoundaryOff,PopulationC,PopulationU)
+    Stats = struct('selected_c',0,'selected_u',0);
+    if isempty(BoundaryOff)
+        return;
+    end
+    Stats.selected_c = sum(ismember(BoundaryOff.decs,PopulationC.decs,'rows'));
+    Stats.selected_u = sum(ismember(BoundaryOff.decs,PopulationU.decs,'rows'));
+end
+
+function WriteCsvHeader(FilePath,Header)
+    fid = fopen(FilePath,'w');
+    Cleaner = onCleanup(@() fclose(fid)); %#ok<NASGU>
+    fprintf(fid,'%s\n',strjoin(Header,','));
+end
+
+function AppendCsvRows(FilePath,Rows)
+    if isempty(Rows)
+        return;
+    end
+    if ~iscell(Rows)
+        Rows = num2cell(Rows);
+    end
+    if isvector(Rows)
+        Rows = reshape(Rows,1,[]);
+    end
+    fid = fopen(FilePath,'a');
+    Cleaner = onCleanup(@() fclose(fid)); %#ok<NASGU>
+    for i = 1 : size(Rows,1)
+        Line = cell(1,size(Rows,2));
+        for j = 1 : size(Rows,2)
+            Line{j} = ToCsvValue(Rows{i,j});
+        end
+        fprintf(fid,'%s\n',strjoin(Line,','));
+    end
+end
+
+function S = ToCsvValue(Value)
+    if isstring(Value)
+        Value = char(Value);
+    end
+    if ischar(Value)
+        Value = strrep(Value,'"','""');
+        S = ['"' Value '"'];
+    elseif isempty(Value)
+        S = '';
+    elseif isnumeric(Value) || islogical(Value)
+        if isscalar(Value)
+            if isnan(Value)
+                S = 'NaN';
+            elseif isinf(Value)
+                S = Ternary(Value > 0,'Inf','-Inf');
+            else
+                S = sprintf('%.15g',double(Value));
+            end
+        else
+            Flat = Value(:)';
+            Parts = arrayfun(@(x)sprintf('%.15g',double(x)),Flat,'UniformOutput',false);
+            S = ['"' strjoin(Parts,';') '"'];
+        end
+    else
+        S = ['"' char(string(Value)) '"'];
+    end
+end
+
+function Out = Ternary(Cond,A,B)
+    if Cond
+        Out = A;
+    else
+        Out = B;
+    end
+end
+
 %% ========== Boundary geometry helpers ==========
 
 function ObjScore = ComputeBoundaryObjectiveScore(Candidates,PopulationC,W,RefObj,Sector)
@@ -920,7 +1355,7 @@ function AnchorIdx = SelectMissingSideAnchors( ...
         CandidateIdx = Rep.idx(RepSector);
         Dist = ComputeRepresentativeToCoreDistance( ...
             Population(CandidateIdx),Core(CoreIdx));
-        [~,ord] = sortrows([Dist(:), RepSector(:)],[1 2]);
+        [~,ord] = sortrows([Dist(:),RepSector(:)],[1 2]);
         best = ord(1);
         AnchorIdx(end+1,1) = CandidateIdx(best); %#ok<AGROW>
     end
@@ -1117,7 +1552,7 @@ function Population = EnvironmentalSelectionC(Population,N,W)
         Remain = RemovePopulationByDecision(Population,Next);
         if Need > 0 && ~isempty(Remain)
             Next = [Next,ObjectiveSelectionWithLastSectorTruncation( ...
-                Remain,min(Need,numel(Remain)),W)];
+                Remain,min(Need,numel(Remain)),W)]; %#ok<AGROW>
         end
         Population = PadPopulation(Next,N);
     end
