@@ -1,5 +1,9 @@
 # PRBCCMO Boundary-Data Design
 
+> Superseded on 2026-04-18 by the current pair-centric `fix.md` contract.
+> This document contains historical `trusted sector / bridge-gated B` assumptions and is no longer authoritative for implementation.
+> Current diagnostics should prioritize `anchor_count`, `pair_count`, `mean_pair_dist`, `lowmargin_pair_hit`, and `boundary_seg_cross_dist`.
+
 日期：2026-04-15
 
 ## 1. 背景与目标
