@@ -46,15 +46,15 @@ function OutputFiles = plot_PRBCCMO_t_objective_evidence(runFolder,outDir,genera
 
         nexttile(layout);
         plotStageByRole(Stage,ObjNames);
-        title('Population, archive, boundary offspring');
+        title('Population, archive, boundary evidence');
 
         nexttile(layout);
         plotBoundaryMetric(Stage,ObjNames,'margin','MLP margin');
-        title('Selected boundary offspring: margin');
+        title('Boundary evidence: margin');
 
         nexttile(layout);
-        plotBoundaryMetric(Stage,ObjNames,'opp_dist','Opposite-side distance');
-        title('Selected boundary offspring: opposite distance');
+        plotBoundaryMetric(Stage,ObjNames,'true_boundary_dist','Distance to true boundary');
+        title('Boundary evidence: true-boundary distance');
 
         filePath = fullfile(outDir,sprintf('objective_snapshot_gen%06.0f.png',g));
         exportObjectiveFigure(fig,filePath);
@@ -100,7 +100,7 @@ function ObjNames = objectiveColumnNames(T)
 end
 
 function generations = defaultPlotGenerations(T)
-    Context = T.role ~= "boundary_off";
+    Context = T.role ~= "boundary_off" & T.role ~= "boundary_evidence";
     generations = unique(double(T.generation(Context))','stable');
     if isempty(generations)
         generations = unique(double(T.generation)','stable');
@@ -118,7 +118,9 @@ function plotStageByRole(T,ObjNames)
     [Handles,Labels] = plotRole(T,ObjNames,"pop_c",[0.25 0.45 0.85],24,Handles,Labels,"Population C");
     [Handles,Labels] = plotRole(T,ObjNames,"pop_u",[0.88 0.45 0.18],24,Handles,Labels,"Population U");
     [Handles,Labels] = plotRole(T,ObjNames,"archive_b",[0.05 0.05 0.05],44,Handles,Labels,"Boundary archive");
+    [Handles,Labels] = plotRole(T,ObjNames,"boundary_evidence",[0.55 0.55 0.55],34,Handles,Labels,"Evaluated boundary evidence");
     [Handles,Labels] = plotRole(T,ObjNames,"boundary_off",[0.15 0.70 0.35],58,Handles,Labels,"MLP-selected child");
+    [Handles,Labels] = plotSegmentRootEvidence(T,ObjNames,Handles,Labels);
     finishAxes(ObjNames);
     if ~isempty(Handles)
         legend(Handles,cellstr(Labels),'Location','best');
@@ -136,10 +138,49 @@ function [Handles,Labels] = plotRole(T,ObjNames,Role,Color,Size,Handles,Labels,L
     Labels(end+1,1) = string(Label);
 end
 
+function [Handles,Labels] = plotSegmentRootEvidence(T,ObjNames,Handles,Labels)
+    F = T(T.role == "pair_feasible_endpoint",:);
+    U = T(T.role == "pair_infeasible_endpoint",:);
+    R = T(T.role == "segment_root",:);
+    Count = min([height(F),height(U),height(R)]);
+    if Count <= 0
+        return;
+    end
+
+    for i = 1 : Count
+        plotPairSegment(F,U,ObjNames,i,[0.40 0.40 0.40],'-');
+        plotPairSegmentToRoot(F,R,ObjNames,i,[0.15 0.55 0.25]);
+        plotPairSegmentToRoot(U,R,ObjNames,i,[0.15 0.55 0.25]);
+    end
+    hF = scatterObjective(F(1:Count,:),ObjNames,34,[0.20 0.55 0.95],true);
+    hU = scatterObjective(U(1:Count,:),ObjNames,34,[0.95 0.35 0.22],true);
+    hR = scatterObjective(R(1:Count,:),ObjNames,92,[0.05 0.70 0.25],true);
+    set(hF,'MarkerEdgeColor','w','LineWidth',0.4,'DisplayName','Feasible pair endpoint');
+    set(hU,'MarkerEdgeColor','w','LineWidth',0.4,'DisplayName','Infeasible pair endpoint');
+    set(hR,'MarkerEdgeColor',[0.02 0.20 0.08],'LineWidth',0.8,'DisplayName','Segment root');
+    Handles = [Handles;hF;hU;hR];
+    Labels = [Labels;"Feasible pair endpoint";"Infeasible pair endpoint";"Segment root"];
+end
+
+function plotPairSegment(A,B,ObjNames,i,Color,Style)
+    X = [double(A.(ObjNames{1})(i)),double(B.(ObjNames{1})(i))];
+    Y = [double(A.(ObjNames{2})(i)),double(B.(ObjNames{2})(i))];
+    if numel(ObjNames) >= 3
+        Z = [double(A.(ObjNames{3})(i)),double(B.(ObjNames{3})(i))];
+        plot3(X,Y,Z,Style,'Color',Color,'LineWidth',0.8,'HandleVisibility','off');
+    else
+        plot(X,Y,Style,'Color',Color,'LineWidth',0.8,'HandleVisibility','off');
+    end
+end
+
+function plotPairSegmentToRoot(A,R,ObjNames,i,Color)
+    plotPairSegment(A,R,ObjNames,i,Color,':');
+end
+
 function plotBoundaryMetric(T,ObjNames,MetricName,MetricLabel)
     hold on;
     plotContext(T,ObjNames);
-    Mask = T.role == "boundary_off";
+    Mask = T.role == "boundary_evidence" | T.role == "boundary_off";
     if any(Mask)
         Values = double(T.(MetricName)(Mask));
         h = scatterObjective(T(Mask,:),ObjNames,64,Values,true);
@@ -148,7 +189,7 @@ function plotBoundaryMetric(T,ObjNames,MetricName,MetricLabel)
         cb = colorbar;
         ylabel(cb,MetricLabel,'Interpreter','none');
     else
-        text(0.5,0.5,'No boundary offspring at this generation', ...
+        text(0.5,0.5,'No boundary evidence at this generation', ...
             'Units','normalized','HorizontalAlignment','center');
     end
     finishAxes(ObjNames);
@@ -158,23 +199,24 @@ function plotContext(T,ObjNames)
     scatterObjective(T(T.role == "pop_c",:),ObjNames,18,[0.70 0.78 0.92],true);
     scatterObjective(T(T.role == "pop_u",:),ObjNames,18,[0.95 0.74 0.58],true);
     scatterObjective(T(T.role == "archive_b",:),ObjNames,34,[0.15 0.15 0.15],true);
+    scatterObjective(T(T.role == "boundary_evidence",:),ObjNames,24,[0.68 0.68 0.68],true);
 end
 
 function boundaryFile = plotAllBoundaryOffspring(T,ObjNames,outDir)
     boundaryFile = strings(0,1);
-    Boundary = T(T.role == "boundary_off",:);
+    Boundary = T(T.role == "boundary_evidence" | T.role == "boundary_off",:);
     if isempty(Boundary)
         return;
     end
-    ContextGen = unique(double(T.generation(T.role ~= "boundary_off")),'stable');
+    ContextGen = unique(double(T.generation(T.role ~= "boundary_off" & T.role ~= "boundary_evidence")),'stable');
     Context = table();
     if ~isempty(ContextGen)
-        Context = T(T.generation == ContextGen(end) & T.role ~= "boundary_off",:);
+        Context = T(T.generation == ContextGen(end) & T.role ~= "boundary_off" & T.role ~= "boundary_evidence",:);
     end
 
     fig = figure('Visible','off','Color','w','Position',[100 100 1050 460]);
     layout = tiledlayout(fig,1,2,'TileSpacing','compact','Padding','compact');
-    title(layout,'PRBCCMO_t all MLP-selected boundary offspring','Interpreter','none');
+    title(layout,'PRBCCMO_t evaluated boundary evidence','Interpreter','none');
 
     nexttile(layout);
     hold on;
@@ -183,20 +225,23 @@ function boundaryFile = plotAllBoundaryOffspring(T,ObjNames,outDir)
     colormap(gca,parula);
     cb = colorbar;
     ylabel(cb,'MLP margin');
-    title('All selected children by margin');
+    title('All evaluated boundary evidence by margin');
     finishAxes(ObjNames);
 
     nexttile(layout);
     hold on;
-    plotContext(Context,ObjNames);
-    scatterObjective(Boundary,ObjNames,42,double(Boundary.fe_ratio),true);
+    scatter(double(Boundary.margin),double(Boundary.true_boundary_dist),42,double(Boundary.fe_ratio),'filled', ...
+        'MarkerEdgeColor',[0.05 0.05 0.05],'LineWidth',0.4);
+    grid on;
+    box on;
+    xlabel('calibrated margin');
+    ylabel('dist to true boundary');
     colormap(gca,parula);
     cb = colorbar;
     ylabel(cb,'FE ratio');
-    title('All selected children by stage');
-    finishAxes(ObjNames);
+    title('MLP margin vs true-boundary distance');
 
-    filePath = fullfile(outDir,'objective_boundary_offspring_all.png');
+    filePath = fullfile(outDir,'objective_boundary_evidence_all.png');
     exportObjectiveFigure(fig,filePath);
     close(fig);
     boundaryFile = string(filePath);

@@ -6,7 +6,7 @@ classdef PRBCCMO < ALGORITHM
 % hidden --- 20   --- Hidden neurons of the boundary MLP
 % epoch  --- 20   --- Training epochs per update
 % lr     --- 0.01 --- Learning rate
-% kappa  --- 3    --- Maximum boundary samples kept per sector
+% kappa  --- 10   --- Maximum boundary samples kept per sector
 % rho    --- 0.12 --- Boundary evaluation budget ratio
 
 %------------------------------- Copyright --------------------------------
@@ -21,9 +21,9 @@ classdef PRBCCMO < ALGORITHM
     methods
         function main(Algorithm,Problem)
             [W,Problem.N] = UniformPoint(Problem.N,Problem.M);
-            [hidden,epoch,lr,kappa,rho] = Algorithm.ParameterSet(20,20,0.01,3,0.12);
+            [hidden,epoch,lr,~,rho] = Algorithm.ParameterSet(20,20,0.01,10,0.12);
 
-            kappa = max(1,round(kappa));
+            kappa = 10;
             rho   = max(0,min(0.5,double(rho)));
 
             PopulationC = Problem.Initialization();
@@ -37,7 +37,8 @@ classdef PRBCCMO < ALGORITHM
                 OffspringC = GenerateDEOffspring(Problem,PopulationC,true);
                 OffspringU = GenerateDEOffspring(Problem,PopulationU,false);
 
-                BoundaryOff = GenerateBoundaryOffspring(Problem,B,PopulationC,PopulationU,W,Model,rho);
+                [BoundaryOff,BoundaryEvidence] = GenerateBoundaryOffspring( ...
+                    Problem,B,PopulationC,PopulationU,W,Model,rho);
 
                 QC = KeepUniquePopulation([PopulationC,OffspringC,OffspringU,BoundaryOff]);
                 QU = KeepUniquePopulation([PopulationU,OffspringC,OffspringU,BoundaryOff]);
@@ -48,7 +49,7 @@ classdef PRBCCMO < ALGORITHM
                 RecentBoundaryOff = BoundaryOff;
                 B = UpdateBoundaryArchive(B,RecentBoundaryOff,PopulationC,PopulationU,W,Model,kappa);
                 [Model,ModelState] = UpdateBoundaryModelIfNeeded( ...
-                    Model,ModelState,B,RecentBoundaryOff,PopulationC,PopulationU,W,hidden,epoch,lr,Problem,Problem.FE);
+                    Model,ModelState,B,BoundaryEvidence,PopulationC,PopulationU,W,hidden,epoch,lr,Problem,Problem.FE);
             end
         end
     end
@@ -93,103 +94,196 @@ end
 %% ========== Boundary archive ==========
 
 function B = UpdateBoundaryArchive(B,BoundarySamples,PopulationC,PopulationU,W,Model,kappa)
-    Support = KeepUniquePopulation([B,BoundarySamples,PopulationC,PopulationU]);
+    Support = KeepUniquePopulation([BoundarySamples,PopulationC,PopulationU]);
     SupportBase = BuildOppositeSupportBase(Support,W);
-    Representatives = BuildBoundaryRepresentatives(B,PopulationC,PopulationU,W,Model,SupportBase);
-    Candidates = KeepUniquePopulation([B,BoundarySamples,Representatives]);
+    PairPool = KeepUniquePopulation([BoundarySamples,PopulationC,PopulationU]);
+    Pairs = BuildBoundaryPairs(PairPool,W,max(4*size(W,1),2*numel(PairPool)));
+    TightEndpoints = ExtractTightPairEndpoints(PairPool,Pairs,kappa);
+    RevalidatedB = RevalidateBoundaryMemory(B,SupportBase,W,Model,PopulationC,PopulationU);
+    [Candidates,CandidateSource] = BuildArchiveCandidateSet(BoundarySamples,TightEndpoints,RevalidatedB);
     if isempty(Candidates)
         B = Candidates;
         return;
     end
 
     Meta = BuildBoundaryMeta(Candidates,W,Model,PopulationC,PopulationU,SupportBase);
-    B = SelectTopKPerSector(Candidates,Meta,kappa);
+    B = SelectTopKPerSector(Candidates,Meta,CandidateSource,kappa,~isempty(Model));
 end
 
-function Representatives = BuildBoundaryRepresentatives(B,PopulationC,PopulationU,W,Model,SupportBase)
-    Representatives = B([]);
-    if isempty(W)
+function Endpoints = ExtractTightPairEndpoints(Pool,Pairs,kappa)
+    Endpoints = Pool([]);
+    if isempty(Pool) || isempty(Pairs.FeasibleIndex)
         return;
     end
 
-    BMeta = BuildBoundaryMeta(B,W,Model,PopulationC,PopulationU,SupportBase);
-    RepC = BuildRepresentativeIndexBySector(PopulationC,W);
-    RepU = BuildRepresentativeIndexBySector(PopulationU,W);
-    PickC = zeros(size(W,1),1);
-    PickU = zeros(size(W,1),1);
-    CountC = 0;
-    CountU = 0;
-    for s = 1 : size(W,1)
-        if NeedsRepresentativeRefill(BMeta,s)
-            if RepC.has(s)
-                CountC = CountC + 1;
-                PickC(CountC) = RepC.index(s);
-            end
-            if RepU.has(s)
-                CountU = CountU + 1;
-                PickU(CountU) = RepU.index(s);
-            end
-        end
-    end
-    RepCOut = PopulationC([]);
-    RepUOut = PopulationU([]);
-    if CountC > 0
-        RepCOut = PopulationC(PickC(1:CountC)');
-    end
-    if CountU > 0
-        RepUOut = PopulationU(PickU(1:CountU)');
-    end
-    Representatives = KeepUniquePopulation([RepCOut,RepUOut]);
-end
-
-function Flag = NeedsRepresentativeRefill(BMeta,s)
-    if isempty(BMeta.sector)
-        Flag = true;
-        return;
-    end
-
-    idx = find(BMeta.sector == s);
+    Limit = max(2,2*max(1,kappa)*max(1,numel(unique(Pairs.Sector))));
+    Gate = ResolvePairGapThreshold(Pairs,'archive');
+    idx = find(Pairs.BoundaryGap <= Gate);
     if isempty(idx)
-        Flag = true;
         return;
     end
-    Label = BMeta.feasible(idx);
-    Flag = ~(any(Label == 1) && any(Label == 0));
+    Key = [Pairs.BoundaryGap(idx),Pairs.GapDec(idx),Pairs.GapObj(idx),idx(:)];
+    [~,ord] = sortrows(Key,[1 2 3 4]);
+    idx = idx(ord(1:min(numel(ord),Limit)));
+    Pick = unique([Pairs.FeasibleIndex(idx);Pairs.InfeasibleIndex(idx)],'stable');
+    Endpoints = Pool(Pick);
 end
 
-function Rep = BuildRepresentativeIndexBySector(Population,W)
-    K = size(W,1);
-    Rep = struct('has',false(K,1),'index',zeros(K,1));
-    if isempty(Population) || K <= 0
+function Revalidated = RevalidateBoundaryMemory(B,SupportBase,W,Model,PopulationC,PopulationU)
+    Revalidated = B([]);
+    if isempty(B) || isempty(SupportBase.Dec)
         return;
     end
 
-    Z = ComputeIdealPoint(Population);
-    Sector = AssociateSectorsLocal(Population.objs,W,Z);
-    [FrontNo,~] = NDSort(Population.objs,numel(Population));
-    CrowdDis = CrowdingDistance(Population.objs,FrontNo);
-    for s = 1 : K
-        idx = find(Sector == s);
-        if isempty(idx)
-            continue;
+    Meta = BuildBoundaryMeta(B,W,Model,PopulationC,PopulationU,SupportBase);
+    Keep = BoundaryEligible(Meta,~isempty(Model),'evidence');
+    if any(Keep)
+        Revalidated = B(Keep);
+    end
+end
+
+function [Candidates,Source] = BuildArchiveCandidateSet(BoundarySamples,TightEndpoints,RevalidatedB)
+    Raw = [RevalidatedB,TightEndpoints,BoundarySamples];
+    Source = [ ...
+        3*ones(numel(RevalidatedB),1); ...
+        2*ones(numel(TightEndpoints),1); ...
+        ones(numel(BoundarySamples),1)];
+    Candidates = Raw;
+    if isempty(Raw)
+        return;
+    end
+
+    Keep = KeepLatestDecisionRowsLocal(Raw.decs);
+    Candidates = Raw(Keep);
+    Source = Source(Keep);
+end
+
+function Pairs = BuildBoundaryPairs(Pool,W,MaxPairs)
+    D = ResolveDecisionDimension(Pool);
+    M = 0;
+    if ~isempty(Pool)
+        M = size(Pool.objs,2);
+    end
+    Pairs = InitBoundaryPairs(D,M);
+    if isempty(Pool) || MaxPairs <= 0
+        return;
+    end
+
+    Pairs = BuildBoundaryPairsFromArrays( ...
+        double(Pool.decs),double(Pool.objs),double(all(Pool.cons<=0,2)),W,MaxPairs);
+end
+
+function Pairs = BuildBoundaryPairsFromArrays(Dec,Obj,Label,W,MaxPairs)
+    D = size(Dec,2);
+    M = size(Obj,2);
+    Pairs = InitBoundaryPairs(D,M);
+    if isempty(Dec) || MaxPairs <= 0
+        return;
+    end
+
+    Label = ColumnVector(double(Label));
+    Fea = find(Label == 1);
+    Inf = find(Label == 0);
+    if isempty(Fea) || isempty(Inf)
+        return;
+    end
+
+    DecScale = ResolveDistanceScale(Dec);
+    ObjScale = ResolveDistanceScale(Obj);
+    Dist = zeros(numel(Fea),numel(Inf));
+    GapDec = zeros(numel(Fea),numel(Inf));
+    GapObj = zeros(numel(Fea),numel(Inf));
+    for i = 1 : numel(Fea)
+        DecDelta = Dec(Inf,:) - repmat(Dec(Fea(i),:),numel(Inf),1);
+        ObjDelta = Obj(Inf,:) - repmat(Obj(Fea(i),:),numel(Inf),1);
+        GapDec(i,:) = sqrt(sum(DecDelta.^2,2))'./max(DecScale,1e-6);
+        GapObj(i,:) = sqrt(sum(ObjDelta.^2,2))'./max(ObjScale,1e-6);
+        Dist(i,:) = GapDec(i,:) + 0.25*GapObj(i,:);
+    end
+
+    [~,NearInfForFea] = min(Dist,[],2);
+    [~,NearFeaForInf] = min(Dist,[],1);
+    PairMask = false(size(Dist));
+    for i = 1 : numel(Fea)
+        j = NearInfForFea(i);
+        if NearFeaForInf(j) == i
+            PairMask(i,j) = true;
         end
-        Key = [ColumnVector(FrontNo(idx)),ColumnVector(-CrowdDis(idx)),ColumnVector(idx)];
-        [~,ord] = sortrows(Key,[1 2 3]);
-        Rep.index(s) = idx(ord(1));
-        Rep.has(s) = true;
     end
+    if ~any(PairMask(:))
+        [~,ord] = sort(Dist(:),'ascend');
+        PairMask(ord(1:min(numel(ord),MaxPairs))) = true;
+    end
+    [I,J] = find(PairMask);
+    PairGap = Dist(sub2ind(size(Dist),I,J));
+    [~,ord] = sort(PairGap,'ascend');
+    ord = ord(1:min(numel(ord),MaxPairs));
+    I = I(ord);
+    J = J(ord);
+    PairGap = PairGap(ord);
+    Count = numel(I);
+    if Count <= 0
+        return;
+    end
+
+    Pairs.FeasibleIndex = Fea(I);
+    Pairs.InfeasibleIndex = Inf(J);
+    Pairs.FeasibleDec = Dec(Pairs.FeasibleIndex,:);
+    Pairs.InfeasibleDec = Dec(Pairs.InfeasibleIndex,:);
+    Pairs.FeasibleObj = Obj(Pairs.FeasibleIndex,:);
+    Pairs.InfeasibleObj = Obj(Pairs.InfeasibleIndex,:);
+    MidObj = 0.5*(Pairs.FeasibleObj + Pairs.InfeasibleObj);
+    Pairs.Sector = AssociateSectorsLocal(MidObj,W,min(Obj,[],1));
+    Pairs.GapDec = GapDec(sub2ind(size(GapDec),I,J));
+    Pairs.GapObj = GapObj(sub2ind(size(GapObj),I,J));
+    Pairs.BoundaryGap = PairGap;
 end
 
-function B = SelectTopKPerSector(Candidates,Meta,kappa)
+function Pairs = InitBoundaryPairs(D,M)
+    Pairs = struct( ...
+        'FeasibleIndex',zeros(0,1), ...
+        'InfeasibleIndex',zeros(0,1), ...
+        'FeasibleDec',zeros(0,D), ...
+        'InfeasibleDec',zeros(0,D), ...
+        'FeasibleObj',zeros(0,M), ...
+        'InfeasibleObj',zeros(0,M), ...
+        'Sector',zeros(0,1), ...
+        'GapDec',zeros(0,1), ...
+        'GapObj',zeros(0,1), ...
+        'BoundaryGap',zeros(0,1));
+end
+
+function Gate = ResolvePairGapThreshold(Pairs,Mode)
+    if isempty(Pairs.BoundaryGap)
+        Gate = inf;
+        return;
+    end
+    Gate = BoundaryGapTau(Mode);
+end
+
+function B = SelectTopKPerSector(Candidates,Meta,Source,kappa,ModelReady)
     if isempty(Candidates)
         B = Candidates;
         return;
     end
+    if nargin < 3 || isempty(Source)
+        Source = 5*ones(numel(Candidates),1);
+    end
+    Source = MatchLength(Source,numel(Candidates),5);
+    if nargin < 5
+        ModelReady = true;
+    end
 
-    kappa = max(1,round(kappa));
+    kappa = min(10,max(1,round(kappa)));
+    SideQuota = max(1,ceil(kappa/2));
+    Eligible = BoundaryEligible(Meta,ModelReady,'archive');
     if isempty(find(Meta.sector > 0,1))
-        ord = SortByBoundaryKey(Meta,(1:numel(Candidates))');
-        B = Candidates(ord(1:min(numel(ord),kappa)));
+        ord = SortByArchiveSourcePriority(Meta,find(Eligible),Source,kappa);
+        if isempty(ord)
+            B = Candidates([]);
+        else
+            B = Candidates(ord(1:min(numel(ord),kappa)));
+        end
         return;
     end
 
@@ -197,22 +291,33 @@ function B = SelectTopKPerSector(Candidates,Meta,kappa)
     Pick = zeros(min(numel(Candidates),numel(Sectors)*kappa),1);
     PickCount = 0;
     for s = Sectors
-        idx = find(Meta.sector == s);
+        idx = find(Meta.sector == s & Eligible);
         if isempty(idx)
             continue;
         end
 
-        ord = SortByBoundaryKey(Meta,idx);
-        Sel = ord(1:min(kappa,numel(ord)));
-        Pos = SortByBoundaryKey(Meta,idx(Meta.feasible(idx) == 1));
-        Neg = SortByBoundaryKey(Meta,idx(Meta.feasible(idx) == 0));
-        if kappa > 1 && ~isempty(Pos) && ~isempty(Neg)
-            SelLabel = Meta.feasible(Sel);
-            if ~(any(SelLabel == 1) && any(SelLabel == 0))
-                Sel = unique([Pos(1);Neg(1);Sel(:)],'stable');
-                Sel = Sel(1:min(kappa,numel(Sel)));
+        Pos = SortByArchiveSourcePriority(Meta,idx(Meta.feasible(idx) == 1),Source,SideQuota);
+        Neg = SortByArchiveSourcePriority(Meta,idx(Meta.feasible(idx) == 0),Source,SideQuota);
+        Sel = zeros(min(kappa,numel(Pos)+numel(Neg)),1);
+        SelCount = 0;
+        for j = 1 : max(numel(Pos),numel(Neg))
+            if j <= numel(Pos)
+                SelCount = SelCount + 1;
+                Sel(SelCount) = Pos(j);
+            end
+            if SelCount >= numel(Sel)
+                break;
+            end
+            if j <= numel(Neg)
+                SelCount = SelCount + 1;
+                Sel(SelCount) = Neg(j);
+            end
+            if SelCount >= numel(Sel)
+                break;
             end
         end
+        Sel = Sel(1:SelCount);
+        Sel = Sel(1:min(kappa,numel(Sel)));
         AddCount = min(numel(Sel),numel(Pick)-PickCount);
         if AddCount > 0
             Pick(PickCount+1:PickCount+AddCount) = Sel(1:AddCount);
@@ -226,6 +331,41 @@ function B = SelectTopKPerSector(Candidates,Meta,kappa)
     else
         B = Candidates(unique(Pick,'stable'));
     end
+end
+
+function Order = SortByArchiveSourcePriority(Meta,idx,Source,MaxCount)
+    Order = zeros(min(numel(idx),MaxCount),1);
+    idx = ColumnVector(idx);
+    if isempty(idx) || MaxCount <= 0
+        Order = zeros(0,1);
+        return;
+    end
+    Source = MatchLength(Source,numel(Meta.sector),5);
+    Count = 0;
+    for priority = 1 : 3
+        Tier = idx(Source(idx) == priority);
+        Tier = SortByBoundaryKey(Meta,Tier,Source);
+        Need = min(MaxCount, numel(Order)) - Count;
+        if Need <= 0
+            break;
+        end
+        Add = min(Need,numel(Tier));
+        if Add > 0
+            Order(Count+1:Count+Add) = Tier(1:Add);
+            Count = Count + Add;
+        end
+    end
+    if Count < min(MaxCount,numel(Order))
+        Rest = setdiff(idx,Order(1:Count),'stable');
+        Rest = SortByBoundaryKey(Meta,Rest,Source);
+        Need = min(MaxCount,numel(Order)) - Count;
+        Add = min(Need,numel(Rest));
+        if Add > 0
+            Order(Count+1:Count+Add) = Rest(1:Add);
+            Count = Count + Add;
+        end
+    end
+    Order = Order(1:Count);
 end
 
 %% ========== Boundary meta ==========
@@ -243,8 +383,12 @@ function Meta = BuildBoundaryMeta(Candidates,W,Model,PopulationC,PopulationU,Sup
     ObjScore = ComputeBoundaryObjectiveScore(Candidates,PopulationC,W,RefObj,Sector);
     SupportCache = ResolveOppositeSupportCache(Support,W,RefObj);
     OppSupport = ComputeOppositeSupport(Candidates,SupportCache,Sector);
+    [LocalPairExists,ShellDistDec,BetweenScoreObj] = ComputeBoundaryShellMetrics( ...
+        Candidates,SupportCache,Sector);
     Feasible = double(all(Candidates.cons<=0,2));
-    Meta = ComposeBoundaryMeta(Sector,Feasible,Prob,OppSupport,ObjScore);
+    Meta = ComposeBoundaryMeta( ...
+        Sector,Feasible,Prob,OppSupport,ObjScore, ...
+        LocalPairExists,ShellDistDec,BetweenScoreObj);
 end
 
 function OppSupport = ComputeOppositeSupport(Candidates,SupportCache,Sector)
@@ -256,6 +400,72 @@ function OppSupport = ComputeOppositeSupport(Candidates,SupportCache,Sector)
     CandidateLabel = ColumnVector(double(all(Candidates.cons<=0,2)));
     OppSupport = ComputeOppositeSupportFromCache( ...
         Candidates.decs,CandidateLabel,Sector,SupportCache);
+end
+
+function [LocalPairExists,ShellDistDec,BetweenScoreObj] = ComputeBoundaryShellMetrics( ...
+    Candidates,SupportCache,Sector)
+    %#ok<INUSD>
+    N = numel(Candidates);
+    LocalPairExists = false(N,1);
+    ShellDistDec = inf(N,1);
+    BetweenScoreObj = inf(N,1);
+    if isempty(Candidates) || isempty(SupportCache.Dec)
+        return;
+    end
+
+    CandidateLabel = ColumnVector(double(all(Candidates.cons<=0,2)));
+    CandidateDec = double(Candidates.decs);
+    CandidateObj = double(Candidates.objs);
+    PairDec = [CandidateDec;SupportCache.Dec];
+    PairObj = [CandidateObj;SupportCache.Obj];
+    PairLabel = [CandidateLabel;SupportCache.Label];
+    Pairs = BuildBoundaryPairsFromArrays(PairDec,PairObj,PairLabel,[],max(2*N,2*size(PairDec,1)));
+    for p = 1 : numel(Pairs.BoundaryGap)
+        FMatch = find(CandidateLabel == 1 & ismember(CandidateDec,Pairs.FeasibleDec(p,:),'rows'));
+        IMatch = find(CandidateLabel == 0 & ismember(CandidateDec,Pairs.InfeasibleDec(p,:),'rows'));
+        CandidateIdx = [FMatch;IMatch];
+        for k = 1 : numel(CandidateIdx)
+            i = CandidateIdx(k);
+            if Pairs.BoundaryGap(p) < ShellDistDec(i) + 0.25*BetweenScoreObj(i)
+                LocalPairExists(i) = true;
+                ShellDistDec(i) = Pairs.GapDec(p);
+                BetweenScoreObj(i) = Pairs.GapObj(p);
+            end
+        end
+    end
+end
+
+function Eligible = BoundaryEligible(Meta,ModelReady,Mode)
+    if nargin < 2
+        ModelReady = true;
+    end
+    if nargin < 3 || isempty(Mode)
+        Mode = 'archive';
+    end
+    Eligible = false(numel(Meta.sector),1);
+    if isempty(Meta.sector)
+        return;
+    end
+
+    LocalPair = Meta.localPairExists > 0;
+    if ~any(LocalPair)
+        return;
+    end
+    GapGate = ResolveBoundaryGapGate(Meta,LocalPair,Mode);
+    Eligible = LocalPair & Meta.boundaryGap <= GapGate;
+end
+
+function Gate = ResolveBoundaryGapGate(Meta,Mask,Mode)
+    %#ok<INUSD>
+    Gate = BoundaryGapTau(Mode);
+end
+
+function Tau = BoundaryGapTau(Mode)
+    if nargin >= 1 && strcmpi(Mode,'evidence')
+        Tau = 1.25;
+    else
+        Tau = 0.55;
+    end
 end
 
 function SupportBase = BuildOppositeSupportBase(Support,W)
@@ -276,11 +486,6 @@ function SupportBase = BuildOppositeSupportBase(Support,W)
     SupportBase.Tau = ResolveDistanceScale(SupportBase.Dec);
 end
 
-function Cache = BuildOppositeSupportCache(Support,W,RefObj)
-    SupportBase = BuildOppositeSupportBase(Support,W);
-    Cache = ResolveOppositeSupportCache(SupportBase,W,RefObj);
-end
-
 function SupportCache = ResolveOppositeSupportCache(SupportInfo,W,RefObj)
     if IsOppositeSupportBase(SupportInfo)
         SupportBase = SupportInfo;
@@ -290,6 +495,7 @@ function SupportCache = ResolveOppositeSupportCache(SupportInfo,W,RefObj)
 
     SupportCache = struct( ...
         'Dec',zeros(0,0), ...
+        'Obj',zeros(0,0), ...
         'Label',zeros(0,1), ...
         'Sector',zeros(0,1), ...
         'Tau',1, ...
@@ -299,6 +505,7 @@ function SupportCache = ResolveOppositeSupportCache(SupportInfo,W,RefObj)
     end
 
     SupportCache.Dec = SupportBase.Dec;
+    SupportCache.Obj = SupportBase.Obj;
     SupportCache.Label = SupportBase.Label;
     SupportCache.Sector = ColumnVector(AssociateSectorsLocal(SupportBase.Obj,W,RefObj));
     SupportCache.Tau = SupportBase.Tau;
@@ -349,9 +556,9 @@ end
 %% ========== Boundary dataset + MLP ==========
 
 function [Model,ModelState] = UpdateBoundaryModelIfNeeded( ...
-    Model,ModelState,B,RecentBoundaryOff,PopulationC,PopulationU,W,hidden,epoch,lr,Problem,CurrentFE)
+    Model,ModelState,B,BoundaryEvidence,PopulationC,PopulationU,W,hidden,epoch,lr,Problem,CurrentFE)
     MaxTrain = max(6*Problem.N,4*size(W,1));
-    Candidates = BuildTrainingCandidateSet(B,RecentBoundaryOff,PopulationC,PopulationU);
+    Candidates = BuildTrainingCandidateSet(B,BoundaryEvidence,PopulationC,PopulationU);
     [ModelState.trainBuffer,BufferDiag,ModelState.lastCandidateDec] = UpdateTrainingBuffer( ...
         ModelState.trainBuffer,Candidates,W,MaxTrain,CurrentFE,ModelState.lastCandidateDec);
     Dataset = BuildBoundaryDatasetFromBuffer(ModelState.trainBuffer,W,Problem.N);
@@ -412,10 +619,15 @@ end
 function Buffer = InitTrainingBuffer()
     Buffer = struct( ...
         'Dec',zeros(0,0), ...
+        'Obj',zeros(0,0), ...
         'Label',zeros(0,1), ...
         'Sector',zeros(0,1), ...
         'Source',zeros(0,1), ...
         'OppDist',zeros(0,1), ...
+        'PairId',zeros(0,1), ...
+        'GapDec',zeros(0,1), ...
+        'GapObj',zeros(0,1), ...
+        'BoundaryGap',zeros(0,1), ...
         'Time',zeros(0,1));
 end
 
@@ -502,8 +714,8 @@ function Diag = InitTrainingBufferDiag(W,Buffer)
         'mixed_sector_mask',false(K,1));
 end
 
-function Candidates = BuildTrainingCandidateSet(B,RecentBoundaryOff,PopulationC,PopulationU)
-    [Population,Source] = MergeTrainingSourcePopulations(B,RecentBoundaryOff,PopulationC,PopulationU);
+function Candidates = BuildTrainingCandidateSet(B,BoundaryEvidence,PopulationC,PopulationU)
+    [Population,Source] = MergeTrainingSourcePopulations(B,BoundaryEvidence,PopulationC,PopulationU);
     if isempty(Population)
         Candidates = struct('Population',Population,'Source',Source);
         return;
@@ -515,16 +727,17 @@ function Candidates = BuildTrainingCandidateSet(B,RecentBoundaryOff,PopulationC,
     Candidates = struct('Population',Population,'Source',Source);
 end
 
-function [Population,Source] = MergeTrainingSourcePopulations(B,RecentBoundaryOff,PopulationC,PopulationU)
-    Population = [B,RecentBoundaryOff,PopulationC,PopulationU];
+function [Population,Source] = MergeTrainingSourcePopulations(B,BoundaryEvidence,PopulationC,PopulationU)
+    Population = [B,BoundaryEvidence,PopulationC,PopulationU];
     Source = [ ...
         ones(numel(B),1); ...
-        2*ones(numel(RecentBoundaryOff),1); ...
+        2*ones(numel(BoundaryEvidence),1); ...
         3*ones(numel(PopulationC),1); ...
         4*ones(numel(PopulationU),1)];
 end
 
 function Band = CollectSectorBoundaryBand(Population,Label,Sector,Source,W,Eligible)
+    %#ok<INUSD>
     Band = InitBoundaryBand(size(Population.decs,2));
     if isempty(Population)
         return;
@@ -538,59 +751,64 @@ function Band = CollectSectorBoundaryBand(Population,Label,Sector,Source,W,Eligi
         return;
     end
 
-    OppDist = ComputeOppositeDistanceForCandidates(Population.decs,Label,Sector,W,Eligible);
-    K = max(size(W,1),max([Sector(:);1]));
-    Pick = false(numel(Population),1);
-    Neighbors = BuildSectorNeighbors(W,min(3,max(size(W,1)-1,0)));
-    for s = 1 : K
-        Local = ResolveLocalSectorSet(s,Neighbors);
-        idx = find(Eligible & ismember(Sector,Local) & isfinite(OppDist));
+    EligibleIdx = find(Eligible);
+    PairPool = Population(EligibleIdx);
+    Pairs = BuildBoundaryPairs(PairPool,W,max(2*size(W,1),numel(PairPool)));
+    if isempty(Pairs.FeasibleIndex)
+        return;
+    end
+    MaxPairsPerSector = 2;
+    PairPick = false(numel(Pairs.BoundaryGap),1);
+    Sectors = unique(Pairs.Sector(Pairs.Sector > 0))';
+    if isempty(Sectors)
+        Sectors = 1;
+    end
+    for s = Sectors
+        if isempty(W)
+            idx = (1:numel(Pairs.BoundaryGap))';
+        else
+            idx = find(Pairs.Sector == s);
+        end
         if isempty(idx)
             continue;
         end
-        Pos = idx(Label(idx) == 1);
-        Neg = idx(Label(idx) == 0);
-        if isempty(Pos) || isempty(Neg)
-            continue;
-        end
-        Quota = ResolveSectorBandQuota(numel(Pos),numel(Neg),numel(idx));
-        Pos = SortByDistanceThenSource(OppDist,Source,Pos);
-        Neg = SortByDistanceThenSource(OppDist,Source,Neg);
-        Pick(Pos(1:min(Quota,numel(Pos)))) = true;
-        Pick(Neg(1:min(Quota,numel(Neg)))) = true;
+        Key = [Pairs.BoundaryGap(idx),Pairs.GapDec(idx),Pairs.GapObj(idx),idx(:)];
+        [~,ord] = sortrows(Key,[1 2 3 4]);
+        idx = idx(ord(1:min(MaxPairsPerSector,numel(ord))));
+        PairPick(idx) = true;
     end
-
-    idx = find(Pick);
-    if isempty(idx)
+    SelectedPairIdx = find(PairPick);
+    if isempty(SelectedPairIdx)
         return;
     end
-    Band.Dec     = Population(idx).decs;
-    Band.Label   = Label(idx);
-    Band.Sector  = Sector(idx);
-    Band.Source  = Source(idx);
-    Band.OppDist = OppDist(idx);
+
+    FeaIdx = EligibleIdx(Pairs.FeasibleIndex(SelectedPairIdx));
+    InfIdx = EligibleIdx(Pairs.InfeasibleIndex(SelectedPairIdx));
+    PairId = (1:numel(SelectedPairIdx))';
+    Band.Dec     = [Population(FeaIdx).decs;Population(InfIdx).decs];
+    Band.Obj     = [Population(FeaIdx).objs;Population(InfIdx).objs];
+    Band.Label   = [ones(numel(SelectedPairIdx),1);zeros(numel(SelectedPairIdx),1)];
+    Band.Sector  = [Pairs.Sector(SelectedPairIdx);Pairs.Sector(SelectedPairIdx)];
+    Band.Source  = [Source(FeaIdx);Source(InfIdx)];
+    Band.OppDist = [Pairs.GapDec(SelectedPairIdx);Pairs.GapDec(SelectedPairIdx)];
+    Band.PairId  = [PairId;PairId];
+    Band.GapDec  = [Pairs.GapDec(SelectedPairIdx);Pairs.GapDec(SelectedPairIdx)];
+    Band.GapObj  = [Pairs.GapObj(SelectedPairIdx);Pairs.GapObj(SelectedPairIdx)];
+    Band.BoundaryGap = [Pairs.BoundaryGap(SelectedPairIdx);Pairs.BoundaryGap(SelectedPairIdx)];
 end
 
 function Band = InitBoundaryBand(D)
     Band = struct( ...
         'Dec',zeros(0,D), ...
+        'Obj',zeros(0,0), ...
         'Label',zeros(0,1), ...
         'Sector',zeros(0,1), ...
         'Source',zeros(0,1), ...
-        'OppDist',zeros(0,1));
-end
-
-function Quota = ResolveSectorBandQuota(PosCount,NegCount,LocalCount)
-    Evidence = min(PosCount,NegCount);
-    Quota = max(1,ceil(sqrt(max(Evidence,1)) + LocalCount/25));
-    Quota = min(5,Quota);
-end
-
-function Order = SortByDistanceThenSource(OppDist,Source,idx)
-    idx = ColumnVector(idx);
-    Key = [ColumnVector(OppDist(idx)),ColumnVector(SourcePriority(Source(idx))),ColumnVector(idx)];
-    [~,ord] = sortrows(Key,[1 2 3]);
-    Order = idx(ord);
+        'OppDist',zeros(0,1), ...
+        'PairId',zeros(0,1), ...
+        'GapDec',zeros(0,1), ...
+        'GapObj',zeros(0,1), ...
+        'BoundaryGap',zeros(0,1));
 end
 
 function Priority = SourcePriority(Source)
@@ -601,76 +819,72 @@ function Priority = SourcePriority(Source)
     Priority(Source == 4) = 4;
 end
 
-function OppDist = ComputeOppositeDistanceForCandidates(Dec,Label,Sector,W,Eligible)
-    Label = ColumnVector(Label);
-    Sector = ColumnVector(Sector);
-    OppDist = inf(size(Dec,1),1);
-    if isempty(Dec)
-        return;
-    end
-    if nargin < 5 || isempty(Eligible)
-        Eligible = true(size(Dec,1),1);
-    else
-        Eligible = ColumnVector(logical(Eligible));
-    end
-
-    Neighbors = BuildSectorNeighbors(W,min(3,max(size(W,1)-1,0)));
-    Target = find(Eligible);
-    for k = 1 : numel(Target)
-        i = Target(k);
-        Local = ResolveLocalSectorSet(Sector(i),Neighbors);
-        Mask = (Label ~= Label(i)) & ismember(Sector,Local);
-        if ~any(Mask)
-            Mask = Label ~= Label(i);
-        end
-        if any(Mask)
-            Delta = double(Dec(Mask,:)) - repmat(double(Dec(i,:)),sum(Mask),1);
-            Dist = sqrt(sum(Delta.^2,2));
-            OppDist(i) = min(Dist);
-        end
-    end
-end
-
 function Buffer = AppendTrainingBuffer(Buffer,Band,Time)
     if isempty(Band.Dec)
         return;
     end
+    Band = OffsetTrainingPairIds(Band,Buffer.PairId);
     if isempty(Buffer.Dec)
         Buffer.Dec = Band.Dec;
+        Buffer.Obj = Band.Obj;
         Buffer.Label = Band.Label;
         Buffer.Sector = Band.Sector;
         Buffer.Source = Band.Source;
         Buffer.OppDist = Band.OppDist;
+        Buffer.PairId = Band.PairId;
+        Buffer.GapDec = Band.GapDec;
+        Buffer.GapObj = Band.GapObj;
+        Buffer.BoundaryGap = Band.BoundaryGap;
         Buffer.Time = Time*ones(size(Band.Label));
     else
         Buffer.Dec = [Buffer.Dec;Band.Dec];
+        Buffer.Obj = [Buffer.Obj;Band.Obj];
         Buffer.Label = [Buffer.Label;Band.Label];
         Buffer.Sector = [Buffer.Sector;Band.Sector];
         Buffer.Source = [Buffer.Source;Band.Source];
         Buffer.OppDist = [Buffer.OppDist;Band.OppDist];
+        Buffer.PairId = [Buffer.PairId;Band.PairId];
+        Buffer.GapDec = [Buffer.GapDec;Band.GapDec];
+        Buffer.GapObj = [Buffer.GapObj;Band.GapObj];
+        Buffer.BoundaryGap = [Buffer.BoundaryGap;Band.BoundaryGap];
         Buffer.Time = [Buffer.Time;Time*ones(size(Band.Label))];
     end
     Keep = KeepLatestDecisionRowsLocal(Buffer.Dec);
     Buffer = SliceTrainingBuffer(Buffer,Keep);
 end
 
+function Band = OffsetTrainingPairIds(Band,ExistingPairId)
+    if isempty(Band.PairId)
+        return;
+    end
+    Offset = max([0;ColumnVector(ExistingPairId)]);
+    Mask = Band.PairId > 0;
+    Band.PairId(Mask) = Band.PairId(Mask) + Offset;
+end
+
 function Buffer = TrimTrainingBuffer(Buffer,MaxTrain)
     if size(Buffer.Dec,1) <= MaxTrain
         return;
     end
-    Key = [ColumnVector(Buffer.OppDist),ColumnVector(-Buffer.Time), ...
+    Key = [ColumnVector(Buffer.BoundaryGap),ColumnVector(Buffer.GapDec), ...
+           ColumnVector(Buffer.GapObj),ColumnVector(-Buffer.Time), ...
            ColumnVector(SourcePriority(Buffer.Source)),ColumnVector((1:size(Buffer.Dec,1))')];
-    [~,ord] = sortrows(Key,[1 2 3 4]);
+    [~,ord] = sortrows(Key,[1 2 3 4 5 6]);
     Keep = sort(ord(1:MaxTrain));
     Buffer = SliceTrainingBuffer(Buffer,Keep);
 end
 
 function Buffer = SliceTrainingBuffer(Buffer,Keep)
     Buffer.Dec = Buffer.Dec(Keep,:);
+    Buffer.Obj = Buffer.Obj(Keep,:);
     Buffer.Label = Buffer.Label(Keep);
     Buffer.Sector = Buffer.Sector(Keep);
     Buffer.Source = Buffer.Source(Keep);
     Buffer.OppDist = Buffer.OppDist(Keep);
+    Buffer.PairId = Buffer.PairId(Keep);
+    Buffer.GapDec = Buffer.GapDec(Keep);
+    Buffer.GapObj = Buffer.GapObj(Keep);
+    Buffer.BoundaryGap = Buffer.BoundaryGap(Keep);
     Buffer.Time = Buffer.Time(Keep);
 end
 
@@ -685,25 +899,42 @@ function Mask = ResolveMixedSectorMaskFromBuffer(Buffer,K)
     end
 end
 
+function Meta = BuildBoundaryMetaFromBuffer(Buffer,W)
+    Count = size(Buffer.Dec,1);
+    Meta = InitBoundaryMeta(Count);
+    if Count <= 0
+        return;
+    end
+
+    LocalPairExists = isfinite(Buffer.BoundaryGap);
+    ShellDistDec = Buffer.GapDec;
+    BetweenScoreObj = Buffer.GapObj;
+    Prob = 0.5*ones(Count,1);
+    OppSupport = exp(-Buffer.BoundaryGap);
+    ObjScore = NormalizeFiniteScore(BetweenScoreObj);
+    Meta = ComposeBoundaryMeta( ...
+        Buffer.Sector,Buffer.Label,Prob,OppSupport,ObjScore, ...
+        LocalPairExists,ShellDistDec,BetweenScoreObj);
+end
+
 function Dataset = BuildBoundaryDatasetFromBuffer(Buffer,W,N)
     Dataset = struct('Dec',zeros(0,0),'Label',zeros(0,1));
     if isempty(Buffer.Dec) || numel(unique(Buffer.Label)) < 2
         return;
     end
 
-    MaxPerSide = max(2,min(5,ceil(N/max(size(W,1),1))));
+    Meta = BuildBoundaryMetaFromBuffer(Buffer,W);
+    Eligible = BoundaryEligible(Meta,false,'evidence');
+    if ~any(Eligible)
+        return;
+    end
+
+    MaxPairsPerSector = 2;
     Sectors = unique(Buffer.Sector(Buffer.Sector > 0))';
-    Ranked = zeros(min(size(Buffer.Dec,1),2*MaxPerSide*numel(Sectors)),1);
+    Ranked = zeros(min(size(Buffer.Dec,1),2*MaxPairsPerSector*numel(Sectors)),1);
     RankedCount = 0;
     for s = Sectors
-        idx = find(Buffer.Sector == s);
-        Pos = SortByDistanceThenSource(Buffer.OppDist,Buffer.Source,idx(Buffer.Label(idx) == 1));
-        Neg = SortByDistanceThenSource(Buffer.OppDist,Buffer.Source,idx(Buffer.Label(idx) == 0));
-        if isempty(Pos) || isempty(Neg)
-            continue;
-        end
-        Use = min([MaxPerSide,numel(Pos),numel(Neg)]);
-        Add = [Pos(1:Use);Neg(1:Use)];
+        Add = SelectReplayPairsInSector(Buffer,Meta,Eligible,s,MaxPairsPerSector);
         AddCount = min(numel(Add),numel(Ranked)-RankedCount);
         if AddCount > 0
             Ranked(RankedCount+1:RankedCount+AddCount) = Add(1:AddCount);
@@ -712,27 +943,41 @@ function Dataset = BuildBoundaryDatasetFromBuffer(Buffer,W,N)
     end
     Ranked = Ranked(1:RankedCount);
     if isempty(Ranked)
-        Ranked = BuildBalancedReplayBatch( ...
-            find(Buffer.Label == 1),find(Buffer.Label == 0),Buffer.OppDist,Buffer.Source);
-    else
-        Ranked = unique(Ranked,'stable');
-        Ranked = BuildBalancedReplayBatch( ...
-            Ranked(Buffer.Label(Ranked) == 1), ...
-            Ranked(Buffer.Label(Ranked) == 0),Buffer.OppDist,Buffer.Source);
+        return;
     end
+    Ranked = unique(Ranked,'stable');
     Dataset.Dec = Buffer.Dec(Ranked,:);
     Dataset.Label = Buffer.Label(Ranked);
 end
 
-function BatchIdx = BuildBalancedReplayBatch(PosIdx,NegIdx,OppDist,Source)
-    PosIdx = SortByDistanceThenSource(OppDist,Source,PosIdx);
-    NegIdx = SortByDistanceThenSource(OppDist,Source,NegIdx);
-    Count = min(numel(PosIdx),numel(NegIdx));
-    if Count <= 0
-        BatchIdx = zeros(0,1);
+function ReplayRows = SelectReplayPairsInSector(Buffer,Meta,Eligible,Sector,MaxPairs)
+    ReplayRows = zeros(0,1);
+    PairIds = unique(Buffer.PairId(Buffer.Sector == Sector & Eligible & Buffer.PairId > 0),'stable');
+    if isempty(PairIds)
         return;
     end
-    BatchIdx = reshape([PosIdx(1:Count)';NegIdx(1:Count)'],[],1);
+    PairKey = inf(numel(PairIds),4);
+    PairMembers = cell(numel(PairIds),1);
+    for i = 1 : numel(PairIds)
+        idx = find(Buffer.PairId == PairIds(i) & Buffer.Sector == Sector & Eligible);
+        Pos = idx(Buffer.Label(idx) == 1);
+        Neg = idx(Buffer.Label(idx) == 0);
+        if isempty(Pos) || isempty(Neg)
+            continue;
+        end
+        Pos = SortByBoundaryKey(Meta,Pos,Buffer.Source);
+        Neg = SortByBoundaryKey(Meta,Neg,Buffer.Source);
+        PairMembers{i} = [Pos(1);Neg(1)];
+        PairKey(i,:) = [min(Meta.boundaryGap(idx)),min(Meta.gapDec(idx)), ...
+            min(Meta.gapObj(idx)),PairIds(i)];
+    end
+    Valid = find(isfinite(PairKey(:,1)));
+    if isempty(Valid)
+        return;
+    end
+    [~,ord] = sortrows(PairKey(Valid,:),[1 2 3 4]);
+    Valid = Valid(ord(1:min(MaxPairs,numel(ord))));
+    ReplayRows = vertcat(PairMembers{Valid});
 end
 
 function Model = TrainBoundaryMLP(Model,Dataset,Hidden,Epoch,LR,Mode)
@@ -774,7 +1019,9 @@ function Model = TrainBoundaryMLP(Model,Dataset,Hidden,Epoch,LR,Mode)
         b1 = b1 - Step*sum(D1,1);
     end
 
-    Model = struct('Mu',Mu,'Sigma',Sigma,'W1',W1,'b1',b1,'W2',W2,'b2',b2);
+    Z = tanh(Xn*W1 + repmat(b1,size(Xn,1),1))*W2 + b2;
+    Temperature = FitBoundaryTemperature(Z,Y);
+    Model = struct('Mu',Mu,'Sigma',Sigma,'W1',W1,'b1',b1,'W2',W2,'b2',b2,'Temperature',Temperature);
 end
 
 function [W1,b1,W2,b2] = RebaseBoundaryMLPNormalization(Model,Mu,Sigma)
@@ -821,117 +1068,80 @@ function Prob = PredictBoundaryMLP(Model,X)
     Xn = (double(X)-Model.Mu)./Model.Sigma;
     H  = tanh(Xn*Model.W1 + repmat(Model.b1,size(Xn,1),1));
     Z  = H*Model.W2 + Model.b2;
+    if isfield(Model,'Temperature')
+        Z = Z./max(Model.Temperature,1e-6);
+    end
     Prob = min(max(1./(1+exp(-Z)),1e-6),1-1e-6);
+end
+
+function Temperature = FitBoundaryTemperature(Logit,Label)
+    Label = double(Label(:) > 0);
+    Logit = double(Logit(:));
+    Grid = linspace(0.5,5,19);
+    Loss = inf(numel(Grid),1);
+    for i = 1 : numel(Grid)
+        P = min(max(1./(1+exp(-Logit./Grid(i))),1e-6),1-1e-6);
+        Loss(i) = -mean(Label.*log(P) + (1-Label).*log(1-P));
+    end
+    [~,best] = min(Loss);
+    Temperature = Grid(best);
 end
 
 %% ========== Boundary offspring ==========
 
-function Sample = SelectLocalOppositeSample(AnchorDec,Sector,Population,W)
-    Sample = Population([]);
-    if isempty(Population)
-        return;
-    end
-
-    Pool = Population;
-    RefObj = ComputeIdealPoint(Pool);
-    PoolSector = AssociateSectorsLocal(Pool.objs,W,RefObj);
-    Neighbors = BuildSectorNeighbors(W,min(3,max(size(W,1)-1,0)));
-    Local = ResolveLocalSectorSet(Sector,Neighbors);
-    idx = find(ismember(PoolSector,Local));
-    if isempty(idx)
-        return;
-    end
-
-    Dist = sqrt(sum((double(Pool(idx).decs) - double(AnchorDec)).^2,2));
-    [~,ord] = sort(Dist,'ascend');
-    Sample = Pool(idx(ord(1)));
-end
-
-function Offspring = GenerateBoundaryOffspring(Problem,B,PopulationC,PopulationU,W,Model,rho)
-    if isempty(Model) || isempty(B)
-        Offspring = B([]);
-        return;
-    end
-
+function [Offspring,Evidence] = GenerateBoundaryOffspring(Problem,B,PopulationC,PopulationU,W,Model,rho)
+    Evidence = B([]);
     Budget = min(max(0,floor(rho*Problem.N)),max(0,Problem.maxFE-Problem.FE));
     if Budget <= 0
         Offspring = B([]);
         return;
     end
 
-    Support = KeepUniquePopulation([B,PopulationC,PopulationU]);
-    SupportBase = BuildOppositeSupportBase(Support,W);
-    ParentPool = Support;
-    ParentMeta = BuildBoundaryMeta(ParentPool,W,Model,PopulationC,PopulationU,SupportBase);
-    AnchorIdx = SelectBoundaryAnchors(ParentPool,B,ParentMeta,W,max(Problem.N,2*Budget));
-    if isempty(AnchorIdx)
+    AnchorPool = KeepUniquePopulation([B,PopulationC,PopulationU]);
+    if isempty(AnchorPool)
         Offspring = B([]);
         return;
     end
 
-    CandidateDec = zeros(Budget,size(ParentPool.decs,2));
-    CandidateAnchorObjScore = zeros(Budget,1);
-    CandidateAnchorOppSupport = zeros(Budget,1);
-    CandidateCount = 0;
-
-    SupportRefObj = ComputeIdealPoint(ParentPool,PopulationC,PopulationU);
-    SupportCache = ResolveOppositeSupportCache(SupportBase,W,SupportRefObj);
-    StablePool = KeepUniquePopulation([PopulationC,PopulationU]);
-    StablePoolBase = BuildOppositeSupportBase(StablePool,W);
-    StablePoolMeta = BuildBoundaryMeta(StablePool,W,[],PopulationC,PopulationU,StablePoolBase);
-    for i = 1 : numel(AnchorIdx)
-        if CandidateCount >= Budget
-            break;
-        end
-        BaseIdx = AnchorIdx(i);
-        Parent2 = SelectOppositeParent(ParentPool,ParentMeta,BaseIdx,PopulationC,PopulationU,W);
-        Parent3 = SelectStableParentFast(StablePool,StablePoolMeta,ParentMeta.sector(BaseIdx));
-        if isempty(Parent2) || isempty(Parent3)
-            continue;
-        end
-
-        Child = OperatorDE(Problem,ParentPool(BaseIdx).decs,Parent2.decs,Parent3.decs);
-        if isempty(Child)
-            continue;
-        end
-        Child = Child(1,:);
-        DuplicateCandidate = CandidateCount > 0 && ismember(Child,CandidateDec(1:CandidateCount,:),'rows');
-        if ismember(Child,ParentPool.decs,'rows') || DuplicateCandidate
-            continue;
-        end
-
-        ProxySector = ParentMeta.sector(BaseIdx);
-        Prob = PredictBoundaryMLP(Model,Child);
-        Feasible = double(Prob >= 0.5);
-        OppSupport = ComputeOppositeSupportFromCache(Child,Feasible,ProxySector,SupportCache);
-        CandidateMeta = ComposeBoundaryMeta(ProxySector,Feasible,Prob,OppSupport,0);
-        AnchorMargin = ParentMeta.margin(BaseIdx);
-        AnchorOppSupport = ParentMeta.oppSupport(BaseIdx);
-        AnchorObjScore = ParentMeta.objScore(BaseIdx);
-        Improved = CandidateMeta.margin < AnchorMargin;
-        Supported = CandidateMeta.oppSupport >= AnchorOppSupport;
-        if ~(Improved && Supported)
-            continue;
-        end
-
-        CandidateCount = CandidateCount + 1;
-        CandidateDec(CandidateCount,:) = Child;
-        CandidateAnchorObjScore(CandidateCount,1) = AnchorObjScore;
-        CandidateAnchorOppSupport(CandidateCount,1) = AnchorOppSupport;
-    end
-
-    if CandidateCount <= 0
+    Support = AnchorPool;
+    Pair = BuildBoundaryPairs(AnchorPool,W,max(Problem.N,2*Budget));
+    if isempty(Pair.FeasibleDec)
         Offspring = B([]);
         return;
     end
-    CandidateDec = CandidateDec(1:CandidateCount,:);
-    CandidateAnchorObjScore = CandidateAnchorObjScore(1:CandidateCount);
-    CandidateAnchorOppSupport = CandidateAnchorOppSupport(1:CandidateCount);
 
-    EvaluatedCandidate = Problem.Evaluation(CandidateDec);
-    CandidateMeta = BuildBoundaryMeta(EvaluatedCandidate,W,Model,PopulationC,PopulationU,SupportBase);
-    Relevant = CandidateMeta.objScore <= CandidateAnchorObjScore + 0.10 & ...
-        CandidateMeta.oppSupport >= CandidateAnchorOppSupport;
+    PairCount = min(size(Pair.FeasibleDec,1),max(1,ceil(Budget/2)));
+    FirstDec = 0.5*(Pair.FeasibleDec(1:PairCount,:) + Pair.InfeasibleDec(1:PairCount,:));
+    FirstDec = ClipDecisionRows(FirstDec,Problem);
+    FirstEval = Problem.Evaluation(FirstDec);
+
+    Remaining = max(0,min([PairCount,Budget-PairCount,Problem.maxFE-Problem.FE]));
+    if Remaining > 0
+        SecondDec = zeros(Remaining,size(FirstDec,2));
+        for i = 1 : Remaining
+            if all(FirstEval(i).cons <= 0)
+                SecondDec(i,:) = 0.5*(double(FirstEval(i).decs) + Pair.InfeasibleDec(i,:));
+            else
+                SecondDec(i,:) = 0.5*(Pair.FeasibleDec(i,:) + double(FirstEval(i).decs));
+            end
+        end
+        CandidateDec = ClipDecisionRows(SecondDec,Problem);
+        EvaluatedCandidate = Problem.Evaluation(CandidateDec);
+    else
+        CandidateDec = FirstDec;
+        EvaluatedCandidate = FirstEval;
+    end
+
+    Evidence = KeepUniquePopulation([FirstEval,EvaluatedCandidate]);
+    if isempty(CandidateDec)
+        Offspring = B([]);
+        return;
+    end
+
+    CandidateSupportBase = BuildOppositeSupportBase( ...
+        KeepUniquePopulation([Support,FirstEval,EvaluatedCandidate]),W);
+    CandidateMeta = BuildBoundaryMeta(EvaluatedCandidate,W,Model,PopulationC,PopulationU,CandidateSupportBase);
+    Relevant = BoundaryEligible(CandidateMeta,~isempty(Model),'evidence');
     if ~any(Relevant)
         Offspring = B([]);
         return;
@@ -969,52 +1179,13 @@ function Offspring = GenerateBoundaryOffspring(Problem,B,PopulationC,PopulationU
     end
 end
 
-function AnchorIdx = SelectBoundaryAnchors(ParentPool,B,ParentMeta,W,MaxCount)
-    AnchorIdx = find(ismember(ParentPool.decs,B.decs,'rows'));
-    if isempty(AnchorIdx)
+function Dec = ClipDecisionRows(Dec,Problem)
+    if isempty(Dec)
         return;
     end
-
-    if isempty(W)
-        AnchorIdx = SortByBoundaryKey(ParentMeta,AnchorIdx);
-        AnchorIdx = AnchorIdx(1:min(MaxCount,numel(AnchorIdx)));
-        return;
-    end
-
-    Ranked = cell(size(W,1),1);
-    for s = 1 : size(W,1)
-        idx = AnchorIdx(ParentMeta.sector(AnchorIdx) == s);
-        if isempty(idx)
-            continue;
-        end
-        Ranked{s} = SortByBoundaryKey(ParentMeta,idx);
-    end
-    Order = SectorRoundRobinPick(Ranked,MaxCount);
-    AnchorIdx = Order(:,2);
-end
-
-function Parent2 = SelectOppositeParent(ParentPool,ParentMeta,BaseIdx,PopulationC,PopulationU,W)
-    if ParentMeta.feasible(BaseIdx) > 0
-        Pool = PopulationU(any(PopulationU.cons>0,2));
-    else
-        Pool = PopulationC(all(PopulationC.cons<=0,2));
-    end
-    Parent2 = SelectLocalOppositeSample( ...
-        ParentPool(BaseIdx).decs,ParentMeta.sector(BaseIdx),Pool,W);
-end
-
-function Parent3 = SelectStableParentFast(StablePool,StablePoolMeta,SectorId)
-    Parent3 = StablePool([]);
-    if isempty(StablePool)
-        return;
-    end
-
-    idx = find(StablePoolMeta.sector == SectorId);
-    if isempty(idx)
-        return;
-    end
-    ord = SortBySelectionKey(StablePoolMeta,idx);
-    Parent3 = StablePool(ord(1));
+    Lower = repmat(Problem.lower,size(Dec,1),1);
+    Upper = repmat(Problem.upper,size(Dec,1),1);
+    Dec = min(max(Dec,Lower),Upper);
 end
 
 %% ========== Environmental selection ==========
@@ -1034,7 +1205,7 @@ function Population = EnvironmentalSelectionC(Population,N,W,Model,B,RecentBound
     Next = Feasible;
     Need = N - numel(Next);
     Infeasible = Population(any(Population.cons>0,2));
-    if Need > 0 && ~isempty(Model) && ~isempty(Infeasible)
+    if Need > 0 && ~isempty(Infeasible)
         Next = [Next,SelectInfeasibleByBoundaryMeta( ...
             Infeasible,Need,W,Model,Feasible,PopulationU,B,RecentBoundaryOff)];
     end
@@ -1063,7 +1234,7 @@ function Pick = SelectInfeasibleByBoundaryMeta( ...
     Support = KeepUniquePopulation([B,RecentBoundaryOff,PopulationC,PopulationU]);
     SupportBase = BuildOppositeSupportBase(Support,W);
     Meta = BuildBoundaryMeta(Population,W,Model,PopulationC,PopulationU,SupportBase);
-    Trusted = FindSupportedBoundaryCandidates(Meta,W);
+    Trusted = FindSupportedBoundaryCandidates(Meta,W,~isempty(Model)) & Meta.feasible == 0;
     if ~any(Trusted)
         return;
     end
@@ -1092,27 +1263,15 @@ function Pick = SelectInfeasibleByBoundaryMeta( ...
     end
 end
 
-function Trusted = FindSupportedBoundaryCandidates(Meta,W)
+function Trusted = FindSupportedBoundaryCandidates(Meta,W,ModelReady)
     Trusted = false(numel(Meta.sector),1);
     if isempty(Meta.sector)
         return;
     end
-    Threshold = ResolveOppSupportGate(Meta,W);
-    Trusted = Meta.oppSupport >= Threshold;
-end
-
-function Threshold = ResolveOppSupportGate(Meta,W)
-    Positive = Meta.oppSupport(Meta.oppSupport > 0);
-    if isempty(Positive)
-        Threshold = inf;
-        return;
+    if nargin < 3
+        ModelReady = true;
     end
-    Base = median(Positive);
-    if isempty(W)
-        Threshold = max(0.05,0.50*Base);
-    else
-        Threshold = max(0.05,0.35*Base);
-    end
+    Trusted = BoundaryEligible(Meta,ModelReady,'evidence');
 end
 
 function Population = EnvironmentalSelectionU(Population,N,W)
@@ -1257,12 +1416,20 @@ function Meta = InitBoundaryMeta(Count)
         'prob',0.5*ones(Count,1), ...
         'margin',ones(Count,1), ...
         'oppSupport',zeros(Count,1), ...
+        'localPairExists',false(Count,1), ...
+        'betweenScoreObj',inf(Count,1), ...
+        'shellDistDec',inf(Count,1), ...
+        'gapDec',inf(Count,1), ...
+        'gapObj',inf(Count,1), ...
+        'boundaryGap',inf(Count,1), ...
         'objScore',zeros(Count,1), ...
         'score',ones(Count,1));
 end
 
-function Meta = ComposeBoundaryMeta(Sector,Feasible,Prob,OppSupport,ObjScore)
-    Count = max([numel(Sector),numel(Feasible),numel(Prob),numel(OppSupport),numel(ObjScore),0]);
+function Meta = ComposeBoundaryMeta( ...
+    Sector,Feasible,Prob,OppSupport,ObjScore,LocalPairExists,ShellDistDec,BetweenScoreObj)
+    Count = max([numel(Sector),numel(Feasible),numel(Prob),numel(OppSupport), ...
+        numel(ObjScore),numel(LocalPairExists),numel(ShellDistDec),numel(BetweenScoreObj),0]);
     Meta = InitBoundaryMeta(Count);
     if Count == 0
         return;
@@ -1273,6 +1440,9 @@ function Meta = ComposeBoundaryMeta(Sector,Feasible,Prob,OppSupport,ObjScore)
     Prob = MatchLength(ColumnVector(Prob),Count,0.5);
     OppSupport = MatchLength(ColumnVector(OppSupport),Count,0);
     ObjScore = MatchLength(ColumnVector(ObjScore),Count,0);
+    LocalPairExists = MatchLength(logical(ColumnVector(LocalPairExists)),Count,false);
+    ShellDistDec = MatchLength(ColumnVector(ShellDistDec),Count,inf);
+    BetweenScoreObj = MatchLength(ColumnVector(BetweenScoreObj),Count,inf);
     Margin = 2*abs(Prob - 0.5);
 
     Meta.sector     = Sector;
@@ -1280,18 +1450,39 @@ function Meta = ComposeBoundaryMeta(Sector,Feasible,Prob,OppSupport,ObjScore)
     Meta.prob       = Prob;
     Meta.margin     = Margin;
     Meta.oppSupport = OppSupport;
+    Meta.localPairExists = LocalPairExists;
+    Meta.betweenScoreObj = BetweenScoreObj;
+    Meta.shellDistDec = ShellDistDec;
+    Meta.gapDec     = ShellDistDec;
+    Meta.gapObj     = BetweenScoreObj;
+    Meta.boundaryGap = ShellDistDec + 0.25*BetweenScoreObj;
     Meta.objScore   = ObjScore;
-    Meta.score      = 0.50*Margin + 0.30*(1-OppSupport) + 0.20*ObjScore;
+    Meta.score      = 0.55*NormalizeFiniteScore(Meta.boundaryGap) + ...
+        0.25*Margin + 0.10*NormalizeFiniteScore(ShellDistDec) + 0.10*ObjScore;
 end
 
-function Order = SortByBoundaryKey(Meta,idx)
+function Score = NormalizeFiniteScore(Value)
+    Score = ones(size(Value));
+    Mask = isfinite(Value);
+    if any(Mask)
+        Score(Mask) = NormalizeRange(Value(Mask));
+    end
+end
+
+function Order = SortByBoundaryKey(Meta,idx,Source)
     idx = ColumnVector(idx);
     if isempty(idx)
         Order = idx;
         return;
     end
-    Key = [ColumnVector(Meta.margin(idx)),ColumnVector(1-Meta.oppSupport(idx)),ColumnVector(idx)];
-    [~,ord] = sortrows(Key,[1 2 3]);
+    if nargin < 3 || isempty(Source)
+        Source = 5*ones(numel(Meta.sector),1);
+    end
+    Source = MatchLength(Source,numel(Meta.sector),5);
+    Key = [ColumnVector(Meta.boundaryGap(idx)),ColumnVector(Meta.gapDec(idx)), ...
+        ColumnVector(Meta.gapObj(idx)),ColumnVector(SourcePriority(Source(idx))), ...
+        ColumnVector(Meta.margin(idx)),ColumnVector(Meta.objScore(idx)),ColumnVector(idx)];
+    [~,ord] = sortrows(Key,[1 2 3 4 5 6 7]);
     Order = idx(ord);
 end
 
@@ -1301,8 +1492,10 @@ function Order = SortBySelectionKey(Meta,idx)
         Order = idx;
         return;
     end
-    Key = [ColumnVector(Meta.margin(idx)),ColumnVector(1-Meta.oppSupport(idx)),ColumnVector(Meta.objScore(idx)),ColumnVector(idx)];
-    [~,ord] = sortrows(Key,[1 2 3 4]);
+    Key = [ColumnVector(Meta.boundaryGap(idx)),ColumnVector(Meta.gapDec(idx)), ...
+        ColumnVector(Meta.gapObj(idx)),ColumnVector(Meta.margin(idx)), ...
+        ColumnVector(Meta.objScore(idx)),ColumnVector(idx)];
+    [~,ord] = sortrows(Key,[1 2 3 4 5 6]);
     Order = idx(ord);
 end
 
@@ -1405,9 +1598,6 @@ function OppSupport = ComputeOppositeSupportFromCache( ...
         CandidateRow = reshape(CandidateDec(i,:),1,[]);
         Local = ColumnVector(ResolveLocalSectorSet(Sector(i),SupportCache.Neighbors));
         Mask = ColumnVector((SupportCache.Label ~= CandidateLabel(i)) & ismember(SupportCache.Sector,Local));
-        if ~any(Mask)
-            Mask = ColumnVector(SupportCache.Label ~= CandidateLabel(i));
-        end
         if any(Mask)
             LocalSupportDec = SupportCache.Dec(Mask,:);
             Delta = LocalSupportDec - repmat(CandidateRow,size(LocalSupportDec,1),1);

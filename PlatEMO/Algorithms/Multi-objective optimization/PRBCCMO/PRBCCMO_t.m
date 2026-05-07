@@ -6,7 +6,7 @@ classdef PRBCCMO_t < ALGORITHM
 % hidden --- 20   --- Hidden neurons of the boundary MLP
 % epoch  --- 20   --- Training epochs per update
 % lr     --- 0.01 --- Learning rate
-% kappa  --- 3    --- Maximum boundary samples kept per sector
+% kappa  --- 10   --- Maximum boundary samples kept per sector
 % rho    --- 0.12 --- Boundary evaluation budget ratio
 %
 % PRBCCMO_t mirrors the boundary-band PRBCCMO and writes CSV-only
@@ -24,9 +24,9 @@ classdef PRBCCMO_t < ALGORITHM
     methods
         function main(Algorithm,Problem)
             [W,Problem.N] = UniformPoint(Problem.N,Problem.M);
-            [hidden,epoch,lr,kappa,rho] = Algorithm.ParameterSet(20,20,0.01,3,0.12);
+            [hidden,epoch,lr,~,rho] = Algorithm.ParameterSet(20,20,0.01,10,0.12);
 
-            kappa = max(1,round(kappa));
+            kappa = 10;
             rho   = max(0,min(0.5,double(rho)));
 
             PopulationC = Problem.Initialization();
@@ -57,7 +57,7 @@ classdef PRBCCMO_t < ALGORITHM
                 SeedSupportBase = BuildOppositeSupportBase(SeedSupport,W);
                 SeedMeta = BuildBoundaryMeta(SeedB,W,Model,PopulationC,PopulationU,SeedSupportBase);
 
-                [BoundaryOff,BoundaryDiag] = GenerateBoundaryOffspring( ...
+                [BoundaryOff,BoundaryEvidence,BoundaryDiag] = GenerateBoundaryOffspring( ...
                     Problem,B,PopulationC,PopulationU,W,Model,rho);
 
                 QC = KeepUniquePopulation([PopulationC,OffspringC,OffspringU,BoundaryOff]);
@@ -70,7 +70,7 @@ classdef PRBCCMO_t < ALGORITHM
                 RecentBoundaryOff = BoundaryOff;
                 B = UpdateBoundaryArchive(B,RecentBoundaryOff,PopulationC,PopulationU,W,Model,kappa);
                 [Model,ModelState,MLPDiag] = UpdateBoundaryModelIfNeeded( ...
-                    Model,ModelState,B,RecentBoundaryOff,PopulationC,PopulationU,W, ...
+                    Model,ModelState,B,BoundaryEvidence,PopulationC,PopulationU,W, ...
                     hidden,epoch,lr,Generation,Problem,Problem.FE);
                 Observer = LogMLPEvent(Observer,MLPDiag);
 
@@ -79,7 +79,7 @@ classdef PRBCCMO_t < ALGORITHM
                 ArchiveMeta = BuildBoundaryMeta(B,W,Model,PopulationC,PopulationU,SupportBase);
                 Observer = LogGenerationDiagnostics( ...
                     Observer,Generation,Problem,W,PopulationC,PopulationU, ...
-                    OffspringC,OffspringU,BoundaryOff,BoundaryDiag,BoundarySurvival, ...
+                    OffspringC,OffspringU,BoundaryOff,BoundaryEvidence,BoundaryDiag,BoundarySurvival, ...
                     SeedB,SeedMeta,B,ArchiveMeta,MLPDiag,SelectionDiag,Model);
             end
         end
@@ -125,103 +125,196 @@ end
 %% ========== Boundary archive ==========
 
 function B = UpdateBoundaryArchive(B,BoundarySamples,PopulationC,PopulationU,W,Model,kappa)
-    Support = KeepUniquePopulation([B,BoundarySamples,PopulationC,PopulationU]);
+    Support = KeepUniquePopulation([BoundarySamples,PopulationC,PopulationU]);
     SupportBase = BuildOppositeSupportBase(Support,W);
-    Representatives = BuildBoundaryRepresentatives(B,PopulationC,PopulationU,W,Model,SupportBase);
-    Candidates = KeepUniquePopulation([B,BoundarySamples,Representatives]);
+    PairPool = KeepUniquePopulation([BoundarySamples,PopulationC,PopulationU]);
+    Pairs = BuildBoundaryPairs(PairPool,W,max(4*size(W,1),2*numel(PairPool)));
+    TightEndpoints = ExtractTightPairEndpoints(PairPool,Pairs,kappa);
+    RevalidatedB = RevalidateBoundaryMemory(B,SupportBase,W,Model,PopulationC,PopulationU);
+    [Candidates,CandidateSource] = BuildArchiveCandidateSet(BoundarySamples,TightEndpoints,RevalidatedB);
     if isempty(Candidates)
         B = Candidates;
         return;
     end
 
     Meta = BuildBoundaryMeta(Candidates,W,Model,PopulationC,PopulationU,SupportBase);
-    B = SelectTopKPerSector(Candidates,Meta,kappa);
+    B = SelectTopKPerSector(Candidates,Meta,CandidateSource,kappa,~isempty(Model));
 end
 
-function Representatives = BuildBoundaryRepresentatives(B,PopulationC,PopulationU,W,Model,SupportBase)
-    Representatives = B([]);
-    if isempty(W)
+function Endpoints = ExtractTightPairEndpoints(Pool,Pairs,kappa)
+    Endpoints = Pool([]);
+    if isempty(Pool) || isempty(Pairs.FeasibleIndex)
         return;
     end
 
-    BMeta = BuildBoundaryMeta(B,W,Model,PopulationC,PopulationU,SupportBase);
-    RepC = BuildRepresentativeIndexBySector(PopulationC,W);
-    RepU = BuildRepresentativeIndexBySector(PopulationU,W);
-    PickC = zeros(size(W,1),1);
-    PickU = zeros(size(W,1),1);
-    CountC = 0;
-    CountU = 0;
-    for s = 1 : size(W,1)
-        if NeedsRepresentativeRefill(BMeta,s)
-            if RepC.has(s)
-                CountC = CountC + 1;
-                PickC(CountC) = RepC.index(s);
-            end
-            if RepU.has(s)
-                CountU = CountU + 1;
-                PickU(CountU) = RepU.index(s);
-            end
-        end
-    end
-    RepCOut = PopulationC([]);
-    RepUOut = PopulationU([]);
-    if CountC > 0
-        RepCOut = PopulationC(PickC(1:CountC)');
-    end
-    if CountU > 0
-        RepUOut = PopulationU(PickU(1:CountU)');
-    end
-    Representatives = KeepUniquePopulation([RepCOut,RepUOut]);
-end
-
-function Flag = NeedsRepresentativeRefill(BMeta,s)
-    if isempty(BMeta.sector)
-        Flag = true;
-        return;
-    end
-
-    idx = find(BMeta.sector == s);
+    Limit = max(2,2*max(1,kappa)*max(1,numel(unique(Pairs.Sector))));
+    Gate = ResolvePairGapThreshold(Pairs,'archive');
+    idx = find(Pairs.BoundaryGap <= Gate);
     if isempty(idx)
-        Flag = true;
         return;
     end
-    Label = BMeta.feasible(idx);
-    Flag = ~(any(Label == 1) && any(Label == 0));
+    Key = [Pairs.BoundaryGap(idx),Pairs.GapDec(idx),Pairs.GapObj(idx),idx(:)];
+    [~,ord] = sortrows(Key,[1 2 3 4]);
+    idx = idx(ord(1:min(numel(ord),Limit)));
+    Pick = unique([Pairs.FeasibleIndex(idx);Pairs.InfeasibleIndex(idx)],'stable');
+    Endpoints = Pool(Pick);
 end
 
-function Rep = BuildRepresentativeIndexBySector(Population,W)
-    K = size(W,1);
-    Rep = struct('has',false(K,1),'index',zeros(K,1));
-    if isempty(Population) || K <= 0
+function Revalidated = RevalidateBoundaryMemory(B,SupportBase,W,Model,PopulationC,PopulationU)
+    Revalidated = B([]);
+    if isempty(B) || isempty(SupportBase.Dec)
         return;
     end
 
-    Z = ComputeIdealPoint(Population);
-    Sector = AssociateSectorsLocal(Population.objs,W,Z);
-    [FrontNo,~] = NDSort(Population.objs,numel(Population));
-    CrowdDis = CrowdingDistance(Population.objs,FrontNo);
-    for s = 1 : K
-        idx = find(Sector == s);
-        if isempty(idx)
-            continue;
+    Meta = BuildBoundaryMeta(B,W,Model,PopulationC,PopulationU,SupportBase);
+    Keep = BoundaryEligible(Meta,~isempty(Model),'evidence');
+    if any(Keep)
+        Revalidated = B(Keep);
+    end
+end
+
+function [Candidates,Source] = BuildArchiveCandidateSet(BoundarySamples,TightEndpoints,RevalidatedB)
+    Raw = [RevalidatedB,TightEndpoints,BoundarySamples];
+    Source = [ ...
+        3*ones(numel(RevalidatedB),1); ...
+        2*ones(numel(TightEndpoints),1); ...
+        ones(numel(BoundarySamples),1)];
+    Candidates = Raw;
+    if isempty(Raw)
+        return;
+    end
+
+    Keep = KeepLatestDecisionRowsLocal(Raw.decs);
+    Candidates = Raw(Keep);
+    Source = Source(Keep);
+end
+
+function Pairs = BuildBoundaryPairs(Pool,W,MaxPairs)
+    D = ResolveDecisionDimension(Pool);
+    M = 0;
+    if ~isempty(Pool)
+        M = size(Pool.objs,2);
+    end
+    Pairs = InitBoundaryPairs(D,M);
+    if isempty(Pool) || MaxPairs <= 0
+        return;
+    end
+
+    Pairs = BuildBoundaryPairsFromArrays( ...
+        double(Pool.decs),double(Pool.objs),double(all(Pool.cons<=0,2)),W,MaxPairs);
+end
+
+function Pairs = BuildBoundaryPairsFromArrays(Dec,Obj,Label,W,MaxPairs)
+    D = size(Dec,2);
+    M = size(Obj,2);
+    Pairs = InitBoundaryPairs(D,M);
+    if isempty(Dec) || MaxPairs <= 0
+        return;
+    end
+
+    Label = ColumnVector(double(Label));
+    Fea = find(Label == 1);
+    Inf = find(Label == 0);
+    if isempty(Fea) || isempty(Inf)
+        return;
+    end
+
+    DecScale = ResolveDistanceScale(Dec);
+    ObjScale = ResolveDistanceScale(Obj);
+    Dist = zeros(numel(Fea),numel(Inf));
+    GapDec = zeros(numel(Fea),numel(Inf));
+    GapObj = zeros(numel(Fea),numel(Inf));
+    for i = 1 : numel(Fea)
+        DecDelta = Dec(Inf,:) - repmat(Dec(Fea(i),:),numel(Inf),1);
+        ObjDelta = Obj(Inf,:) - repmat(Obj(Fea(i),:),numel(Inf),1);
+        GapDec(i,:) = sqrt(sum(DecDelta.^2,2))'./max(DecScale,1e-6);
+        GapObj(i,:) = sqrt(sum(ObjDelta.^2,2))'./max(ObjScale,1e-6);
+        Dist(i,:) = GapDec(i,:) + 0.25*GapObj(i,:);
+    end
+
+    [~,NearInfForFea] = min(Dist,[],2);
+    [~,NearFeaForInf] = min(Dist,[],1);
+    PairMask = false(size(Dist));
+    for i = 1 : numel(Fea)
+        j = NearInfForFea(i);
+        if NearFeaForInf(j) == i
+            PairMask(i,j) = true;
         end
-        Key = [ColumnVector(FrontNo(idx)),ColumnVector(-CrowdDis(idx)),ColumnVector(idx)];
-        [~,ord] = sortrows(Key,[1 2 3]);
-        Rep.index(s) = idx(ord(1));
-        Rep.has(s) = true;
     end
+    if ~any(PairMask(:))
+        [~,ord] = sort(Dist(:),'ascend');
+        PairMask(ord(1:min(numel(ord),MaxPairs))) = true;
+    end
+    [I,J] = find(PairMask);
+    PairGap = Dist(sub2ind(size(Dist),I,J));
+    [~,ord] = sort(PairGap,'ascend');
+    ord = ord(1:min(numel(ord),MaxPairs));
+    I = I(ord);
+    J = J(ord);
+    PairGap = PairGap(ord);
+    Count = numel(I);
+    if Count <= 0
+        return;
+    end
+
+    Pairs.FeasibleIndex = Fea(I);
+    Pairs.InfeasibleIndex = Inf(J);
+    Pairs.FeasibleDec = Dec(Pairs.FeasibleIndex,:);
+    Pairs.InfeasibleDec = Dec(Pairs.InfeasibleIndex,:);
+    Pairs.FeasibleObj = Obj(Pairs.FeasibleIndex,:);
+    Pairs.InfeasibleObj = Obj(Pairs.InfeasibleIndex,:);
+    MidObj = 0.5*(Pairs.FeasibleObj + Pairs.InfeasibleObj);
+    Pairs.Sector = AssociateSectorsLocal(MidObj,W,min(Obj,[],1));
+    Pairs.GapDec = GapDec(sub2ind(size(GapDec),I,J));
+    Pairs.GapObj = GapObj(sub2ind(size(GapObj),I,J));
+    Pairs.BoundaryGap = PairGap;
 end
 
-function B = SelectTopKPerSector(Candidates,Meta,kappa)
+function Pairs = InitBoundaryPairs(D,M)
+    Pairs = struct( ...
+        'FeasibleIndex',zeros(0,1), ...
+        'InfeasibleIndex',zeros(0,1), ...
+        'FeasibleDec',zeros(0,D), ...
+        'InfeasibleDec',zeros(0,D), ...
+        'FeasibleObj',zeros(0,M), ...
+        'InfeasibleObj',zeros(0,M), ...
+        'Sector',zeros(0,1), ...
+        'GapDec',zeros(0,1), ...
+        'GapObj',zeros(0,1), ...
+        'BoundaryGap',zeros(0,1));
+end
+
+function Gate = ResolvePairGapThreshold(Pairs,Mode)
+    if isempty(Pairs.BoundaryGap)
+        Gate = inf;
+        return;
+    end
+    Gate = BoundaryGapTau(Mode);
+end
+
+function B = SelectTopKPerSector(Candidates,Meta,Source,kappa,ModelReady)
     if isempty(Candidates)
         B = Candidates;
         return;
     end
+    if nargin < 3 || isempty(Source)
+        Source = 5*ones(numel(Candidates),1);
+    end
+    Source = MatchLength(Source,numel(Candidates),5);
+    if nargin < 5
+        ModelReady = true;
+    end
 
-    kappa = max(1,round(kappa));
+    kappa = min(10,max(1,round(kappa)));
+    SideQuota = max(1,ceil(kappa/2));
+    Eligible = BoundaryEligible(Meta,ModelReady,'archive');
     if isempty(find(Meta.sector > 0,1))
-        ord = SortByBoundaryKey(Meta,(1:numel(Candidates))');
-        B = Candidates(ord(1:min(numel(ord),kappa)));
+        ord = SortByArchiveSourcePriority(Meta,find(Eligible),Source,kappa);
+        if isempty(ord)
+            B = Candidates([]);
+        else
+            B = Candidates(ord(1:min(numel(ord),kappa)));
+        end
         return;
     end
 
@@ -229,22 +322,33 @@ function B = SelectTopKPerSector(Candidates,Meta,kappa)
     Pick = zeros(min(numel(Candidates),numel(Sectors)*kappa),1);
     PickCount = 0;
     for s = Sectors
-        idx = find(Meta.sector == s);
+        idx = find(Meta.sector == s & Eligible);
         if isempty(idx)
             continue;
         end
 
-        ord = SortByBoundaryKey(Meta,idx);
-        Sel = ord(1:min(kappa,numel(ord)));
-        Pos = SortByBoundaryKey(Meta,idx(Meta.feasible(idx) == 1));
-        Neg = SortByBoundaryKey(Meta,idx(Meta.feasible(idx) == 0));
-        if kappa > 1 && ~isempty(Pos) && ~isempty(Neg)
-            SelLabel = Meta.feasible(Sel);
-            if ~(any(SelLabel == 1) && any(SelLabel == 0))
-                Sel = unique([Pos(1);Neg(1);Sel(:)],'stable');
-                Sel = Sel(1:min(kappa,numel(Sel)));
+        Pos = SortByArchiveSourcePriority(Meta,idx(Meta.feasible(idx) == 1),Source,SideQuota);
+        Neg = SortByArchiveSourcePriority(Meta,idx(Meta.feasible(idx) == 0),Source,SideQuota);
+        Sel = zeros(min(kappa,numel(Pos)+numel(Neg)),1);
+        SelCount = 0;
+        for j = 1 : max(numel(Pos),numel(Neg))
+            if j <= numel(Pos)
+                SelCount = SelCount + 1;
+                Sel(SelCount) = Pos(j);
+            end
+            if SelCount >= numel(Sel)
+                break;
+            end
+            if j <= numel(Neg)
+                SelCount = SelCount + 1;
+                Sel(SelCount) = Neg(j);
+            end
+            if SelCount >= numel(Sel)
+                break;
             end
         end
+        Sel = Sel(1:SelCount);
+        Sel = Sel(1:min(kappa,numel(Sel)));
         AddCount = min(numel(Sel),numel(Pick)-PickCount);
         if AddCount > 0
             Pick(PickCount+1:PickCount+AddCount) = Sel(1:AddCount);
@@ -258,6 +362,41 @@ function B = SelectTopKPerSector(Candidates,Meta,kappa)
     else
         B = Candidates(unique(Pick,'stable'));
     end
+end
+
+function Order = SortByArchiveSourcePriority(Meta,idx,Source,MaxCount)
+    Order = zeros(min(numel(idx),MaxCount),1);
+    idx = ColumnVector(idx);
+    if isempty(idx) || MaxCount <= 0
+        Order = zeros(0,1);
+        return;
+    end
+    Source = MatchLength(Source,numel(Meta.sector),5);
+    Count = 0;
+    for priority = 1 : 3
+        Tier = idx(Source(idx) == priority);
+        Tier = SortByBoundaryKey(Meta,Tier,Source);
+        Need = min(MaxCount,numel(Order)) - Count;
+        if Need <= 0
+            break;
+        end
+        Add = min(Need,numel(Tier));
+        if Add > 0
+            Order(Count+1:Count+Add) = Tier(1:Add);
+            Count = Count + Add;
+        end
+    end
+    if Count < min(MaxCount,numel(Order))
+        Rest = setdiff(idx,Order(1:Count),'stable');
+        Rest = SortByBoundaryKey(Meta,Rest,Source);
+        Need = min(MaxCount,numel(Order)) - Count;
+        Add = min(Need,numel(Rest));
+        if Add > 0
+            Order(Count+1:Count+Add) = Rest(1:Add);
+            Count = Count + Add;
+        end
+    end
+    Order = Order(1:Count);
 end
 
 %% ========== Boundary meta ==========
@@ -275,8 +414,12 @@ function Meta = BuildBoundaryMeta(Candidates,W,Model,PopulationC,PopulationU,Sup
     ObjScore = ComputeBoundaryObjectiveScore(Candidates,PopulationC,W,RefObj,Sector);
     SupportCache = ResolveOppositeSupportCache(Support,W,RefObj);
     OppSupport = ComputeOppositeSupport(Candidates,SupportCache,Sector);
+    [LocalPairExists,ShellDistDec,BetweenScoreObj] = ComputeBoundaryShellMetrics( ...
+        Candidates,SupportCache,Sector);
     Feasible = double(all(Candidates.cons<=0,2));
-    Meta = ComposeBoundaryMeta(Sector,Feasible,Prob,OppSupport,ObjScore);
+    Meta = ComposeBoundaryMeta( ...
+        Sector,Feasible,Prob,OppSupport,ObjScore, ...
+        LocalPairExists,ShellDistDec,BetweenScoreObj);
 end
 
 function OppSupport = ComputeOppositeSupport(Candidates,SupportCache,Sector)
@@ -288,6 +431,72 @@ function OppSupport = ComputeOppositeSupport(Candidates,SupportCache,Sector)
     CandidateLabel = ColumnVector(double(all(Candidates.cons<=0,2)));
     OppSupport = ComputeOppositeSupportFromCache( ...
         Candidates.decs,CandidateLabel,Sector,SupportCache);
+end
+
+function [LocalPairExists,ShellDistDec,BetweenScoreObj] = ComputeBoundaryShellMetrics( ...
+    Candidates,SupportCache,Sector)
+    %#ok<INUSD>
+    N = numel(Candidates);
+    LocalPairExists = false(N,1);
+    ShellDistDec = inf(N,1);
+    BetweenScoreObj = inf(N,1);
+    if isempty(Candidates) || isempty(SupportCache.Dec)
+        return;
+    end
+
+    CandidateLabel = ColumnVector(double(all(Candidates.cons<=0,2)));
+    CandidateDec = double(Candidates.decs);
+    CandidateObj = double(Candidates.objs);
+    PairDec = [CandidateDec;SupportCache.Dec];
+    PairObj = [CandidateObj;SupportCache.Obj];
+    PairLabel = [CandidateLabel;SupportCache.Label];
+    Pairs = BuildBoundaryPairsFromArrays(PairDec,PairObj,PairLabel,[],max(2*N,2*size(PairDec,1)));
+    for p = 1 : numel(Pairs.BoundaryGap)
+        FMatch = find(CandidateLabel == 1 & ismember(CandidateDec,Pairs.FeasibleDec(p,:),'rows'));
+        IMatch = find(CandidateLabel == 0 & ismember(CandidateDec,Pairs.InfeasibleDec(p,:),'rows'));
+        CandidateIdx = [FMatch;IMatch];
+        for k = 1 : numel(CandidateIdx)
+            i = CandidateIdx(k);
+            if Pairs.BoundaryGap(p) < ShellDistDec(i) + 0.25*BetweenScoreObj(i)
+                LocalPairExists(i) = true;
+                ShellDistDec(i) = Pairs.GapDec(p);
+                BetweenScoreObj(i) = Pairs.GapObj(p);
+            end
+        end
+    end
+end
+
+function Eligible = BoundaryEligible(Meta,ModelReady,Mode)
+    if nargin < 2
+        ModelReady = true;
+    end
+    if nargin < 3 || isempty(Mode)
+        Mode = 'archive';
+    end
+    Eligible = false(numel(Meta.sector),1);
+    if isempty(Meta.sector)
+        return;
+    end
+
+    LocalPair = Meta.localPairExists > 0;
+    if ~any(LocalPair)
+        return;
+    end
+    GapGate = ResolveBoundaryGapGate(Meta,LocalPair,Mode);
+    Eligible = LocalPair & Meta.boundaryGap <= GapGate;
+end
+
+function Gate = ResolveBoundaryGapGate(Meta,Mask,Mode)
+    %#ok<INUSD>
+    Gate = BoundaryGapTau(Mode);
+end
+
+function Tau = BoundaryGapTau(Mode)
+    if nargin >= 1 && strcmpi(Mode,'evidence')
+        Tau = 1.25;
+    else
+        Tau = 0.55;
+    end
 end
 
 function SupportBase = BuildOppositeSupportBase(Support,W)
@@ -308,11 +517,6 @@ function SupportBase = BuildOppositeSupportBase(Support,W)
     SupportBase.Tau = ResolveDistanceScale(SupportBase.Dec);
 end
 
-function Cache = BuildOppositeSupportCache(Support,W,RefObj)
-    SupportBase = BuildOppositeSupportBase(Support,W);
-    Cache = ResolveOppositeSupportCache(SupportBase,W,RefObj);
-end
-
 function SupportCache = ResolveOppositeSupportCache(SupportInfo,W,RefObj)
     if IsOppositeSupportBase(SupportInfo)
         SupportBase = SupportInfo;
@@ -322,6 +526,7 @@ function SupportCache = ResolveOppositeSupportCache(SupportInfo,W,RefObj)
 
     SupportCache = struct( ...
         'Dec',zeros(0,0), ...
+        'Obj',zeros(0,0), ...
         'Label',zeros(0,1), ...
         'Sector',zeros(0,1), ...
         'Tau',1, ...
@@ -331,6 +536,7 @@ function SupportCache = ResolveOppositeSupportCache(SupportInfo,W,RefObj)
     end
 
     SupportCache.Dec = SupportBase.Dec;
+    SupportCache.Obj = SupportBase.Obj;
     SupportCache.Label = SupportBase.Label;
     SupportCache.Sector = ColumnVector(AssociateSectorsLocal(SupportBase.Obj,W,RefObj));
     SupportCache.Tau = SupportBase.Tau;
@@ -381,10 +587,10 @@ end
 %% ========== Boundary dataset + MLP ==========
 
 function [Model,ModelState,Diag] = UpdateBoundaryModelIfNeeded( ...
-    Model,ModelState,B,RecentBoundaryOff,PopulationC,PopulationU,W,hidden,epoch,lr,Generation,Problem,CurrentFE)
+    Model,ModelState,B,BoundaryEvidence,PopulationC,PopulationU,W,hidden,epoch,lr,Generation,Problem,CurrentFE)
 
     MaxTrain = max(6*Problem.N,4*size(W,1));
-    Candidates = BuildTrainingCandidateSet(B,RecentBoundaryOff,PopulationC,PopulationU);
+    Candidates = BuildTrainingCandidateSet(B,BoundaryEvidence,PopulationC,PopulationU);
     [ModelState.trainBuffer,BufferDiag,ModelState.lastCandidateDec] = UpdateTrainingBuffer( ...
         ModelState.trainBuffer,Candidates,W,MaxTrain,CurrentFE,ModelState.lastCandidateDec);
     [Dataset,DataDiag] = BuildBoundaryDatasetFromBuffer(ModelState.trainBuffer,W,Problem.N);
@@ -399,9 +605,10 @@ function [Model,ModelState,Diag] = UpdateBoundaryModelIfNeeded( ...
     Diag.train_dual_sectors = DataDiag.mixed_sector_count;
     Diag.src_b              = DataDiag.src_b;
     Diag.src_recent_boundary = DataDiag.src_recent_boundary;
+    Diag.src_boundary_evidence = DataDiag.src_boundary_evidence;
     Diag.src_pop_c          = DataDiag.src_pop_c;
     Diag.src_pop_u          = DataDiag.src_pop_u;
-    Diag.anchor_count       = DataDiag.pos_count;
+    Diag.feasible_endpoint_count = DataDiag.pos_count;
     Diag.pair_count         = DataDiag.neg_count;
     Diag.mean_pair_dist     = DataDiag.mean_opp_dist;
     if ~NeedTrain
@@ -450,7 +657,7 @@ function Summary = SummarizeBoundaryData(Problem,Model,ModelState,Dataset,Buffer
         'mixed_sector_mask',MixedMask, ...
         'validation_brier',Stats.brier, ...
         'boundary_count',BufferDiag.buffer_size, ...
-        'anchor_count',BufferDiag.pos_count, ...
+        'feasible_endpoint_count',BufferDiag.pos_count, ...
         'pair_count',BufferDiag.neg_count, ...
         'mean_pair_dist',BufferDiag.mean_opp_dist);
     Summary.ready = size(Dataset.Dec,1) >= max(6,2*Problem.M) && ...
@@ -470,10 +677,15 @@ end
 function Buffer = InitTrainingBuffer()
     Buffer = struct( ...
         'Dec',zeros(0,0), ...
+        'Obj',zeros(0,0), ...
         'Label',zeros(0,1), ...
         'Sector',zeros(0,1), ...
         'Source',zeros(0,1), ...
         'OppDist',zeros(0,1), ...
+        'PairId',zeros(0,1), ...
+        'GapDec',zeros(0,1), ...
+        'GapObj',zeros(0,1), ...
+        'BoundaryGap',zeros(0,1), ...
         'Time',zeros(0,1));
 end
 
@@ -566,8 +778,8 @@ function Diag = InitTrainingBufferDiag(W,Buffer)
         'mean_opp_dist',MeanOrNaN(Buffer.OppDist));
 end
 
-function Candidates = BuildTrainingCandidateSet(B,RecentBoundaryOff,PopulationC,PopulationU)
-    [Population,Source] = MergeTrainingSourcePopulations(B,RecentBoundaryOff,PopulationC,PopulationU);
+function Candidates = BuildTrainingCandidateSet(B,BoundaryEvidence,PopulationC,PopulationU)
+    [Population,Source] = MergeTrainingSourcePopulations(B,BoundaryEvidence,PopulationC,PopulationU);
     if isempty(Population)
         Candidates = struct('Population',Population,'Source',Source);
         return;
@@ -579,16 +791,17 @@ function Candidates = BuildTrainingCandidateSet(B,RecentBoundaryOff,PopulationC,
     Candidates = struct('Population',Population,'Source',Source);
 end
 
-function [Population,Source] = MergeTrainingSourcePopulations(B,RecentBoundaryOff,PopulationC,PopulationU)
-    Population = [B,RecentBoundaryOff,PopulationC,PopulationU];
+function [Population,Source] = MergeTrainingSourcePopulations(B,BoundaryEvidence,PopulationC,PopulationU)
+    Population = [B,BoundaryEvidence,PopulationC,PopulationU];
     Source = [ ...
         ones(numel(B),1); ...
-        2*ones(numel(RecentBoundaryOff),1); ...
+        2*ones(numel(BoundaryEvidence),1); ...
         3*ones(numel(PopulationC),1); ...
         4*ones(numel(PopulationU),1)];
 end
 
 function Band = CollectSectorBoundaryBand(Population,Label,Sector,Source,W,Eligible)
+    %#ok<INUSD>
     Band = InitBoundaryBand(size(Population.decs,2));
     if isempty(Population)
         return;
@@ -602,59 +815,64 @@ function Band = CollectSectorBoundaryBand(Population,Label,Sector,Source,W,Eligi
         return;
     end
 
-    OppDist = ComputeOppositeDistanceForCandidates(Population.decs,Label,Sector,W,Eligible);
-    K = max(size(W,1),max([Sector(:);1]));
-    Pick = false(numel(Population),1);
-    Neighbors = BuildSectorNeighbors(W,min(3,max(size(W,1)-1,0)));
-    for s = 1 : K
-        Local = ResolveLocalSectorSet(s,Neighbors);
-        idx = find(Eligible & ismember(Sector,Local) & isfinite(OppDist));
+    EligibleIdx = find(Eligible);
+    PairPool = Population(EligibleIdx);
+    Pairs = BuildBoundaryPairs(PairPool,W,max(2*size(W,1),numel(PairPool)));
+    if isempty(Pairs.FeasibleIndex)
+        return;
+    end
+    MaxPairsPerSector = 2;
+    PairPick = false(numel(Pairs.BoundaryGap),1);
+    Sectors = unique(Pairs.Sector(Pairs.Sector > 0))';
+    if isempty(Sectors)
+        Sectors = 1;
+    end
+    for s = Sectors
+        if isempty(W)
+            idx = (1:numel(Pairs.BoundaryGap))';
+        else
+            idx = find(Pairs.Sector == s);
+        end
         if isempty(idx)
             continue;
         end
-        Pos = idx(Label(idx) == 1);
-        Neg = idx(Label(idx) == 0);
-        if isempty(Pos) || isempty(Neg)
-            continue;
-        end
-        Quota = ResolveSectorBandQuota(numel(Pos),numel(Neg),numel(idx));
-        Pos = SortByDistanceThenSource(OppDist,Source,Pos);
-        Neg = SortByDistanceThenSource(OppDist,Source,Neg);
-        Pick(Pos(1:min(Quota,numel(Pos)))) = true;
-        Pick(Neg(1:min(Quota,numel(Neg)))) = true;
+        Key = [Pairs.BoundaryGap(idx),Pairs.GapDec(idx),Pairs.GapObj(idx),idx(:)];
+        [~,ord] = sortrows(Key,[1 2 3 4]);
+        idx = idx(ord(1:min(MaxPairsPerSector,numel(ord))));
+        PairPick(idx) = true;
     end
-
-    idx = find(Pick);
-    if isempty(idx)
+    SelectedPairIdx = find(PairPick);
+    if isempty(SelectedPairIdx)
         return;
     end
-    Band.Dec     = Population(idx).decs;
-    Band.Label   = Label(idx);
-    Band.Sector  = Sector(idx);
-    Band.Source  = Source(idx);
-    Band.OppDist = OppDist(idx);
+
+    FeaIdx = EligibleIdx(Pairs.FeasibleIndex(SelectedPairIdx));
+    InfIdx = EligibleIdx(Pairs.InfeasibleIndex(SelectedPairIdx));
+    PairId = (1:numel(SelectedPairIdx))';
+    Band.Dec     = [Population(FeaIdx).decs;Population(InfIdx).decs];
+    Band.Obj     = [Population(FeaIdx).objs;Population(InfIdx).objs];
+    Band.Label   = [ones(numel(SelectedPairIdx),1);zeros(numel(SelectedPairIdx),1)];
+    Band.Sector  = [Pairs.Sector(SelectedPairIdx);Pairs.Sector(SelectedPairIdx)];
+    Band.Source  = [Source(FeaIdx);Source(InfIdx)];
+    Band.OppDist = [Pairs.GapDec(SelectedPairIdx);Pairs.GapDec(SelectedPairIdx)];
+    Band.PairId  = [PairId;PairId];
+    Band.GapDec  = [Pairs.GapDec(SelectedPairIdx);Pairs.GapDec(SelectedPairIdx)];
+    Band.GapObj  = [Pairs.GapObj(SelectedPairIdx);Pairs.GapObj(SelectedPairIdx)];
+    Band.BoundaryGap = [Pairs.BoundaryGap(SelectedPairIdx);Pairs.BoundaryGap(SelectedPairIdx)];
 end
 
 function Band = InitBoundaryBand(D)
     Band = struct( ...
         'Dec',zeros(0,D), ...
+        'Obj',zeros(0,0), ...
         'Label',zeros(0,1), ...
         'Sector',zeros(0,1), ...
         'Source',zeros(0,1), ...
-        'OppDist',zeros(0,1));
-end
-
-function Quota = ResolveSectorBandQuota(PosCount,NegCount,LocalCount)
-    Evidence = min(PosCount,NegCount);
-    Quota = max(1,ceil(sqrt(max(Evidence,1)) + LocalCount/25));
-    Quota = min(5,Quota);
-end
-
-function Order = SortByDistanceThenSource(OppDist,Source,idx)
-    idx = ColumnVector(idx);
-    Key = [ColumnVector(OppDist(idx)),ColumnVector(SourcePriority(Source(idx))),ColumnVector(idx)];
-    [~,ord] = sortrows(Key,[1 2 3]);
-    Order = idx(ord);
+        'OppDist',zeros(0,1), ...
+        'PairId',zeros(0,1), ...
+        'GapDec',zeros(0,1), ...
+        'GapObj',zeros(0,1), ...
+        'BoundaryGap',zeros(0,1));
 end
 
 function Priority = SourcePriority(Source)
@@ -665,76 +883,72 @@ function Priority = SourcePriority(Source)
     Priority(Source == 4) = 4;
 end
 
-function OppDist = ComputeOppositeDistanceForCandidates(Dec,Label,Sector,W,Eligible)
-    Label = ColumnVector(Label);
-    Sector = ColumnVector(Sector);
-    OppDist = inf(size(Dec,1),1);
-    if isempty(Dec)
-        return;
-    end
-    if nargin < 5 || isempty(Eligible)
-        Eligible = true(size(Dec,1),1);
-    else
-        Eligible = ColumnVector(logical(Eligible));
-    end
-
-    Neighbors = BuildSectorNeighbors(W,min(3,max(size(W,1)-1,0)));
-    Target = find(Eligible);
-    for k = 1 : numel(Target)
-        i = Target(k);
-        Local = ResolveLocalSectorSet(Sector(i),Neighbors);
-        Mask = (Label ~= Label(i)) & ismember(Sector,Local);
-        if ~any(Mask)
-            Mask = Label ~= Label(i);
-        end
-        if any(Mask)
-            Delta = double(Dec(Mask,:)) - repmat(double(Dec(i,:)),sum(Mask),1);
-            Dist = sqrt(sum(Delta.^2,2));
-            OppDist(i) = min(Dist);
-        end
-    end
-end
-
 function Buffer = AppendTrainingBuffer(Buffer,Band,Time)
     if isempty(Band.Dec)
         return;
     end
+    Band = OffsetTrainingPairIds(Band,Buffer.PairId);
     if isempty(Buffer.Dec)
         Buffer.Dec = Band.Dec;
+        Buffer.Obj = Band.Obj;
         Buffer.Label = Band.Label;
         Buffer.Sector = Band.Sector;
         Buffer.Source = Band.Source;
         Buffer.OppDist = Band.OppDist;
+        Buffer.PairId = Band.PairId;
+        Buffer.GapDec = Band.GapDec;
+        Buffer.GapObj = Band.GapObj;
+        Buffer.BoundaryGap = Band.BoundaryGap;
         Buffer.Time = Time*ones(size(Band.Label));
     else
         Buffer.Dec = [Buffer.Dec;Band.Dec];
+        Buffer.Obj = [Buffer.Obj;Band.Obj];
         Buffer.Label = [Buffer.Label;Band.Label];
         Buffer.Sector = [Buffer.Sector;Band.Sector];
         Buffer.Source = [Buffer.Source;Band.Source];
         Buffer.OppDist = [Buffer.OppDist;Band.OppDist];
+        Buffer.PairId = [Buffer.PairId;Band.PairId];
+        Buffer.GapDec = [Buffer.GapDec;Band.GapDec];
+        Buffer.GapObj = [Buffer.GapObj;Band.GapObj];
+        Buffer.BoundaryGap = [Buffer.BoundaryGap;Band.BoundaryGap];
         Buffer.Time = [Buffer.Time;Time*ones(size(Band.Label))];
     end
     Keep = KeepLatestDecisionRowsLocal(Buffer.Dec);
     Buffer = SliceTrainingBuffer(Buffer,Keep);
 end
 
+function Band = OffsetTrainingPairIds(Band,ExistingPairId)
+    if isempty(Band.PairId)
+        return;
+    end
+    Offset = max([0;ColumnVector(ExistingPairId)]);
+    Mask = Band.PairId > 0;
+    Band.PairId(Mask) = Band.PairId(Mask) + Offset;
+end
+
 function Buffer = TrimTrainingBuffer(Buffer,MaxTrain)
     if size(Buffer.Dec,1) <= MaxTrain
         return;
     end
-    Key = [ColumnVector(Buffer.OppDist),ColumnVector(-Buffer.Time), ...
+    Key = [ColumnVector(Buffer.BoundaryGap),ColumnVector(Buffer.GapDec), ...
+           ColumnVector(Buffer.GapObj),ColumnVector(-Buffer.Time), ...
            ColumnVector(SourcePriority(Buffer.Source)),ColumnVector((1:size(Buffer.Dec,1))')];
-    [~,ord] = sortrows(Key,[1 2 3 4]);
+    [~,ord] = sortrows(Key,[1 2 3 4 5 6]);
     Keep = sort(ord(1:MaxTrain));
     Buffer = SliceTrainingBuffer(Buffer,Keep);
 end
 
 function Buffer = SliceTrainingBuffer(Buffer,Keep)
     Buffer.Dec = Buffer.Dec(Keep,:);
+    Buffer.Obj = Buffer.Obj(Keep,:);
     Buffer.Label = Buffer.Label(Keep);
     Buffer.Sector = Buffer.Sector(Keep);
     Buffer.Source = Buffer.Source(Keep);
     Buffer.OppDist = Buffer.OppDist(Keep);
+    Buffer.PairId = Buffer.PairId(Keep);
+    Buffer.GapDec = Buffer.GapDec(Keep);
+    Buffer.GapObj = Buffer.GapObj(Keep);
+    Buffer.BoundaryGap = Buffer.BoundaryGap(Keep);
     Buffer.Time = Buffer.Time(Keep);
 end
 
@@ -749,6 +963,24 @@ function Mask = ResolveMixedSectorMaskFromBuffer(Buffer,K)
     end
 end
 
+function Meta = BuildBoundaryMetaFromBuffer(Buffer,W)
+    Count = size(Buffer.Dec,1);
+    Meta = InitBoundaryMeta(Count);
+    if Count <= 0
+        return;
+    end
+
+    LocalPairExists = isfinite(Buffer.BoundaryGap);
+    ShellDistDec = Buffer.GapDec;
+    BetweenScoreObj = Buffer.GapObj;
+    Prob = 0.5*ones(Count,1);
+    OppSupport = exp(-Buffer.BoundaryGap);
+    ObjScore = NormalizeFiniteScore(BetweenScoreObj);
+    Meta = ComposeBoundaryMeta( ...
+        Buffer.Sector,Buffer.Label,Prob,OppSupport,ObjScore, ...
+        LocalPairExists,ShellDistDec,BetweenScoreObj);
+end
+
 function [Dataset,Diag] = BuildBoundaryDatasetFromBuffer(Buffer,W,N)
     Dataset = struct('Dec',zeros(0,0),'Label',zeros(0,1));
     Diag = struct( ...
@@ -760,25 +992,25 @@ function [Dataset,Diag] = BuildBoundaryDatasetFromBuffer(Buffer,W,N)
         'mean_opp_dist',NaN, ...
         'src_b',0, ...
         'src_recent_boundary',0, ...
+        'src_boundary_evidence',0, ...
         'src_pop_c',0, ...
         'src_pop_u',0);
     if isempty(Buffer.Dec) || numel(unique(Buffer.Label)) < 2
         return;
     end
 
-    MaxPerSide = max(2,min(5,ceil(N/max(size(W,1),1))));
+    Meta = BuildBoundaryMetaFromBuffer(Buffer,W);
+    Eligible = BoundaryEligible(Meta,false,'evidence');
+    if ~any(Eligible)
+        return;
+    end
+
+    MaxPairsPerSector = 2;
     Sectors = unique(Buffer.Sector(Buffer.Sector > 0))';
-    Ranked = zeros(min(size(Buffer.Dec,1),2*MaxPerSide*numel(Sectors)),1);
+    Ranked = zeros(min(size(Buffer.Dec,1),2*MaxPairsPerSector*numel(Sectors)),1);
     RankedCount = 0;
     for s = Sectors
-        idx = find(Buffer.Sector == s);
-        Pos = SortByDistanceThenSource(Buffer.OppDist,Buffer.Source,idx(Buffer.Label(idx) == 1));
-        Neg = SortByDistanceThenSource(Buffer.OppDist,Buffer.Source,idx(Buffer.Label(idx) == 0));
-        if isempty(Pos) || isempty(Neg)
-            continue;
-        end
-        Use = min([MaxPerSide,numel(Pos),numel(Neg)]);
-        Add = [Pos(1:Use);Neg(1:Use)];
+        Add = SelectReplayPairsInSector(Buffer,Meta,Eligible,s,MaxPairsPerSector);
         AddCount = min(numel(Add),numel(Ranked)-RankedCount);
         if AddCount > 0
             Ranked(RankedCount+1:RankedCount+AddCount) = Add(1:AddCount);
@@ -787,14 +1019,9 @@ function [Dataset,Diag] = BuildBoundaryDatasetFromBuffer(Buffer,W,N)
     end
     Ranked = Ranked(1:RankedCount);
     if isempty(Ranked)
-        Ranked = BuildBalancedReplayBatch( ...
-            find(Buffer.Label == 1),find(Buffer.Label == 0),Buffer.OppDist,Buffer.Source);
-    else
-        Ranked = unique(Ranked,'stable');
-        Ranked = BuildBalancedReplayBatch( ...
-            Ranked(Buffer.Label(Ranked) == 1), ...
-            Ranked(Buffer.Label(Ranked) == 0),Buffer.OppDist,Buffer.Source);
+        return;
     end
+    Ranked = unique(Ranked,'stable');
     Dataset.Dec = Buffer.Dec(Ranked,:);
     Dataset.Label = Buffer.Label(Ranked);
     Dataset.Source = Buffer.Source(Ranked);
@@ -808,19 +1035,39 @@ function [Dataset,Diag] = BuildBoundaryDatasetFromBuffer(Buffer,W,N)
     Diag.mean_opp_dist = MeanOrNaN(Dataset.OppDist);
     Diag.src_b = sum(Dataset.Source == 1);
     Diag.src_recent_boundary = sum(Dataset.Source == 2);
+    Diag.src_boundary_evidence = Diag.src_recent_boundary;
     Diag.src_pop_c = sum(Dataset.Source == 3);
     Diag.src_pop_u = sum(Dataset.Source == 4);
 end
 
-function BatchIdx = BuildBalancedReplayBatch(PosIdx,NegIdx,OppDist,Source)
-    PosIdx = SortByDistanceThenSource(OppDist,Source,PosIdx);
-    NegIdx = SortByDistanceThenSource(OppDist,Source,NegIdx);
-    Count = min(numel(PosIdx),numel(NegIdx));
-    if Count <= 0
-        BatchIdx = zeros(0,1);
+function ReplayRows = SelectReplayPairsInSector(Buffer,Meta,Eligible,Sector,MaxPairs)
+    ReplayRows = zeros(0,1);
+    PairIds = unique(Buffer.PairId(Buffer.Sector == Sector & Eligible & Buffer.PairId > 0),'stable');
+    if isempty(PairIds)
         return;
     end
-    BatchIdx = reshape([PosIdx(1:Count)';NegIdx(1:Count)'],[],1);
+    PairKey = inf(numel(PairIds),4);
+    PairMembers = cell(numel(PairIds),1);
+    for i = 1 : numel(PairIds)
+        idx = find(Buffer.PairId == PairIds(i) & Buffer.Sector == Sector & Eligible);
+        Pos = idx(Buffer.Label(idx) == 1);
+        Neg = idx(Buffer.Label(idx) == 0);
+        if isempty(Pos) || isempty(Neg)
+            continue;
+        end
+        Pos = SortByBoundaryKey(Meta,Pos,Buffer.Source);
+        Neg = SortByBoundaryKey(Meta,Neg,Buffer.Source);
+        PairMembers{i} = [Pos(1);Neg(1)];
+        PairKey(i,:) = [min(Meta.boundaryGap(idx)),min(Meta.gapDec(idx)), ...
+            min(Meta.gapObj(idx)),PairIds(i)];
+    end
+    Valid = find(isfinite(PairKey(:,1)));
+    if isempty(Valid)
+        return;
+    end
+    [~,ord] = sortrows(PairKey(Valid,:),[1 2 3 4]);
+    Valid = Valid(ord(1:min(MaxPairs,numel(ord))));
+    ReplayRows = vertcat(PairMembers{Valid});
 end
 
 function Model = TrainBoundaryMLP(Model,Dataset,Hidden,Epoch,LR,Mode)
@@ -862,7 +1109,9 @@ function Model = TrainBoundaryMLP(Model,Dataset,Hidden,Epoch,LR,Mode)
         b1 = b1 - Step*sum(D1,1);
     end
 
-    Model = struct('Mu',Mu,'Sigma',Sigma,'W1',W1,'b1',b1,'W2',W2,'b2',b2);
+    Z = tanh(Xn*W1 + repmat(b1,size(Xn,1),1))*W2 + b2;
+    Temperature = FitBoundaryTemperature(Z,Y);
+    Model = struct('Mu',Mu,'Sigma',Sigma,'W1',W1,'b1',b1,'W2',W2,'b2',b2,'Temperature',Temperature);
 end
 
 function [W1,b1,W2,b2] = RebaseBoundaryMLPNormalization(Model,Mu,Sigma)
@@ -895,18 +1144,30 @@ function Prob = PredictBoundaryMLP(Model,X)
     Xn = (double(X)-Model.Mu)./Model.Sigma;
     H  = tanh(Xn*Model.W1 + repmat(Model.b1,size(Xn,1),1));
     Z  = H*Model.W2 + Model.b2;
+    if isfield(Model,'Temperature')
+        Z = Z./max(Model.Temperature,1e-6);
+    end
     Prob = min(max(1./(1+exp(-Z)),1e-6),1-1e-6);
+end
+
+function Temperature = FitBoundaryTemperature(Logit,Label)
+    Label = double(Label(:) > 0);
+    Logit = double(Logit(:));
+    Grid = linspace(0.5,5,19);
+    Loss = inf(numel(Grid),1);
+    for i = 1 : numel(Grid)
+        P = min(max(1./(1+exp(-Logit./Grid(i))),1e-6),1-1e-6);
+        Loss(i) = -mean(Label.*log(P) + (1-Label).*log(1-P));
+    end
+    [~,best] = min(Loss);
+    Temperature = Grid(best);
 end
 
 %% ========== Boundary offspring ==========
 
-function [Offspring,Diag] = GenerateBoundaryOffspring(Problem,B,PopulationC,PopulationU,W,Model,rho)
+function [Offspring,Evidence,Diag] = GenerateBoundaryOffspring(Problem,B,PopulationC,PopulationU,W,Model,rho)
     Diag = InitBoundaryDiag(0,Problem.FE,0);
-    if isempty(Model) || isempty(B)
-        Offspring = B([]);
-        return;
-    end
-
+    Evidence = B([]);
     Budget = min(max(0,floor(rho*Problem.N)),max(0,Problem.maxFE-Problem.FE));
     Diag.budget = Budget;
     if Budget <= 0
@@ -914,121 +1175,73 @@ function [Offspring,Diag] = GenerateBoundaryOffspring(Problem,B,PopulationC,Popu
         return;
     end
 
-    Support = KeepUniquePopulation([B,PopulationC,PopulationU]);
-    SupportBase = BuildOppositeSupportBase(Support,W);
-    ParentPool = Support;
-    ParentMeta = BuildBoundaryMeta(ParentPool,W,Model,PopulationC,PopulationU,SupportBase);
-    AnchorIdx = SelectBoundaryAnchors(ParentPool,B,ParentMeta,W,max(Problem.N,2*Budget));
-    if isempty(AnchorIdx)
+    AnchorPool = KeepUniquePopulation([B,PopulationC,PopulationU]);
+    if isempty(AnchorPool)
         Offspring = B([]);
         return;
     end
 
-    CandidateDec = zeros(Budget,size(ParentPool.decs,2));
-    CandidateSector = zeros(Budget,1);
-    CandidateFeasible = zeros(Budget,1);
-    CandidateProb = zeros(Budget,1);
-    CandidateOppSupport = zeros(Budget,1);
-    CandidateAnchorObjScore = zeros(Budget,1);
-    CandidateAnchorOppSupport = zeros(Budget,1);
-    CandidateAnchorProb = zeros(Budget,1);
-    CandidateAnchorScore = zeros(Budget,1);
-    CandidateHelperProb = zeros(Budget,1);
-    CandidateHelperScore = zeros(Budget,1);
-    CandidatePairDist = zeros(Budget,1);
-    CandidateSegCrossDist = zeros(Budget,1);
-    CandidateBetaCross = zeros(Budget,1);
-    CandidateAnchorFeasible = zeros(Budget,1);
-    CandidateHelperFeasible = zeros(Budget,1);
-    CandidateCount = 0;
-
-    SupportRefObj = ComputeIdealPoint(ParentPool,PopulationC,PopulationU);
-    SupportCache = ResolveOppositeSupportCache(SupportBase,W,SupportRefObj);
-    StablePool = KeepUniquePopulation([PopulationC,PopulationU]);
-    StablePoolBase = BuildOppositeSupportBase(StablePool,W);
-    StablePoolMeta = BuildBoundaryMeta(StablePool,W,[],PopulationC,PopulationU,StablePoolBase);
-    for i = 1 : numel(AnchorIdx)
-        if CandidateCount >= Budget
-            break;
-        end
-        BaseIdx = AnchorIdx(i);
-        Parent2 = SelectOppositeParent(ParentPool,ParentMeta,BaseIdx,PopulationC,PopulationU,W);
-        Parent3 = SelectStableParentFast(StablePool,StablePoolMeta,ParentMeta.sector(BaseIdx));
-        if isempty(Parent2) || isempty(Parent3)
-            continue;
-        end
-
-        Child = OperatorDE(Problem,ParentPool(BaseIdx).decs,Parent2.decs,Parent3.decs);
-        if isempty(Child)
-            continue;
-        end
-        Child = Child(1,:);
-        Diag.attempts = Diag.attempts + 1;
-        DuplicateCandidate = CandidateCount > 0 && ismember(Child,CandidateDec(1:CandidateCount,:),'rows');
-        if ismember(Child,ParentPool.decs,'rows') || DuplicateCandidate
-            Diag.skipped_duplicate = Diag.skipped_duplicate + 1;
-            continue;
-        end
-
-        ProxySector = ParentMeta.sector(BaseIdx);
-        Prob = PredictBoundaryMLP(Model,Child);
-        Feasible = double(Prob >= 0.5);
-        OppSupport = ComputeOppositeSupportFromCache(Child,Feasible,ProxySector,SupportCache);
-        CandidateMeta = ComposeBoundaryMeta(ProxySector,Feasible,Prob,OppSupport,0);
-        AnchorMargin = ParentMeta.margin(BaseIdx);
-        AnchorOppSupport = ParentMeta.oppSupport(BaseIdx);
-        AnchorObjScore = ParentMeta.objScore(BaseIdx);
-        Improved = CandidateMeta.margin < AnchorMargin;
-        Supported = CandidateMeta.oppSupport >= AnchorOppSupport;
-        if ~(Improved && Supported)
-            continue;
-        end
-
-        CandidateCount = CandidateCount + 1;
-        CandidateDec(CandidateCount,:) = Child;
-        CandidateSector(CandidateCount,1) = ProxySector;
-        CandidateFeasible(CandidateCount,1) = Feasible;
-        CandidateProb(CandidateCount,1) = Prob;
-        CandidateOppSupport(CandidateCount,1) = OppSupport;
-        CandidateAnchorObjScore(CandidateCount,1) = AnchorObjScore;
-        CandidateAnchorOppSupport(CandidateCount,1) = AnchorOppSupport;
-        CandidateAnchorProb(CandidateCount,1) = ParentMeta.prob(BaseIdx);
-        CandidateAnchorScore(CandidateCount,1) = ParentMeta.score(BaseIdx);
-        HelperMeta = BuildBoundaryMeta(Parent2,W,Model,PopulationC,PopulationU,SupportBase);
-        CandidateHelperProb(CandidateCount,1) = HelperMeta.prob;
-        CandidateHelperScore(CandidateCount,1) = HelperMeta.score;
-        CandidatePairDist(CandidateCount,1) = sqrt(sum((double(ParentPool(BaseIdx).decs) - double(Parent2.decs)).^2,2));
-        CandidateSegCrossDist(CandidateCount,1) = CandidatePairDist(CandidateCount)/max(CandidateMeta.margin,1e-6);
-        CandidateBetaCross(CandidateCount,1) = double((CandidateAnchorProb(CandidateCount)-0.5)*(CandidateHelperProb(CandidateCount)-0.5) <= 0);
-        CandidateAnchorFeasible(CandidateCount,1) = ParentMeta.feasible(BaseIdx);
-        CandidateHelperFeasible(CandidateCount,1) = double(all(Parent2.cons<=0,2));
-    end
-
-    if CandidateCount <= 0
+    Support = AnchorPool;
+    Pair = BuildBoundaryPairs(AnchorPool,W,max(Problem.N,2*Budget));
+    if isempty(Pair.FeasibleDec)
         Offspring = B([]);
         return;
     end
-    CandidateDec = CandidateDec(1:CandidateCount,:);
-    CandidateSector = CandidateSector(1:CandidateCount);
-    CandidateFeasible = CandidateFeasible(1:CandidateCount);
-    CandidateProb = CandidateProb(1:CandidateCount);
-    CandidateOppSupport = CandidateOppSupport(1:CandidateCount);
-    CandidateAnchorObjScore = CandidateAnchorObjScore(1:CandidateCount);
-    CandidateAnchorOppSupport = CandidateAnchorOppSupport(1:CandidateCount);
-    CandidateAnchorProb = CandidateAnchorProb(1:CandidateCount);
-    CandidateAnchorScore = CandidateAnchorScore(1:CandidateCount);
-    CandidateHelperProb = CandidateHelperProb(1:CandidateCount);
-    CandidateHelperScore = CandidateHelperScore(1:CandidateCount);
-    CandidatePairDist = CandidatePairDist(1:CandidateCount);
-    CandidateSegCrossDist = CandidateSegCrossDist(1:CandidateCount);
-    CandidateBetaCross = CandidateBetaCross(1:CandidateCount);
-    CandidateAnchorFeasible = CandidateAnchorFeasible(1:CandidateCount);
-    CandidateHelperFeasible = CandidateHelperFeasible(1:CandidateCount);
 
-    EvaluatedCandidate = Problem.Evaluation(CandidateDec);
-    CandidateMeta = BuildBoundaryMeta(EvaluatedCandidate,W,Model,PopulationC,PopulationU,SupportBase);
-    Relevant = CandidateMeta.objScore <= CandidateAnchorObjScore + 0.10 & ...
-        CandidateMeta.oppSupport >= CandidateAnchorOppSupport;
+    PairCount = min(size(Pair.FeasibleDec,1),max(1,ceil(Budget/2)));
+    FirstDec = 0.5*(Pair.FeasibleDec(1:PairCount,:) + Pair.InfeasibleDec(1:PairCount,:));
+    FirstDec = ClipDecisionRows(FirstDec,Problem);
+    FirstEval = Problem.Evaluation(FirstDec);
+    Diag.attempts = PairCount;
+
+    CandidateSector = Pair.Sector(1:PairCount);
+    CandidateFeasibleEndpointProb = PredictBoundaryMLP(Model,Pair.FeasibleDec(1:PairCount,:));
+    CandidateInfeasibleEndpointProb = PredictBoundaryMLP(Model,Pair.InfeasibleDec(1:PairCount,:));
+    CandidateFeasibleEndpointScore = Pair.BoundaryGap(1:PairCount);
+    CandidateInfeasibleEndpointScore = Pair.BoundaryGap(1:PairCount);
+    CandidatePairDist = Pair.BoundaryGap(1:PairCount);
+    CandidateFeasibleEndpointSide = ones(PairCount,1);
+    CandidateInfeasibleEndpointSide = zeros(PairCount,1);
+    CandidatePairPredCross = double((CandidateFeasibleEndpointProb-0.5).*(CandidateInfeasibleEndpointProb-0.5) <= 0);
+
+    Remaining = max(0,min([PairCount,Budget-PairCount,Problem.maxFE-Problem.FE]));
+    if Remaining > 0
+        SecondDec = zeros(Remaining,size(FirstDec,2));
+        for i = 1 : Remaining
+            if all(FirstEval(i).cons <= 0)
+                SecondDec(i,:) = 0.5*(double(FirstEval(i).decs) + Pair.InfeasibleDec(i,:));
+            else
+                SecondDec(i,:) = 0.5*(Pair.FeasibleDec(i,:) + double(FirstEval(i).decs));
+            end
+        end
+        CandidateDec = ClipDecisionRows(SecondDec,Problem);
+        EvaluatedCandidate = Problem.Evaluation(CandidateDec);
+        CandidateSector = CandidateSector(1:Remaining);
+        CandidateFeasibleEndpointProb = CandidateFeasibleEndpointProb(1:Remaining);
+        CandidateFeasibleEndpointScore = CandidateFeasibleEndpointScore(1:Remaining);
+        CandidateInfeasibleEndpointProb = CandidateInfeasibleEndpointProb(1:Remaining);
+        CandidateInfeasibleEndpointScore = CandidateInfeasibleEndpointScore(1:Remaining);
+        CandidatePairDist = CandidatePairDist(1:Remaining);
+        CandidateFeasibleEndpointSide = CandidateFeasibleEndpointSide(1:Remaining);
+        CandidateInfeasibleEndpointSide = CandidateInfeasibleEndpointSide(1:Remaining);
+        CandidatePairPredCross = CandidatePairPredCross(1:Remaining);
+        CandidateSegCrossDist = 0.25*CandidatePairDist;
+    else
+        CandidateDec = FirstDec;
+        EvaluatedCandidate = FirstEval;
+        CandidateSegCrossDist = 0.5*CandidatePairDist;
+    end
+
+    Evidence = KeepUniquePopulation([FirstEval,EvaluatedCandidate]);
+    if isempty(CandidateDec)
+        Offspring = B([]);
+        return;
+    end
+
+    CandidateSupportBase = BuildOppositeSupportBase( ...
+        KeepUniquePopulation([Support,FirstEval,EvaluatedCandidate]),W);
+    CandidateMeta = BuildBoundaryMeta(EvaluatedCandidate,W,Model,PopulationC,PopulationU,CandidateSupportBase);
+    Relevant = BoundaryEligible(CandidateMeta,~isempty(Model),'evidence');
     if ~any(Relevant)
         Offspring = B([]);
         return;
@@ -1067,13 +1280,24 @@ function [Offspring,Diag] = GenerateBoundaryOffspring(Problem,B,PopulationC,Popu
 
     Offspring = EvaluatedCandidate(Pick);
     Diag.events = buildBoundaryEvents( ...
-        Diag.events,Problem.FE,Pick,CandidateSector,CandidateAnchorFeasible,CandidateHelperFeasible, ...
-        CandidateAnchorProb,CandidateAnchorScore,CandidateHelperProb,CandidateHelperScore, ...
-        CandidateBetaCross,CandidatePairDist,CandidateSegCrossDist,CandidateMeta,Offspring);
+        Diag.events,Problem.FE,Pick,CandidateSector,CandidateFeasibleEndpointSide,CandidateInfeasibleEndpointSide, ...
+        CandidateFeasibleEndpointProb,CandidateFeasibleEndpointScore, ...
+        CandidateInfeasibleEndpointProb,CandidateInfeasibleEndpointScore, ...
+        CandidatePairPredCross,CandidatePairDist,CandidateSegCrossDist,CandidateMeta,Offspring);
 end
 
-function Rows = buildBoundaryEvents(Rows,FE,Pick,Sector,AnchorFeasible,HelperFeasible, ...
-    AnchorProb,AnchorScore,HelperProb,HelperScore,BetaCross,PairDist,SegCrossDist,CandidateMeta,Offspring)
+function Dec = ClipDecisionRows(Dec,Problem)
+    if isempty(Dec)
+        return;
+    end
+    Lower = repmat(Problem.lower,size(Dec,1),1);
+    Upper = repmat(Problem.upper,size(Dec,1),1);
+    Dec = min(max(Dec,Lower),Upper);
+end
+
+function Rows = buildBoundaryEvents(Rows,FE,Pick,Sector,FeasibleEndpointSide,InfeasibleEndpointSide, ...
+    FeasibleEndpointProb,FeasibleEndpointScore,InfeasibleEndpointProb,InfeasibleEndpointScore, ...
+    PairPredCross,PairDist,SegCrossDist,CandidateMeta,Offspring)
     Rows = cell(numel(Pick),24);
     for i = 1 : numel(Pick)
         idx = Pick(i);
@@ -1082,82 +1306,11 @@ function Rows = buildBoundaryEvents(Rows,FE,Pick,Sector,AnchorFeasible,HelperFea
         OppDist = SupportDistance(CandidateMeta.oppSupport(idx));
         Rows(i,:) = { ...
             NaN,FE,i,Sector(idx), ...
-            AnchorFeasible(idx),HelperFeasible(idx),AnchorProb(idx),AnchorScore(idx), ...
-            HelperProb(idx),HelperScore(idx),BetaCross(idx),PairDist(idx),SegCrossDist(idx), ...
+            FeasibleEndpointSide(idx),InfeasibleEndpointSide(idx),FeasibleEndpointProb(idx),FeasibleEndpointScore(idx), ...
+            InfeasibleEndpointProb(idx),InfeasibleEndpointScore(idx),PairPredCross(idx),PairDist(idx),SegCrossDist(idx), ...
             CandidateMeta.prob(idx),PredLabel,CandidateMeta.margin(idx),CandidateMeta.oppSupport(idx), ...
             OppDist,CandidateMeta.objScore(idx),CandidateMeta.score(idx),Feasible,double(PredLabel == Feasible),0,0};
     end
-end
-
-function [Sample,SourceCode] = SelectLocalOppositeSample(AnchorDec,Sector,Population,W,SourceCode)
-    Sample = Population([]);
-    if nargin < 5
-        SourceCode = 0;
-    end
-    if isempty(Population)
-        return;
-    end
-
-    RefObj = ComputeIdealPoint(Population);
-    PoolSector = AssociateSectorsLocal(Population.objs,W,RefObj);
-    Neighbors = BuildSectorNeighbors(W,min(3,max(size(W,1)-1,0)));
-    Local = ResolveLocalSectorSet(Sector,Neighbors);
-    idx = find(ismember(PoolSector,Local));
-    if isempty(idx)
-        return;
-    end
-
-    Dist = sqrt(sum((double(Population(idx).decs) - double(AnchorDec)).^2,2));
-    [~,ord] = sort(Dist,'ascend');
-    Sample = Population(idx(ord(1)));
-end
-
-function AnchorIdx = SelectBoundaryAnchors(ParentPool,B,ParentMeta,W,MaxCount)
-    AnchorIdx = find(ismember(ParentPool.decs,B.decs,'rows'));
-    if isempty(AnchorIdx)
-        return;
-    end
-
-    if isempty(W)
-        AnchorIdx = SortByBoundaryKey(ParentMeta,AnchorIdx);
-        AnchorIdx = AnchorIdx(1:min(MaxCount,numel(AnchorIdx)));
-        return;
-    end
-
-    Ranked = cell(size(W,1),1);
-    for s = 1 : size(W,1)
-        idx = AnchorIdx(ParentMeta.sector(AnchorIdx) == s);
-        if isempty(idx)
-            continue;
-        end
-        Ranked{s} = SortByBoundaryKey(ParentMeta,idx);
-    end
-    Order = SectorRoundRobinPick(Ranked,MaxCount);
-    AnchorIdx = Order(:,2);
-end
-
-function Parent2 = SelectOppositeParent(ParentPool,ParentMeta,BaseIdx,PopulationC,PopulationU,W)
-    if ParentMeta.feasible(BaseIdx) > 0
-        Pool = PopulationU(any(PopulationU.cons>0,2));
-    else
-        Pool = PopulationC(all(PopulationC.cons<=0,2));
-    end
-    Parent2 = SelectLocalOppositeSample( ...
-        ParentPool(BaseIdx).decs,ParentMeta.sector(BaseIdx),Pool,W);
-end
-
-function Parent3 = SelectStableParentFast(StablePool,StablePoolMeta,SectorId)
-    Parent3 = StablePool([]);
-    if isempty(StablePool)
-        return;
-    end
-
-    idx = find(StablePoolMeta.sector == SectorId);
-    if isempty(idx)
-        return;
-    end
-    ord = SortBySelectionKey(StablePoolMeta,idx);
-    Parent3 = StablePool(ord(1));
 end
 
 %% ========== Environmental selection ==========
@@ -1178,7 +1331,7 @@ function [Population,Diag] = EnvironmentalSelectionC(Population,N,W,Model,B,Rece
     Next = Feasible;
     Need = N - numel(Next);
     Infeasible = Population(any(Population.cons>0,2));
-    if Need > 0 && ~isempty(Model) && ~isempty(Infeasible)
+    if Need > 0 && ~isempty(Infeasible)
         [Selected,Diag] = SelectInfeasibleByBoundaryMeta( ...
             Infeasible,Need,W,Model,Feasible,PopulationU,B,RecentBoundaryOff);
         Next = [Next,Selected];
@@ -1220,7 +1373,7 @@ function [Pick,Diag] = SelectInfeasibleByBoundaryMeta( ...
     Diag.pool_mean_obj_score   = MeanOrNaN(Meta.objScore);
     Diag.pool_lowmargin_ratio  = LowMarginRatio(Meta.margin);
 
-    Trusted = FindSupportedBoundaryCandidates(Meta,W);
+    Trusted = FindSupportedBoundaryCandidates(Meta,W,~isempty(Model)) & Meta.feasible == 0;
     if ~any(Trusted)
         return;
     end
@@ -1265,27 +1418,15 @@ function [Pick,Diag] = SelectInfeasibleByBoundaryMeta( ...
     Diag.selected_sector_coverage = numel(unique(Meta.sector(PickIndex)));
 end
 
-function Trusted = FindSupportedBoundaryCandidates(Meta,W)
+function Trusted = FindSupportedBoundaryCandidates(Meta,W,ModelReady)
     Trusted = false(numel(Meta.sector),1);
     if isempty(Meta.sector)
         return;
     end
-    Threshold = ResolveOppSupportGate(Meta,W);
-    Trusted = Meta.oppSupport >= Threshold;
-end
-
-function Threshold = ResolveOppSupportGate(Meta,W)
-    Positive = Meta.oppSupport(Meta.oppSupport > 0);
-    if isempty(Positive)
-        Threshold = inf;
-        return;
+    if nargin < 3
+        ModelReady = true;
     end
-    Base = median(Positive);
-    if isempty(W)
-        Threshold = max(0.05,0.50*Base);
-    else
-        Threshold = max(0.05,0.35*Base);
-    end
+    Trusted = BoundaryEligible(Meta,ModelReady,'evidence');
 end
 
 function Population = EnvironmentalSelectionU(Population,N,W)
@@ -1430,12 +1571,20 @@ function Meta = InitBoundaryMeta(Count)
         'prob',0.5*ones(Count,1), ...
         'margin',ones(Count,1), ...
         'oppSupport',zeros(Count,1), ...
+        'localPairExists',false(Count,1), ...
+        'betweenScoreObj',inf(Count,1), ...
+        'shellDistDec',inf(Count,1), ...
+        'gapDec',inf(Count,1), ...
+        'gapObj',inf(Count,1), ...
+        'boundaryGap',inf(Count,1), ...
         'objScore',zeros(Count,1), ...
         'score',ones(Count,1));
 end
 
-function Meta = ComposeBoundaryMeta(Sector,Feasible,Prob,OppSupport,ObjScore)
-    Count = max([numel(Sector),numel(Feasible),numel(Prob),numel(OppSupport),numel(ObjScore),0]);
+function Meta = ComposeBoundaryMeta( ...
+    Sector,Feasible,Prob,OppSupport,ObjScore,LocalPairExists,ShellDistDec,BetweenScoreObj)
+    Count = max([numel(Sector),numel(Feasible),numel(Prob),numel(OppSupport), ...
+        numel(ObjScore),numel(LocalPairExists),numel(ShellDistDec),numel(BetweenScoreObj),0]);
     Meta = InitBoundaryMeta(Count);
     if Count == 0
         return;
@@ -1446,6 +1595,9 @@ function Meta = ComposeBoundaryMeta(Sector,Feasible,Prob,OppSupport,ObjScore)
     Prob = MatchLength(ColumnVector(Prob),Count,0.5);
     OppSupport = MatchLength(ColumnVector(OppSupport),Count,0);
     ObjScore = MatchLength(ColumnVector(ObjScore),Count,0);
+    LocalPairExists = MatchLength(logical(ColumnVector(LocalPairExists)),Count,false);
+    ShellDistDec = MatchLength(ColumnVector(ShellDistDec),Count,inf);
+    BetweenScoreObj = MatchLength(ColumnVector(BetweenScoreObj),Count,inf);
     Margin = 2*abs(Prob - 0.5);
 
     Meta.sector     = Sector;
@@ -1453,18 +1605,39 @@ function Meta = ComposeBoundaryMeta(Sector,Feasible,Prob,OppSupport,ObjScore)
     Meta.prob       = Prob;
     Meta.margin     = Margin;
     Meta.oppSupport = OppSupport;
+    Meta.localPairExists = LocalPairExists;
+    Meta.betweenScoreObj = BetweenScoreObj;
+    Meta.shellDistDec = ShellDistDec;
+    Meta.gapDec     = ShellDistDec;
+    Meta.gapObj     = BetweenScoreObj;
+    Meta.boundaryGap = ShellDistDec + 0.25*BetweenScoreObj;
     Meta.objScore   = ObjScore;
-    Meta.score      = 0.50*Margin + 0.30*(1-OppSupport) + 0.20*ObjScore;
+    Meta.score      = 0.55*NormalizeFiniteScore(Meta.boundaryGap) + ...
+        0.25*Margin + 0.10*NormalizeFiniteScore(ShellDistDec) + 0.10*ObjScore;
 end
 
-function Order = SortByBoundaryKey(Meta,idx)
+function Score = NormalizeFiniteScore(Value)
+    Score = ones(size(Value));
+    Mask = isfinite(Value);
+    if any(Mask)
+        Score(Mask) = NormalizeRange(Value(Mask));
+    end
+end
+
+function Order = SortByBoundaryKey(Meta,idx,Source)
     idx = ColumnVector(idx);
     if isempty(idx)
         Order = idx;
         return;
     end
-    Key = [ColumnVector(Meta.margin(idx)),ColumnVector(1-Meta.oppSupport(idx)),ColumnVector(idx)];
-    [~,ord] = sortrows(Key,[1 2 3]);
+    if nargin < 3 || isempty(Source)
+        Source = 5*ones(numel(Meta.sector),1);
+    end
+    Source = MatchLength(Source,numel(Meta.sector),5);
+    Key = [ColumnVector(Meta.boundaryGap(idx)),ColumnVector(Meta.gapDec(idx)), ...
+        ColumnVector(Meta.gapObj(idx)),ColumnVector(SourcePriority(Source(idx))), ...
+        ColumnVector(Meta.margin(idx)),ColumnVector(Meta.objScore(idx)),ColumnVector(idx)];
+    [~,ord] = sortrows(Key,[1 2 3 4 5 6 7]);
     Order = idx(ord);
 end
 
@@ -1474,8 +1647,10 @@ function Order = SortBySelectionKey(Meta,idx)
         Order = idx;
         return;
     end
-    Key = [ColumnVector(Meta.margin(idx)),ColumnVector(1-Meta.oppSupport(idx)),ColumnVector(Meta.objScore(idx)),ColumnVector(idx)];
-    [~,ord] = sortrows(Key,[1 2 3 4]);
+    Key = [ColumnVector(Meta.boundaryGap(idx)),ColumnVector(Meta.gapDec(idx)), ...
+        ColumnVector(Meta.gapObj(idx)),ColumnVector(Meta.margin(idx)), ...
+        ColumnVector(Meta.objScore(idx)),ColumnVector(idx)];
+    [~,ord] = sortrows(Key,[1 2 3 4 5 6]);
     Order = idx(ord);
 end
 
@@ -1498,8 +1673,8 @@ function Observer = InitObserver(Algorithm,Problem,Params)
         'archive_file',fullfile(RunFolder,'archive_members.csv'), ...
         'objective_file',fullfile(RunFolder,'objective_snapshot.csv'), ...
         'mlp_file',fullfile(RunFolder,'mlp_events.csv'), ...
-        'objective_marks',[0.10 0.25 0.30 0.50 0.70 0.75 0.90 1.00], ...
-        'objective_logged',false(1,8));
+        'objective_marks',[0.05 0.10 0.25 0.30 0.50 0.70 0.75 0.90 1.00], ...
+        'objective_logged',false(1,9));
 
     WriteCsvHeader(Observer.meta_file,{ ...
         'algorithm','problem','family','run','M','D','N','maxFE', ...
@@ -1514,17 +1689,20 @@ function Observer = InitObserver(Algorithm,Problem,Params)
         'popc_feasible_ratio','popu_feasible_ratio', ...
         'offspringc_feasible_ratio','offspringu_feasible_ratio', ...
         'model_ready','model_trained', ...
-        'boundary_budget','boundary_candidates','boundary_selected','boundary_feasible_ratio', ...
+        'boundary_budget','boundary_candidates','boundary_selected','boundary_off_count', ...
+        'boundary_evidence_count','boundary_evidence_feasible_ratio','boundary_feasible_ratio', ...
         'boundary_sector_coverage','boundary_mean_pair_dist','boundary_lowmargin_pair_hit','boundary_seg_cross_dist', ...
         'boundary_margin_oppdist_corr','boundary_lowmargin_mean_opp_dist','boundary_highmargin_mean_opp_dist', ...
         'boundary_lowmargin_oppdist_gain','boundary_lowmargin_mean_opp_support','boundary_highmargin_mean_opp_support', ...
-        'helper_skip_duplicate', ...
+        'pair_skip_duplicate', ...
         'seed_b_mean_pair_dist','seed_b_lowmargin_pair_hit', ...
-        'b_size','b_sector_coverage','b_mean_pair_dist','b_lowmargin_pair_hit', ...
-        'b_margin_oppdist_corr','b_lowmargin_mean_opp_dist','b_highmargin_mean_opp_dist', ...
+        'b_size','b_lowmargin_ratio','b_mean_dist_to_true_boundary','b_p90_dist_to_true_boundary', ...
+        'boundary_off_hit_rate_eps','archive_hit_rate_eps', ...
+        'b_sector_coverage','b_mean_pair_dist','b_lowmargin_pair_hit', ...
+        'b_margin_true_boundary_corr','b_margin_oppdist_corr','b_lowmargin_mean_opp_dist','b_highmargin_mean_opp_dist', ...
         'b_lowmargin_oppdist_gain','b_lowmargin_mean_opp_support','b_highmargin_mean_opp_support', ...
         'train_size','train_pos','train_neg','train_sector_coverage', ...
-        'train_anchor_count','train_pair_count','train_mean_pair_dist','train_can_train', ...
+        'train_feasible_endpoint_count','train_pair_count','train_boundary_evidence_count','train_mean_pair_dist','train_can_train', ...
         'train_acc_before','train_bal_acc_before','train_brier_before','train_logloss_before', ...
         'train_acc_after','train_bal_acc_after','train_brier_after','train_logloss_after', ...
         'boundary_pred_acc','boundary_pred_bal_acc','boundary_pred_brier', ...
@@ -1539,8 +1717,10 @@ function Observer = InitObserver(Algorithm,Problem,Params)
         'inf_selected_sector_coverage'});
     WriteCsvHeader(Observer.boundary_file,{ ...
         'generation','fe','event_index','sector', ...
-        'anchor_feasible','helper_feasible','anchor_prob','anchor_score', ...
-        'helper_prob','helper_score','beta_pred_cross','pair_dist','seg_cross_dist', ...
+        'pair_feasible_endpoint_side','pair_infeasible_endpoint_side', ...
+        'pair_feasible_endpoint_prob','pair_feasible_endpoint_score', ...
+        'pair_infeasible_endpoint_prob','pair_infeasible_endpoint_score', ...
+        'pair_pred_cross','pair_dist','seg_cross_dist', ...
         'prob','pred_label','margin','opp_support','opp_dist','obj_score','score', ...
         'feasible','correct','survive_c','survive_u'});
     WriteCsvHeader(Observer.archive_file,{ ...
@@ -1550,8 +1730,8 @@ function Observer = InitObserver(Algorithm,Problem,Params)
     WriteCsvHeader(Observer.mlp_file,{ ...
         'generation','fe','model_ready_before','need_train','trained','model_ready_after', ...
         'can_train','boundary_count','last_train_size', ...
-        'train_size','pos_count','neg_count','sector_coverage','anchor_count','pair_count','mean_pair_dist', ...
-        'src_b','src_recent_boundary','src_pop_c','src_pop_u', ...
+        'train_size','pos_count','neg_count','sector_coverage','feasible_endpoint_count','pair_count','mean_pair_dist', ...
+        'src_b','src_recent_boundary','src_boundary_evidence','src_pop_c','src_pop_u', ...
         'acc_before','bal_acc_before','brier_before','logloss_before', ...
         'acc_after','bal_acc_after','brier_after','logloss_after'});
 end
@@ -1560,22 +1740,26 @@ function Observer = LogMLPEvent(Observer,Diag)
     AppendCsvRows(Observer.mlp_file,{ ...
         Diag.generation,Diag.fe,Diag.model_ready_before,Diag.need_train,Diag.trained,Diag.model_ready_after, ...
         Diag.can_train,Diag.boundary_count,Diag.last_train_size, ...
-        Diag.train_size,Diag.pos_count,Diag.neg_count,Diag.sector_coverage,Diag.anchor_count,Diag.pair_count,Diag.mean_pair_dist, ...
-        Diag.src_b,Diag.src_recent_boundary,Diag.src_pop_c,Diag.src_pop_u, ...
+        Diag.train_size,Diag.pos_count,Diag.neg_count,Diag.sector_coverage,Diag.feasible_endpoint_count,Diag.pair_count,Diag.mean_pair_dist, ...
+        Diag.src_b,Diag.src_recent_boundary,Diag.src_boundary_evidence,Diag.src_pop_c,Diag.src_pop_u, ...
         Diag.stats_before.acc,Diag.stats_before.bal_acc,Diag.stats_before.brier,Diag.stats_before.logloss, ...
         Diag.stats_after.acc,Diag.stats_after.bal_acc,Diag.stats_after.brier,Diag.stats_after.logloss});
 end
 
 function Observer = LogGenerationDiagnostics( ...
     Observer,Generation,Problem,W,PopulationC,PopulationU,OffspringC,OffspringU, ...
-    BoundaryOff,BoundaryDiag,BoundarySurvival,SeedB,SeedMeta,B,ArchiveMeta,MLPDiag,SelectionDiag,Model)
+    BoundaryOff,BoundaryEvidence,BoundaryDiag,BoundarySurvival,SeedB,SeedMeta,B,ArchiveMeta,MLPDiag,SelectionDiag,Model)
 
     BoundarySupport = KeepUniquePopulation([B,PopulationC,PopulationU]);
     BoundarySupportBase = BuildOppositeSupportBase(BoundarySupport,W);
     BoundaryMeta = BuildBoundaryMeta(BoundaryOff,W,Model,PopulationC,PopulationU,BoundarySupportBase);
-    BoundaryStats = SummarizeArchive(BoundaryOff,BoundaryMeta);
-    ArchiveStats  = SummarizeArchive(B,ArchiveMeta);
-    SeedStats = SummarizeArchive(SeedB,SeedMeta);
+    BoundaryEvidenceMeta = BuildBoundaryMeta(BoundaryEvidence,W,Model,PopulationC,PopulationU,BoundarySupportBase);
+    RootEvidence = BuildSegmentRootEvidence( ...
+        Problem,KeepUniquePopulation([B,BoundaryEvidence,PopulationC,PopulationU]), ...
+        PopulationC,PopulationU,W,Model,BoundarySupportBase,max(12,min(36,Problem.N)));
+    BoundaryStats = SummarizeArchive(BoundaryOff,BoundaryMeta,RootEvidence);
+    ArchiveStats  = SummarizeArchive(B,ArchiveMeta,RootEvidence);
+    SeedStats = SummarizeArchive(SeedB,SeedMeta,RootEvidence);
     BoundaryPred  = EvaluatePopulationPredictions(Model,BoundaryOff);
 
     PopCFea = feasibleRatio(PopulationC);
@@ -1590,17 +1774,20 @@ function Observer = LogGenerationDiagnostics( ...
         Generation,Problem.FE,min(Problem.FE/max(Problem.maxFE,1),1), ...
         PopCFea,PopUFea,OffCFea,OffUFea, ...
         MLPDiag.model_ready_after,MLPDiag.trained, ...
-        BoundaryDiag.budget,BoundaryDiag.attempts,BoundaryDiag.selected,BoundaryStats.feasible_ratio, ...
+        BoundaryDiag.budget,BoundaryDiag.attempts,BoundaryDiag.selected,BoundaryDiag.selected, ...
+        numel(BoundaryEvidence),feasibleRatio(BoundaryEvidence),BoundaryStats.feasible_ratio, ...
         BoundaryStats.sector_coverage,BoundaryStats.mean_pair_dist,BoundaryStats.lowmargin_pair_hit,BoundarySegCrossDist, ...
         BoundaryStats.margin_oppdist_corr,BoundaryStats.lowmargin_mean_opp_dist,BoundaryStats.highmargin_mean_opp_dist, ...
         BoundaryStats.lowmargin_oppdist_gain,BoundaryStats.lowmargin_mean_opp_support,BoundaryStats.highmargin_mean_opp_support, ...
         BoundaryDiag.skipped_duplicate, ...
         SeedStats.mean_pair_dist,SeedStats.lowmargin_pair_hit, ...
-        ArchiveStats.size,ArchiveStats.sector_coverage,ArchiveStats.mean_pair_dist,ArchiveStats.lowmargin_pair_hit, ...
-        ArchiveStats.margin_oppdist_corr,ArchiveStats.lowmargin_mean_opp_dist,ArchiveStats.highmargin_mean_opp_dist, ...
+        ArchiveStats.size,ArchiveStats.lowmargin_ratio,ArchiveStats.mean_dist_to_true_boundary,ArchiveStats.p90_dist_to_true_boundary, ...
+        BoundaryStats.hit_rate_eps,ArchiveStats.hit_rate_eps, ...
+        ArchiveStats.sector_coverage,ArchiveStats.mean_pair_dist,ArchiveStats.lowmargin_pair_hit, ...
+        ArchiveStats.margin_true_boundary_corr,ArchiveStats.margin_oppdist_corr,ArchiveStats.lowmargin_mean_opp_dist,ArchiveStats.highmargin_mean_opp_dist, ...
         ArchiveStats.lowmargin_oppdist_gain,ArchiveStats.lowmargin_mean_opp_support,ArchiveStats.highmargin_mean_opp_support, ...
         MLPDiag.train_size,MLPDiag.pos_count,MLPDiag.neg_count,MLPDiag.sector_coverage, ...
-        MLPDiag.anchor_count,MLPDiag.pair_count,MLPDiag.mean_pair_dist,MLPDiag.can_train, ...
+        MLPDiag.feasible_endpoint_count,MLPDiag.pair_count,MLPDiag.src_boundary_evidence,MLPDiag.mean_pair_dist,MLPDiag.can_train, ...
         MLPDiag.stats_before.acc,MLPDiag.stats_before.bal_acc,MLPDiag.stats_before.brier,MLPDiag.stats_before.logloss, ...
         MLPDiag.stats_after.acc,MLPDiag.stats_after.bal_acc,MLPDiag.stats_after.brier,MLPDiag.stats_after.logloss, ...
         BoundaryPred.acc,BoundaryPred.bal_acc,BoundaryPred.brier, ...
@@ -1618,7 +1805,7 @@ function Observer = LogGenerationDiagnostics( ...
     Observer = LogArchiveMembers(Observer,Generation,Problem.FE,B,ArchiveMeta);
     Observer = LogObjectiveSnapshot( ...
         Observer,Generation,Problem,W,PopulationC,PopulationU, ...
-        BoundaryOff,BoundaryMeta,B,ArchiveMeta,Model,BoundarySupportBase);
+        BoundaryOff,BoundaryMeta,BoundaryEvidence,BoundaryEvidenceMeta,B,ArchiveMeta,Model,BoundarySupportBase,RootEvidence);
 end
 
 function Observer = LogBoundaryEvents(Observer,Generation,FE,BoundaryOff,PopulationC,PopulationU,Rows)
@@ -1662,17 +1849,18 @@ end
 
 function Observer = LogObjectiveSnapshot( ...
     Observer,Generation,Problem,W,PopulationC,PopulationU, ...
-    BoundaryOff,BoundaryMeta,B,ArchiveMeta,Model,SupportBase)
+    BoundaryOff,BoundaryMeta,BoundaryEvidence,BoundaryEvidenceMeta,B,ArchiveMeta,Model,SupportBase,RootEvidence)
 
     [Observer,WriteContext] = UpdateObjectiveSnapshotCheckpoints( ...
         Observer,Problem.FE,Problem.maxFE);
     WriteBoundaryOff = ~isempty(BoundaryOff);
-    WriteContext = WriteContext || WriteBoundaryOff;
-    if ~WriteContext && ~WriteBoundaryOff
+    WriteBoundaryEvidence = ~isempty(BoundaryEvidence);
+    WriteContext = WriteContext || WriteBoundaryOff || WriteBoundaryEvidence;
+    if ~WriteContext && ~WriteBoundaryOff && ~WriteBoundaryEvidence
         return;
     end
 
-    ColCount = 15 + Problem.M;
+    ColCount = 16 + 2*Problem.M;
     Rows = cell(0,ColCount);
     if WriteContext
         PopCMeta = BuildBoundaryMeta(PopulationC,W,Model,PopulationC,PopulationU,SupportBase);
@@ -1680,20 +1868,27 @@ function Observer = LogObjectiveSnapshot( ...
         InC = true(numel(PopulationC),1);
         InU = false(numel(PopulationC),1);
         Rows = [Rows;BuildObjectiveSnapshotRows( ...
-            Generation,Problem.FE,Problem.maxFE,'pop_c',PopulationC,PopCMeta,InC,InU,Problem.M)]; %#ok<AGROW>
+            Generation,Problem.FE,Problem.maxFE,'pop_c',PopulationC,PopCMeta,InC,InU,Problem.M,RootEvidence)]; %#ok<AGROW>
         InC = false(numel(PopulationU),1);
         InU = true(numel(PopulationU),1);
         Rows = [Rows;BuildObjectiveSnapshotRows( ...
-            Generation,Problem.FE,Problem.maxFE,'pop_u',PopulationU,PopUMeta,InC,InU,Problem.M)]; %#ok<AGROW>
+            Generation,Problem.FE,Problem.maxFE,'pop_u',PopulationU,PopUMeta,InC,InU,Problem.M,RootEvidence)]; %#ok<AGROW>
         [InC,InU] = ComputePopulationMembership(B,PopulationC,PopulationU);
         Rows = [Rows;BuildObjectiveSnapshotRows( ...
-            Generation,Problem.FE,Problem.maxFE,'archive_b',B,ArchiveMeta,InC,InU,Problem.M)]; %#ok<AGROW>
+            Generation,Problem.FE,Problem.maxFE,'archive_b',B,ArchiveMeta,InC,InU,Problem.M,RootEvidence)]; %#ok<AGROW>
+        Rows = [Rows;BuildSegmentRootEvidenceRows( ...
+            Generation,Problem.FE,Problem.maxFE,RootEvidence,Problem.M)]; %#ok<AGROW>
     end
 
     if WriteBoundaryOff
         [InC,InU] = ComputePopulationMembership(BoundaryOff,PopulationC,PopulationU);
         Rows = [Rows;BuildObjectiveSnapshotRows( ...
-            Generation,Problem.FE,Problem.maxFE,'boundary_off',BoundaryOff,BoundaryMeta,InC,InU,Problem.M)]; %#ok<AGROW>
+            Generation,Problem.FE,Problem.maxFE,'boundary_off',BoundaryOff,BoundaryMeta,InC,InU,Problem.M,RootEvidence)]; %#ok<AGROW>
+    end
+    if WriteBoundaryEvidence
+        [InC,InU] = ComputePopulationMembership(BoundaryEvidence,PopulationC,PopulationU);
+        Rows = [Rows;BuildObjectiveSnapshotRows( ...
+            Generation,Problem.FE,Problem.maxFE,'boundary_evidence',BoundaryEvidence,BoundaryEvidenceMeta,InC,InU,Problem.M,RootEvidence)]; %#ok<AGROW>
     end
 
     AppendCsvRows(Observer.objective_file,Rows);
@@ -1720,9 +1915,9 @@ function [InC,InU] = ComputePopulationMembership(Population,PopulationC,Populati
     end
 end
 
-function Rows = BuildObjectiveSnapshotRows(Generation,FE,MaxFE,Role,Population,Meta,InC,InU,M)
+function Rows = BuildObjectiveSnapshotRows(Generation,FE,MaxFE,Role,Population,Meta,InC,InU,M,RootEvidence)
     Count = numel(Population);
-    Rows = cell(Count,15 + M);
+    Rows = cell(Count,16 + 2*M);
     if Count <= 0
         return;
     end
@@ -1731,6 +1926,7 @@ function Rows = BuildObjectiveSnapshotRows(Generation,FE,MaxFE,Role,Population,M
     InC = MatchLength(logical(ColumnVector(InC)),Count,false);
     InU = MatchLength(logical(ColumnVector(InU)),Count,false);
     Obj = Population.objs;
+    [RootDist,RootObj] = NearestSegmentRoot(Population,RootEvidence,M);
     for i = 1 : Count
         ObjRow = NaN(1,M);
         ObjCount = min(M,size(Obj,2));
@@ -1740,17 +1936,54 @@ function Rows = BuildObjectiveSnapshotRows(Generation,FE,MaxFE,Role,Population,M
         Rows(i,:) = [{ ...
             Generation,FE,Ratio,Role,i,Meta.sector(i),Meta.feasible(i), ...
             Meta.prob(i),Meta.margin(i),Meta.oppSupport(i),SupportDistance(Meta.oppSupport(i)), ...
-            Meta.objScore(i),Meta.score(i),double(InC(i)),double(InU(i))},num2cell(ObjRow)];
+            RootDist(i),Meta.objScore(i),Meta.score(i),double(InC(i)),double(InU(i))}, ...
+            num2cell(RootObj(i,:)),num2cell(ObjRow)];
+    end
+end
+
+function Rows = BuildSegmentRootEvidenceRows(Generation,FE,MaxFE,RootEvidence,M)
+    Count = numel(RootEvidence.Sector);
+    Rows = cell(3*Count,16 + 2*M);
+    if Count <= 0
+        return;
+    end
+
+    Ratio = min(double(FE)/max(double(MaxFE),1),1);
+    Row = 0;
+    Roles = {'pair_feasible_endpoint','pair_infeasible_endpoint','segment_root'};
+    ObjSets = {RootEvidence.FeasibleObj,RootEvidence.InfeasibleObj,RootEvidence.RootObj};
+    DistValues = [0.5*RootEvidence.PairDist,0.5*RootEvidence.PairDist,zeros(Count,1)];
+    FeasibleValues = [ones(Count,1),zeros(Count,1),NaN(Count,1)];
+    for r = 1 : numel(Roles)
+        Obj = ObjSets{r};
+        for i = 1 : Count
+            Row = Row + 1;
+            ObjRow = NaN(1,M);
+            RootObj = NaN(1,M);
+            ObjCount = min(M,size(Obj,2));
+            if ObjCount > 0
+                ObjRow(1:ObjCount) = Obj(i,1:ObjCount);
+            end
+            RootCount = min(M,size(RootEvidence.RootObj,2));
+            if RootCount > 0
+                RootObj(1:RootCount) = RootEvidence.RootObj(i,1:RootCount);
+            end
+            Rows(Row,:) = [{ ...
+                Generation,FE,Ratio,Roles{r},i,RootEvidence.Sector(i),FeasibleValues(i,r), ...
+                NaN,NaN,NaN,NaN,DistValues(i,r),NaN,NaN,0,0}, ...
+                num2cell(RootObj),num2cell(ObjRow)];
+        end
     end
 end
 
 function Header = ComposeObjectiveSnapshotHeader(M)
     Header = { ...
         'generation','fe','fe_ratio','role','index','sector','feasible', ...
-        'prob','margin','opp_support','opp_dist','obj_score','score', ...
+        'prob','margin','opp_support','opp_dist','true_boundary_dist','obj_score','score', ...
         'survive_c','survive_u'};
+    RootHeader = arrayfun(@(i)sprintf('root_obj%d',i),1:M,'UniformOutput',false);
     ObjHeader = arrayfun(@(i)sprintf('obj%d',i),1:M,'UniformOutput',false);
-    Header = [Header,ObjHeader];
+    Header = [Header,RootHeader,ObjHeader];
 end
 
 %% ========== Diagnostics helpers ==========
@@ -1772,11 +2005,12 @@ function Diag = InitMLPDiag(Generation,FE,ModelState,Summary,ModelReady)
         'neg_count',0, ...
         'sector_coverage',0, ...
         'train_dual_sectors',0, ...
-        'anchor_count',Summary.anchor_count, ...
+        'feasible_endpoint_count',Summary.feasible_endpoint_count, ...
         'pair_count',Summary.pair_count, ...
         'mean_pair_dist',Summary.mean_pair_dist, ...
         'src_b',0, ...
         'src_recent_boundary',0, ...
+        'src_boundary_evidence',0, ...
         'src_pop_c',0, ...
         'src_pop_u',0, ...
         'stats_before',EmptyStats, ...
@@ -1854,15 +2088,23 @@ function Stats = EvaluateBinaryPredictions(Model,X,Y)
     Stats.logloss = -mean(Y.*log(max(Prob,1e-6)) + (1-Y).*log(max(1-Prob,1e-6)));
 end
 
-function Stats = SummarizeArchive(B,Meta)
+function Stats = SummarizeArchive(B,Meta,RootEvidence)
+    if nargin < 3
+        RootEvidence = InitSegmentRootEvidence(ResolveDecisionDimension(B),0);
+    end
     Stats = struct( ...
         'size',numel(B), ...
         'feasible_ratio',NaN, ...
         'sector_coverage',0, ...
         'mixed_sectors',0, ...
         'mean_margin',NaN, ...
+        'lowmargin_ratio',NaN, ...
         'mean_opp_support',NaN, ...
         'mean_pair_dist',NaN, ...
+        'mean_dist_to_true_boundary',NaN, ...
+        'p90_dist_to_true_boundary',NaN, ...
+        'hit_rate_eps',NaN, ...
+        'margin_true_boundary_corr',NaN, ...
         'lowmargin_pair_hit',NaN, ...
         'margin_oppdist_corr',NaN, ...
         'lowmargin_mean_opp_dist',NaN, ...
@@ -1879,9 +2121,15 @@ function Stats = SummarizeArchive(B,Meta)
     Stats.feasible_ratio   = SafeDivide(sum(Meta.feasible == 1),numel(B));
     Stats.sector_coverage  = numel(unique(Meta.sector(Meta.sector > 0)));
     Stats.mean_margin      = MeanOrNaN(Meta.margin);
+    Stats.lowmargin_ratio  = LowMarginRatio(Meta.margin);
     Stats.mean_opp_support = MeanOrNaN(Meta.oppSupport);
     OppDist = SupportDistance(Meta.oppSupport);
     Stats.mean_pair_dist   = MeanOrNaN(OppDist);
+    TrueBoundaryDist = DistanceToSegmentRoots(B,RootEvidence);
+    Stats.mean_dist_to_true_boundary = MeanOrNaN(TrueBoundaryDist);
+    Stats.p90_dist_to_true_boundary = PercentileOrNaN(TrueBoundaryDist,90);
+    Stats.hit_rate_eps = SafeDivide(sum(TrueBoundaryDist <= 0.10),sum(isfinite(TrueBoundaryDist)));
+    Stats.margin_true_boundary_corr = SafeCorr(Meta.margin,TrueBoundaryDist);
     Stats.mean_obj_score   = MeanOrNaN(Meta.objScore);
     Stats.mean_score       = MeanOrNaN(Meta.score);
     LowMask = Meta.margin <= 0.10;
@@ -1905,6 +2153,84 @@ function Stats = SummarizeArchive(B,Meta)
         end
     end
     Stats.mixed_sectors = Mixed;
+end
+
+function RootEvidence = BuildSegmentRootEvidence(Problem,AnchorPool,PopulationC,PopulationU,W,Model,SupportBase,MaxPairs)
+    %#ok<INUSD>
+    Pair = BuildBoundaryPairs(AnchorPool,W,MaxPairs);
+    RootEvidence = InitSegmentRootEvidence(ResolveDecisionDimension(AnchorPool,PopulationC,PopulationU),Problem.M);
+    PairCount = size(Pair.FeasibleDec,1);
+    if PairCount <= 0
+        return;
+    end
+
+    FeasibleDec = Problem.CalDec(Pair.FeasibleDec);
+    InfeasibleDec = Problem.CalDec(Pair.InfeasibleDec);
+    RootDec = BisectSegmentRoots(Problem,FeasibleDec,InfeasibleDec,6);
+    RootEvidence.Dec = RootDec;
+    RootEvidence.Obj = Problem.CalObj(RootDec);
+    RootEvidence.RootObj = RootEvidence.Obj;
+    RootEvidence.FeasibleDec = FeasibleDec;
+    RootEvidence.InfeasibleDec = InfeasibleDec;
+    RootEvidence.FeasibleObj = Problem.CalObj(FeasibleDec);
+    RootEvidence.InfeasibleObj = Problem.CalObj(InfeasibleDec);
+    RootEvidence.Sector = Pair.Sector;
+    RootEvidence.PairDist = sqrt(sum((FeasibleDec - InfeasibleDec).^2,2));
+end
+
+function RootEvidence = InitSegmentRootEvidence(D,M)
+    RootEvidence = struct( ...
+        'Dec',zeros(0,D), ...
+        'Obj',zeros(0,M), ...
+        'RootObj',zeros(0,M), ...
+        'FeasibleDec',zeros(0,D), ...
+        'InfeasibleDec',zeros(0,D), ...
+        'FeasibleObj',zeros(0,M), ...
+        'InfeasibleObj',zeros(0,M), ...
+        'Sector',zeros(0,1), ...
+        'PairDist',zeros(0,1));
+end
+
+function RootDec = BisectSegmentRoots(Problem,FeasibleDec,InfeasibleDec,Steps)
+    Lo = FeasibleDec;
+    Hi = InfeasibleDec;
+    for step = 1 : max(1,round(Steps))
+        Mid = Problem.CalDec(0.5*(Lo + Hi));
+        MidFeasible = all(Problem.CalCon(Mid) <= 0,2);
+        Lo(MidFeasible,:) = Mid(MidFeasible,:);
+        Hi(~MidFeasible,:) = Mid(~MidFeasible,:);
+    end
+    RootDec = Problem.CalDec(0.5*(Lo + Hi));
+end
+
+function Dist = DistanceToSegmentRoots(Population,RootEvidence)
+    Dist = NaN(numel(Population),1);
+    if isempty(Population) || isempty(RootEvidence.Dec)
+        return;
+    end
+    RootDec = double(RootEvidence.Dec);
+    for i = 1 : numel(Population)
+        Delta = RootDec - repmat(double(Population(i).decs),size(RootDec,1),1);
+        Dist(i) = min(sqrt(sum(Delta.^2,2)));
+    end
+end
+
+function [Dist,RootObj] = NearestSegmentRoot(Population,RootEvidence,M)
+    Dist = NaN(numel(Population),1);
+    RootObj = NaN(numel(Population),M);
+    if isempty(Population) || isempty(RootEvidence.Dec)
+        return;
+    end
+    RootDec = double(RootEvidence.Dec);
+    for i = 1 : numel(Population)
+        Delta = RootDec - repmat(double(Population(i).decs),size(RootDec,1),1);
+        D = sqrt(sum(Delta.^2,2));
+        [Dist(i),idx] = min(D);
+        ObjCount = min(M,size(RootEvidence.RootObj,2));
+        if ObjCount > 0
+            RootObj(i,1:ObjCount) = RootEvidence.RootObj(idx,1:ObjCount);
+        end
+    end
 end
 
 function Diag = InitBoundaryDiag(Generation,FE,Budget)
@@ -1999,6 +2325,17 @@ function Value = MeanOrNaN(Value)
     else
         Value = mean(Value);
     end
+end
+
+function Value = PercentileOrNaN(Value,Percentile)
+    Value = ColumnVector(Value);
+    Value = sort(Value(isfinite(Value)));
+    if isempty(Value)
+        Value = NaN;
+        return;
+    end
+    Rank = max(1,min(numel(Value),ceil(double(Percentile)/100*numel(Value))));
+    Value = Value(Rank);
 end
 
 function Value = SafeDivide(Numerator,Denominator)
@@ -2186,9 +2523,6 @@ function OppSupport = ComputeOppositeSupportFromCache( ...
         CandidateRow = reshape(CandidateDec(i,:),1,[]);
         Local = ColumnVector(ResolveLocalSectorSet(Sector(i),SupportCache.Neighbors));
         Mask = ColumnVector((SupportCache.Label ~= CandidateLabel(i)) & ismember(SupportCache.Sector,Local));
-        if ~any(Mask)
-            Mask = ColumnVector(SupportCache.Label ~= CandidateLabel(i));
-        end
         if any(Mask)
             LocalSupportDec = SupportCache.Dec(Mask,:);
             Delta = LocalSupportDec - repmat(CandidateRow,size(LocalSupportDec,1),1);
