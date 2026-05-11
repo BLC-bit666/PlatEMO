@@ -7,7 +7,7 @@ for i = 1:9
         'maxFE',    200000);
 end
 
-for i = 1:14
+for i = 5:10
     prob = str2func(sprintf('LIRCMOP%d_BC', i));
     platemo( ...
         'algorithm', @PRBCCMO, ...

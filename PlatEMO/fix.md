@@ -1,392 +1,384 @@
-当前 PRBCCMO 仍然把 `Model` 传进 `GenerateBoundaryOffspring` 和 `UpdateBoundaryArchive`，训练源仍合并 `B + BoundaryEvidence + PopulationC + PopulationU`，不可行排序仍用 `boundaryGap/gapDec/gapObj/margin/objScore` 复合键，类注释仍写着 “Boundary-band MLP driven CCMO”；这些都说明它还混合着路线 1、2、3 的语义，需要一次性收束。
+我重新想了一轮。最终版判断是：
 
-另外，现有 `kappa=10` 版本虽然扩大了 B 的覆盖，`B` 数量可到 166/130，但在难问题上已经出现明显厚边界带征兆：例如 LIRCMOP12_BC 的 `final_b_mean_dist_to_true_boundary = 0.328`，`p90 = 1.515`，`archive hit rate = 0.577`。这正是为什么重构后应让 `B` 变薄，把学习能力转交给 `D`。
+**PRBCCMO 应该收敛成一条主线：`B` 只定义“当前阶段的目标空间边界”，refinement 只负责把 pair 在目标空间里收紧，MLP 只在 boundary band 内恢复不可行解的选择压力。**
+按这条主线，**`FrontGap` 不应再参与运行时决策**；它至多保留为离线诊断列。当前代码里的 `FrontGap` 本质上只是 pair midpoint 相对 `PopulationC` 当前最佳可行 scalar 的差值，不是 CPF 距离；而它又被放在主不可行排序键的第一位，直接压住了 `prob`，这和你现在看到的主不可行 `mean_inf_prob_gain` 基本为 0 是一致的。  
 
-## A. 直接保留，不动主逻辑骨架
+同时，未知约束问题里“最优常贴边界”这个观察本身是成立的，但文献也明确说它**常见而非普适**；因此，把 B 讲成“当前阶段 objective boundary archive”比讲成“CPF-relevant boundary archive”更稳，也更诚实。BE-CBO 正是基于“未知物理约束下边界最优常见、边界模型精度关键”来设计边界探索，但它也明确承认并非所有问题都这样。([arXiv][1])
 
-这些部分继续保留：
+## 1. 关于 FrontGap：我的最终结论是“删出主逻辑，只留可选诊断”
 
-* 双群体框架 `PopulationC / PopulationU`
-* `GenerateDEOffspring`
-* 参考向量扇区化
-* `midpoint + one short bisection`
-* 当前轻量 MLP 的一层结构、`tanh`、warm-start normalization rebase、temperature scaling
-* trace / csv 指标框架
+你的质疑是对的，而且比我上一次的建议更接近 PRBCCMO 应该讲清楚的创新点。
 
-这些是你现有包里最值得保留的部分。
+你现在并不知道 CPF/主前沿在哪里；当前代码里的 `FrontGap` 也并没有真的刻画 CPF，它只是“pair midpoint 比当前 `PopulationC` 在该 sector 里最好的 feasible scalar 落后多少”。这会把理论叙事带偏成“B 追当前 feasible front”，而不是“B 拟合当前阶段边界”。
 
-## B. 立即删除或降级
+更重要的是，**你其实已经有“靠近原点/当前前沿方向”的 objective pressure 了**：当前 `BuildTargetBoundaryArchive` 里本来就有 per-sector 的 objective shell 选择，先把每个 sector 中 scalar 更靠前的 feasible / infeasible 候选留下，再去配 pair。也就是说，目标推进压力本来就该由 objective shell 来承担，而不是由一个名叫 `FrontGap` 的“伪 CPF gap”再额外压一遍。把两者都留着，反而会重复、冲突，而且会继续压住 MLP。
 
-### 1. 让 MLP 退出边界采样和边界归档
+所以我的最终建议不是“删掉 FrontGap 后只剩 PairGap”，而是：
 
-把这两处全部改掉：
+**把 `FrontGap` 换成更老实的 `MidScalar`，并且只用于 B 内部 tie-break；不要再把它带进主种群不可行排序。**
 
-```matlab
-GenerateBoundaryOffspring(..., W, Model, rho)
-UpdateBoundaryArchive(..., W, Model, kappa)
-```
+B 的运行时质量键改成：
 
-改成：
-
-```matlab
-GenerateBoundaryOffspring(..., W, rho)
-UpdateBoundaryArchive(..., W, kappaPair)
-```
-
-也就是说：
-
-* `Model` 不再进入 `GenerateBoundaryOffspring`
-* `Model` 不再进入 `UpdateBoundaryArchive`
-* `margin` 不再参与边界事件筛选、archive 排序、archive admission
-
-### 2. 删除点级厚 archive 语义
-
-删除：
-
-```matlab
-kappa = 10
-SideQuota = ceil(kappa/2)
-feasible-side / infeasible-side independent point quota
-```
-
-`B` 改成 **pair-level archive**。
-
-### 3. 删除全局训练源
-
-删除训练源中的：
-
-```matlab
-PopulationC
-PopulationU
-```
-
-训练源只能来自：
-
-```matlab
-PairEvents.finalPairs
-revalidated B pairs
-```
-
-### 4. 删除复杂复合分数
-
-删除或降级为 debug 字段：
-
-```matlab
-objScore
-oppSupport
-score
-betweenScoreObj
-shellDistDec
-```
-
-`objScore` 直接替换成更单一、可解释的 `frontGap`。
-
-## C. 必须重写的函数
-
-### 1. `BuildBoundaryPairsFromArrays`
-
-重写目标：
-
-* 先扇区化，再局部配对
-* same/neighbor sector only
-* mutual nearest cross-label
-* fallback 仅在本地扇区
-* 距离尺度改成确定性 median，不再 `randperm`
-
-新增输出字段：
-
-```matlab
-PairId
-PairGap
-FrontGap
-Sector
-Time
-MidDec
-MidObj
-```
-
-### 2. `GenerateBoundaryOffspring`
-
-重写目标：
-
-* 不再接收 `Model`
-* pair 排序改成：
-
-```matlab
-[FrontGap, PairGap, Time]
-```
-
-* pair 预算按扇区 round-robin
-* 只做：
-
-```matlab
-midpoint contraction
-+ one short bisection
-```
-
-* 返回：
-
-```matlab
-[BoundaryOff, PairEvents]
-```
-
-其中 `PairEvents` 至少包含：
-
-```matlab
-finalPairs
-probes
-pair metadata
-```
-
-### 3. `UpdateBoundaryArchive`
-
-重写目标：
-
-* 输入不再是点级 `BoundarySamples + TightEndpoints + RevalidatedB`
-* 而是 pair-level：
-
-```matlab
-CandidatePairs = [E_t.finalPairs, RevalidatedOldPairs]
-```
-
-* 每扇区仅保留 `kappaPair=3` 对
-* pair 排序键：
-
-```matlab
-[sourcePriority, frontGap, pairGap, -time]
-```
-
-如果你暂时不想彻底改 `B` 的外部接口，可以在内部按 pair 选好，再 `FlattenPairsToPopulation(B)`。
-
-### 4. `BuildTrainingCandidateSet / UpdateTrainingBuffer / CollectSectorBoundaryBand`
-
-这三个模块建议整体替换成显式 `PairBuffer` 逻辑：
-
-```matlab
-D = UpdatePairBuffer(D, PairEvents, B, FE)
-Dataset = BuildDatasetFromPairBuffer(D)
-```
-
-`D` 推荐按 pair 存，而不是按散点存。
-
-### 5. `BuildBoundaryMeta`
-
-压缩成最小版本，只保留：
-
-```matlab
-sector
-feasible
-prob
-margin
-localPairExists
-pairGap
-sectorCovered
-supportDistDec
-frontGap
-```
-
-说明：
-
-* `localPairExists / pairGap`：只服务于 evidence / archive
-* `sectorCovered / supportDistDec / frontGap`：服务于 infeasible selection
-* `margin`：只服务于 model-ready 的 infeasible selection
-
-### 6. `SelectInfeasibleByBoundaryMeta`
-
-这是重构后 MLP 的唯一主战场。
-
-当前思路应该整体替换为：
-
-```matlab
-ApplicableI = infeasible & sectorCovered
-```
-
-然后：
-
-```matlab
-if ModelReady
-    key = [margin, supportDistDec, frontGap, idx]
-else
-    key = [supportDistDec, frontGap, idx]
-end
-```
-
-保持扇区 round-robin，不要再用：
-
-```matlab
-[boundaryGap, gapDec, gapObj, margin, objScore]
-```
-
-### 7. `ShouldRetrainBoundaryModel`
-
-简化成：
-
-```matlab
-FirstTrain:
-    pairCount >= 10
-    mixedSectorCount >= 3
-    both labels exist
-
-Retrain:
-    every 10 generations
-    and newPairRatio >= 0.2
-```
-
-不要把复杂 validation/Brier 触发留在主逻辑里；它可以保留为 trace 指标，但不做默认训练开关。
-
-## D. 建议新增的最小函数
-
-为了让语义彻底清晰，建议新增四个最小函数，而不是继续在旧函数里打补丁：
-
-```matlab
-BuildLocalWitnessPairs(...)
-EvaluatePairEvents(...)
-UpdatePairMemory(...)
-FindModelApplicableInfeasible(...)
-```
+`Q_B(pair) = (PairGap, MidScalar)`
 
 其中：
 
-### `FindModelApplicableInfeasible(...)`
+* `PairGap = || f_F^N - f_I^N ||_2`，表示 pair 在目标空间里贴边的紧密程度。
+* `MidScalar = scalar(0.5*(f_F^N + f_I^N))`，表示这条 pair 当前在目标推进方向上有多靠前。
 
-核心逻辑只做两件事：
+这样就回答了你问的“字典序还是综合考虑”：
 
-```matlab
-1) 判断 sectorCovered
-2) 计算 supportDistDec
-```
+**不用加权综合。**
+我建议用 **staged gating + lexicographic**：
 
-不再复用 `BoundaryEligible(...)`，因为：
+先用现有的 objective shell 机制把每个 sector 中“更靠前”的 feasible / infeasible 候选筛出来；
+再在 shell 内按 `Q_B = (PairGap, MidScalar)` 做字典序。
 
-* `BoundaryEligible` 是给 **evidence / archive**
-* `ModelApplicableInfeasible` 是给 **selection**
+这比加权综合更稳定，也更符合“统一、减法、收敛”的要求。
 
-这两个语义本来就不该是同一个 gate。
+## 2. 关于 `betaB / Kbis / rhoRef`：最终定为 `betaB=3, Kbis=1, rhoRef=0.10`
 
-## E. 参数建议
+这里我给出明确决策，不留模糊区间。
 
-建议默认参数改为：
+### `betaB = 3`
 
-```text
-rho       = 0.12
-kappaPair = 3
-tauE      = 1.25   % loose evidence gate
-tauB      = 0.55   % strict archive gate
-hidden    = 20     % 先保留当前值
-epoch     = 20
-lr        = 0.01
-```
+你建议 3，我认同。原因不是拍脑袋，而是它正好是当前版本最合适的折中。
 
-其中最重要的改变不是数值，而是：
+你现在正式实验里，`N=100`、`betaB=4` 时，B 预算是 400 pair；但实验汇总显示，每代平均 `replaced pair` 约为 DAS 34.23、LIR 28.02，而 `contracted pair` 只有 DAS 8.34、LIR 6.74，说明当前系统主要由“全局重组”驱动，而不是“同 pair 深挖”驱动。 
 
-```text
-kappa 的单位从 point per sector 改成 pair per sector
-```
+把 `betaB` 从 4 改到 3 后：
 
-## F. 指标体系如何跟着改
+* B 不再稀释到 400 对那么松散；
+* 在保持当前 `etaB` 配置不变时，全局 reshape 的有效预算规模会更接近你现在实际发生的 28~34 对/代，而不会像 `betaB=4` 那么宽，也不会像 `betaB=2` 那么紧。
 
-你现在的 trace 框架很好，不要废掉，只做字段替换和补充。
+所以 3 是最合适的收敛点。
 
-### 保留
+### `Kbis = 1`
 
-保留这些：
+这一点我现在比上一次更确定。
 
-```text
-archive_hit_rate_eps
-final_b_mean_dist_to_true_boundary
-final_b_p90_dist_to_true_boundary
-final_b_margin_true_boundary_corr
-final_inf_margin_gain
-```
+按你当前代码，`rhoRef=0.10`、`N=100` 时，helper refinement 每代总预算大约就是 10 次评估；`Kbis=3` 时，实际只能覆盖约 3 个 pair；`Kbis=2` 也只能覆盖 5 个 pair。B 预算却是几百对，覆盖率明显不够。实验也已经说明这一点：全局重组比同 pair 的连续二分强得多。
 
-### 改名
+所以这里的主矛盾是 **覆盖率**，不是 **单对挖掘深度**。
+尤其当接受准则改成 objective-space first 以后，一次 midpoint 探测就足够判断这条 pair 是否值得收紧；没必要在同一代上连续挖同一对。
 
-把：
+因此最终选择是：
 
-```text
-objScore -> frontGap
-```
+* `Kbis = 1`
+* `rhoRef = 0.10` 先不加
 
-### 新增
+### `rhoRef = 0.10`
 
-新增两个更贴路线 2 的指标：
+先不加大。因为 helper population 还承担探索作用；如果第一轮就把 `rhoRef` 提高，会直接挤占 `OffspringU` 的自由探索预算。先把 `Kbis=1`、objective-space acceptance、候选池和 MLP 入口都修正，再看 contracted/replaced 比例是否仍明显偏低。
 
-```text
-final_inf_supportDist_gain
-final_inf_frontGap_gain
-```
+## 3. 关于“二分目标不等于目标空间贴边”：接受准则必须改成 objective-space first
 
-这样你能直接验证：
+这一点你已经认同，我直接给最终实现建议：
 
-* 被选中的 infeasible 是否更靠近 supported boundary
-* 被选中的 infeasible 是否更接近当前 feasible frontier
-* margin 是否真的在恢复选择压力，而不是单纯做分类
+**midpoint 保留；接受准则重写。**
 
-## G. 一张最关键的“改前 / 改后”对照
+也就是说，我不建议第一轮再搞更复杂的 τ-search、偏置线搜或多段采样。先保持最简单的 midpoint：
 
-```text
-改前：
-B = 点级厚边界存档
-MLP = 同时沾采样、归档、选择
-Train = B + BoundaryEvidence + PopulationC + PopulationU
-Selection = boundaryGap/gapDec/gapObj/margin/objScore 混合排序
+`x_ref = 0.5 * (x_f + x_i)`
 
-改后：
-B = pair-level thin boundary memory
-MLP = 只做不可行解选择压力恢复
-Train = PairEvents.finalPairs + revalidated B pairs
-Selection = margin/supportDistDec/frontGap
-```
+原因很简单：
+你真正缺的不是“更花的线段采样器”，而是“采到点之后，什么样的 pair 才允许留在 B”。
 
-## H. 最终的代码改造优先级
+所以 `ContractBoundaryPairsByRefinedSamples` / `IsBracketTighter` 这条逻辑应改成：
 
-### 第一优先级：关闭路线 3 残留
+* 若 `x_ref` feasible，则替换 feasible endpoint；
+* 若 `x_ref` infeasible，则替换 infeasible endpoint；
+* 只有当新 pair 的 `Q_B(new) = (PairGap_new, MidScalar_new)` 按字典序优于旧 pair，才接受；
+* decision-space gap 只保留成最后的 tie-break 或 diagnostics，不再作为主判断。
 
-先改这三处：
+这样你就不再需要讲“decision bracket 变紧，所以 objective boundary 也会贴近”。
+你可以更硬地讲：**我在决策空间上线段取样，但我只按目标空间贴边质量保留 pair。**
 
-1. `GenerateBoundaryOffspring` 去掉 `Model`
-2. `UpdateBoundaryArchive` 去掉 `Model`
-3. `SelectInfeasibleByBoundaryMeta` 改成 `[margin, supportDistDec, frontGap]`
+这正好把你的动机和实现对齐了。 
 
-### 第二优先级：建立 `PairBuffer D`
+## 4. 关于 B 候选池：`PopulationC` 和 `PopulationU` 都拿掉，但 `B` 不能拿掉
 
-把训练源从全局种群切回 pair-supported boundary evidence。
+这一点我的最终判断是：
 
-### 第三优先级：`B` 改成 pair-level thin memory
+**把 `PopulationC` 和 `PopulationU` 从 B candidate pool 里删掉；保留 `B`、`OffspringC`、`OffspringU`。**
 
-把 `kappa=10 + SideQuota` 改成 `kappaPair=3`。
+也就是把当前
 
-### 第四优先级：trace 字段与语义测试更新
+`[B, PopulationC, PopulationU, OffspringC, OffspringU]`
 
-语义测试应该改成检查：
+改成
 
-* `Boundary offspring must not use Model`
-* `Boundary archive must be pair-level`
-* `Training dataset must come from PairBuffer`
-* `Infeasible selection must use margin as first key after applicability gate`
+`[B, OffspringC, OffspringU]`。
+
+原因有三点。
+
+第一，**B 本身已经是记忆体**。
+如果一条边界 pair 真有价值，它应该留在 B；没必要再靠 parent population 重复灌一次。
+
+第二，**真正的新信息来自子代，不来自父代**。
+父代更多是陈旧状态。你现在看到的大量远离真实边界的橙点，本来就有很大一部分来自无约束侧，而且不少是历史候选被 B 留下来的结果。DAS 最终 B 不可行端点约 63.91%、LIR 约 55.33% 来自无约束侧，这已经说明候选池输入过宽。
+
+第三，这样改之后，helper 的作用会更像 CCMO 所说的“弱合作”：
+helper 通过 **offspring** 提供有用提案，而不是通过 parent pool 强输入地污染主机制。CCMO 本来就强调辅助任务的价值在于共享搜索信息，而不是过强耦合。
+
+所以这里不是“只留子代”，而是更准确地说：
+
+**`B + 子代`，去掉父代。**
+
+## 5. 关于 MLP：FrontGap 要完全退出 MLP 通路；MLP 角色现在可以收敛了
+
+这里是你最核心的问题，我给出更明确的结论。
+
+### 5.1 先说根因：当前 MLP 失效，主要不是模型太弱，而是链路没对齐
+
+现在 MLP 效果差，根因有三条：
+
+第一，当前主不可行排序键是
+`[frontGap, -prob, supportDistObjToB, idx]`，
+概率排第二。
+
+第二，主 carry 通道通常只有 1 个位置；就算 carry 有轻微正增益，整体影响也很小。实验上 DAS/LIR 的主不可行 `mean_inf_prob_gain` 基本都接近 0。
+
+第三，更关键的是，你当前 non-B train buffer 实际上被代码写成了 0。
+按当前默认逻辑：
+
+`MaxTrain = max(2*NBPair, 4*N)`
+传入 `UpdateTrainingBufferT` 的是 `max(0, MaxTrain - 2*NBPair)`
+
+在 `betaB=4, N=100` 时：
+
+* `NBPair = 400`
+* `2*NBPair = 800`
+* `4*N = 400`
+* 所以 `MaxTrain = 800`
+* non-B budget = `800 - 800 = 0`
+
+也就是说，recent refinement 和 boundary-band 样本会被全部裁掉。MLP 实际上几乎只在 B endpoints 上训练，却被拿去影响主种群不可行排序，当然很难有效。
+
+### 5.2 所以 MLP 的最终角色应该这样定义
+
+**MLP = B 条件下的 local boundary prior**
+
+不是全局 classifier。
+不是泛用 ranking model。
+也不是 surrogate objective。
+
+训练目标仍然是 feasibility classification；这和 NA-EMT 的“用 MLP 估计 infeasible solution value，再把 predicted value 真正写进主任务不可行解处理”是一致的。
+
+但它的**使用场景**必须收缩到：
+
+**只在 near-B infeasible shortlist 内排序。**
+
+也就是说，MLP 不负责在整个 infeasible pool 上“通吃”；它只负责在“已经很靠近当前边界”的那一小撮不可行解里，判断谁更值得进入主种群。
+
+### 5.3 对应的改法
+
+1. **修 T-buffer**
+
+   * `MaxTrain = 2*NBPair + 2*N`
+   * refinement buffer 保留最新 `N` 条
+   * boundary-band buffer 保留最新 `N` 条
+   * `BuildTrainingBufferT` 拼接顺序改成 `[TrainBuffer ; B]`，不要再写成 `[B ; TrainBuffer]`
+
+   这一步很关键，因为你现在的 `BalanceTrainingDataset` 是按出现顺序取 `Pos(1:Count)` 和 `Neg(1:Count)`；如果把 B 放前面，非 B 的 boundary-local 样本还是会被吃不进去。
+
+2. **`Gstart` 改成 0**
+
+   * 不再人为拖到 150 代以后
+   * 真实能不能训练，交给 `pair_count` 和样本量门槛去控制
+
+   这样更统一，也不增加分支。
+
+3. **删除 carry/fill 双通道**
+
+   * 统一成一个入口
+   * 当 B ready 且 model ready 时，固定预留 `Kinf = ceil(0.05*N)` 个位置给 near-B infeasible
+   * `N=100` 时就是 5 个位置
+
+4. **先 boundary-band，再 MLP**
+
+   * 在所有 infeasible 里，先按 `supportDistObjToB` 取最近的 `L = 3*Kinf`
+   * 再在这 `L` 个里按 `[-prob, supportDistObjToB]` 排序
+
+这样之后，`prob` 才真正成为主裁决器；而 `supportDist` 负责保证“这些点确实就在当前边界带里”。
+
+### 5.4 这一轮不建议先上 ensemble
+
+BE-CBO 的确说明了：在复杂边界和高维问题里，更强的 boundary classifier，尤其 deep ensembles，相比 GP 或弱模型会更稳。([arXiv][1])
+
+但我不建议你第一轮就把单 MLP 换成 ensemble。
+你现在更大的问题不是 model capacity，而是 **B 的定义、T 的来源、selection 的入口** 没对齐。先把这三点修正，再看单 MLP 还有没有必要升级。
+
+## 6. 关于指标：对外只保留一个——`ΔIGD_MLP`
+
+你说得对，不需要再分三层，也不需要再拿 accuracy 做主结果。
+
+我建议对外只保留一个指标：
+
+**same-seed paired `ΔIGD_MLP = IGD(MLP-off) - IGD(PRBCCMO)`**
+
+解释很直接：
+
+* `MLP-off`：把模型入口完全关掉，其余代码、参数、种子都不变；
+* `ΔIGD_MLP > 0`：说明引入 MLP 以后最终结果更好；
+* 这比 `mlp_train_acc` 更直接地回答：
+  **B → T → MLP → 不可行选择 → 性能提升** 这条链条到底有没有闭合。
+
+`mlp_train_acc` 不再作为论文/汇报指标。
+它最多只保留成一个本地 debug 值，甚至可以不再写 CSV。
+
+NA-EMT 里的 accuracy 是用来触发 model update 的；你现在已经是 fixed-period retrain，所以完全没必要再把 accuracy 当贡献证据。
 
 ---
 
-**最终结论**
+## 在当前 PRBCCMO 基础上的完整修改方式
 
-你这次重构不该再写成：
+下面给你一个可直接落地的版本。
 
-```text
-Boundary-band MLP driven CCMO
-```
+### A. 参数层
 
-而应写成：
+在 `PRBCCMO.m / PRBCCMO_t.m` 里，把默认参数改成：
 
-```text
-Pair-supported boundary recoverability CCMO
-```
+* `betaB = 3`
+* `Gstart = 0`
 
-核心只有三件事：
+其余先不改。
 
-```text
-1) pair 造证据
-2) thin B 存证据
-3) MLP 在 covered sectors 内恢复不可行解选择压力
-```
+在 `runObjectiveBoundaryCore` 里改成：
 
-这一版的关键词只有三个：**pair、thin memory、pressure recovery**。
+* `rhoRef = 0.10`
+* `Kbis = 1`
+* `NBPair = ceil(3*N)`
+* `MaxTrain = 2*NBPair + 2*N`
+
+
+
+### B. B 档案层
+
+1. `InitBoundaryArchiveInfo`
+
+   * 把 `FrontGap` 改成 `MidScalar`
+
+2. `BuildBoundaryCandidatePool`
+
+   * 改成 `A = [B, OffspringC, OffspringU]`
+
+3. `BuildTargetBoundaryArchive`
+
+   * 保留现有 sector 化与 `SelectBoundaryShellByScalar`
+   * 不再计算/使用 `BestFeasibleScalar` 和 `FrontGap` 作为运行时键
+
+4. `BuildSectorCandidatePairsObjective`
+
+   * shell 内仍然构造 feasible/infeasible 配对
+   * pair 质量键改成 `Q_B = (PairGap, MidScalar)`
+   * 先按 `PairGap`，再按 `MidScalar`
+
+5. `ComputeSectorPriority`
+
+   * 改成 `log(1+Count)/(eps + bestPairGap)`
+
+6. `AllocateSectorQuota`
+
+   * 删除当前依赖 `FeRatio` 的 `CoverCount` 逻辑
+   * 统一成：
+
+     * 先给每个 available sector 1 个 quota
+     * 再按 `Priority/(Quota+1)` 分配剩余 quota
+
+7. `BlendBoundaryArchive`
+
+   * add / drop / trim 全部只看 `PairGap`，年龄做 tie-break
+   * `FrontGap` 不再参与
+
+### C. refinement 层
+
+1. `SelectBoundaryRefinementPairs`
+
+   * 从当前 `[-DecGap, -Age, FrontGap]`
+   * 改成 `[-PairGap, -Age]`
+
+2. `InjectBoundaryRefinementIntoHelperOffspring`
+
+   * midpoint 逻辑保持不变
+
+3. `IsBracketTighter` / `CompareBoundaryPairObjectiveKeys` / `EvaluateBoundaryPairKeyFromNorm`
+
+   * 目标键改成 `[PairGap, MidScalar]`
+   * 接受条件改成 `Q_B(new) <lex Q_B(old)`
+   * decision gap 只做最后 tie-break，不再主导
+
+### D. MLP / 选择层
+
+1. `BuildBoundaryMetaFromB`
+
+   * 删除 `frontGap`
+   * 只保留 `prob`、`supportDistObjToB`、`sector`
+
+2. `SortBySelectionKey`
+
+   * 改成 `[-prob, supportDistObjToB, idx]`
+
+3. `EnvironmentalSelectionC_ObjectBoundary`
+
+   * 删除 carry/fill 双通道
+   * 统一预留 `Kinf = ceil(0.05*N)` 个 near-B infeasible 位置
+   * 其余位置仍然优先给 feasible population
+
+4. `SelectInfeasibleByBoundaryMeta`
+
+   * 先按 `supportDistObjToB` 取最近的 `L = 3*Kinf`
+   * 再按 `[-prob, supportDistObjToB]` 排序选 `Kinf`
+
+### E. T-buffer 层
+
+1. `UpdateTrainingBufferT`
+
+   * non-B 不再共用一个 0 容量
+   * 改成两个独立上限：
+
+     * refinement: 最新 `N`
+     * boundary-band: 最新 `N`
+
+2. `TrimTrainingBufferNonB`
+
+   * 分 source 分别裁剪，不再 source 2 吃完所有预算
+
+3. `BuildTrainingBufferT`
+
+   * 拼接顺序改成 `[TrainBuffer ; B]`
+
+### F. 诊断与测试层
+
+1. 把 `b_mean_front_gap / b_p90_front_gap` 系列列名整体改成 `b_mean_mid_scalar / ...`
+
+   * 如果你嫌动脚本太多，至少把它们从论文叙事里删掉，不再叫 FrontGap
+
+2. `mlp_train_acc`
+
+   * 不再作为对外指标
+   * 可选保留为本地 debug，或直接不再写 summary
+
+3. 新增一个 paired summary
+
+   * `delta_igd_mlp`
+
+4. 同步更新：
+
+   * `test_PRBCCMO_semantics.m`
+   * `test_PRBCCMO_t_metrics.m`
+   * `summarize_PRBCCMO_t_run.m`
+   * `summarize_PRBCCMO_t_data.m`
+
+---
+
+## 最后一句收束
+
+这版 PRBCCMO 的最终形态，我建议你这样讲：
+
+**helper offspring 提供边界提案；B 用 objective shell + 最小 objective pair gap 定义当前阶段边界；midpoint refinement 只做 objective tightening；MLP 只在 boundary band 内恢复不可行解选择压力。**
+
+这比“FrontGap 追 CPF + 二分类 accuracy + 辅助侧大量灌入 B”更统一，也更能把你的核心创新点讲硬。
+DRMCMO 说明了在二元约束下 CV/ε 的指导会明显变弱；CCMO 说明 helper 应该弱合作；NA-EMT 说明 predicted value 必须真正进入主任务选择；BE-CBO 说明边界模型精度对未知约束问题确实关键。你现在最该做的，不是再加机制，而是把这四件事收敛成一条机制链。   ([arXiv][1])
+
+[1]: https://arxiv.org/abs/2402.07692 "https://arxiv.org/abs/2402.07692"
