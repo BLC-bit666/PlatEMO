@@ -22,11 +22,12 @@ function runObjectiveBoundaryCore(~,Problem,TraceMode,Params,NotTerminated,Obser
     etaB     = Params(5);
     Tretrain = Params(6);
     Gstart   = Params(7);
+    UseMLP   = Params(9) > 0;
     rhoRef   = 0.10;
     Kbis     = 3;
 
     NBPair = max(1,ceil(betaB*Problem.N));
-    MaxTrain = max(2*NBPair,4*Problem.N);
+    MaxRefinementBufPerClass = round(0.5*Problem.N);
 
     PopulationC = Problem.Initialization();
     PopulationU = Problem.Initialization();
@@ -40,7 +41,8 @@ function runObjectiveBoundaryCore(~,Problem,TraceMode,Params,NotTerminated,Obser
     while NotTerminated(ResultPopulationC)
         Generation = Generation + 1;
 
-        OffspringC = GenerateDEOffspring(Problem,PopulationC,true);
+        [OffspringC,MatingDiag] = GenerateDEOffspring( ...
+            Problem,PopulationC,true,W,Model,B,BInfo,PopulationC,UseMLP);
         OffspringUDec = GenerateDEOffspringDecision(Problem,PopulationU,false);
         [OffspringU,B,BInfo,ContractionDiag] = EvaluateHelperOffspringWithBoundaryRefinement( ...
             Problem,OffspringUDec,B,BInfo,rhoRef,Kbis,PopulationC,W,NBPair);
@@ -49,30 +51,28 @@ function runObjectiveBoundaryCore(~,Problem,TraceMode,Params,NotTerminated,Obser
         BInfo = ResetContractedPairAges(B,BInfo,ContractionDiag.accepted_key);
         BlendDiag.contracted = ContractionDiag.accepted;
 
-        BoundaryBand = SelectBoundaryBandTrainingPoints( ...
-            OffspringU,B,BInfo,PopulationC,W,max(1,ceil(0.10*Problem.N)));
-        TrainBuffer = UpdateTrainingBufferT( ...
-            TrainBuffer,ContractionDiag.refined,BoundaryBand,Generation,max(0,MaxTrain-2*NBPair));
+        TrainBuffer = UpdateTrainingBufferT(TrainBuffer,ContractionDiag.accepted_refined,ContractionDiag.rejected_refined,Generation,MaxRefinementBufPerClass);
         [Model,MLPDiag] = UpdateBoundaryMLPPeriodically( ...
-            Model,B,BInfo,TrainBuffer,hidden,epoch,lr,Generation,Gstart,Tretrain,Problem);
+            Model,B,BInfo,TrainBuffer,PopulationC,PopulationU,OffspringU,W, ...
+            hidden,epoch,lr,Generation,Gstart,Tretrain,Problem,ContractionDiag);
 
         QC = KeepUniquePopulation([PopulationC,OffspringC,OffspringU]);
         QU = KeepUniquePopulation([PopulationU,OffspringC,OffspringU]);
         [PopulationC,SelectionDiag] = EnvironmentalSelectionC_ObjectBoundary( ...
-            QC,Problem.N,W,Model,B,BInfo,PopulationC);
+            QC,Problem.N,W,Model,B,BInfo,PopulationC,UseMLP);
         PopulationU = EnvironmentalSelectionU(QU,Problem.N,W);
         ResultPopulationC = BuildExternalResultPopulation(PopulationC,ResultPopulationC);
 
         if TraceMode
             Observer = LogGenerationDiagnostics(Observer,Problem,Generation, ...
-                B,BInfo,PopulationC,PopulationU,BlendDiag,MLPDiag,SelectionDiag);
+                B,BInfo,PopulationC,PopulationU,BlendDiag,MLPDiag,MatingDiag,SelectionDiag);
             Observer = WriteBoundarySnapshotsIfDue(Observer,Problem,Generation,B,BInfo);
         end
     end
 end
 
 function Params = normalizeParams(Params)
-    Defaults = [40,80,0.05,4,0.1,20,150,0];
+    Defaults = [64,200,1e-3,3,0.1,10,0,0,1];
     if isempty(Params)
         Params = Defaults;
     end
@@ -83,35 +83,75 @@ function Params = normalizeParams(Params)
     Params = Params(1:numel(Defaults));
     Params(1) = max(2,round(Params(1)));
     Params(2) = max(1,round(Params(2)));
-    Params(3) = max(1e-4,Params(3));
+    Params(3) = max(1e-6,Params(3));
     Params(4) = max(1,Params(4));
     Params(5) = max(0,min(1,Params(5)));
     Params(6) = max(1,round(Params(6)));
     Params(7) = max(0,round(Params(7)));
     Params(8) = double(Params(8) > 0);
+    Params(9) = double(Params(9) > 0);
 end
 
 %% Main-population offspring
 
-function Offspring = GenerateDEOffspring(Problem,Population,useConstraintIndicator)
+function [Offspring,MatingDiag] = GenerateDEOffspring(Problem,Population,useConstraintIndicator,W,Model,B,BInfo,PopulationC,UseMLP)
+    MatingDiag = InitMatingDiag();
     if isempty(Population)
         Offspring = Population;
         return;
     end
-    Offspring = Problem.Evaluation( ...
-        GenerateDEOffspringDecision(Problem,Population,useConstraintIndicator));
+    if nargin < 4
+        W = [];
+    end
+    if nargin < 5
+        Model = [];
+    end
+    if nargin < 6
+        B = Population([]);
+    end
+    if nargin < 7 || isempty(BInfo)
+        BInfo = InitBoundaryArchiveInfo(0);
+    end
+    if nargin < 8
+        PopulationC = Population([]);
+    end
+    if nargin < 9
+        UseMLP = true;
+    end
+    [OffspringDec,MatingDiag] = GenerateDEOffspringDecision( ...
+        Problem,Population,useConstraintIndicator,W,Model,B,BInfo,PopulationC,UseMLP);
+    Offspring = Problem.Evaluation(OffspringDec);
 end
 
-function OffspringDec = GenerateDEOffspringDecision(Problem,Population,useConstraintIndicator)
+function [OffspringDec,MatingDiag] = GenerateDEOffspringDecision(Problem,Population,useConstraintIndicator,W,Model,B,BInfo,PopulationC,UseMLP)
+    MatingDiag = InitMatingDiag();
     if isempty(Population)
         OffspringDec = zeros(0,Problem.D);
         return;
     end
+    if nargin < 4
+        W = [];
+    end
+    if nargin < 5
+        Model = [];
+    end
+    if nargin < 6
+        B = Population([]);
+    end
+    if nargin < 7 || isempty(BInfo)
+        BInfo = InitBoundaryArchiveInfo(0);
+    end
+    if nargin < 8
+        PopulationC = Population([]);
+    end
+    if nargin < 9
+        UseMLP = true;
+    end
 
     N = numel(Population);
     if useConstraintIndicator
-        [Flag,FrontNo,CrowdDis] = ConstraintSideIndicator(Population);
-        MatingPool = TournamentSelection(2,2*N,Flag,FrontNo,-CrowdDis);
+        [MatingPool,MatingDiag] = TournamentSelectionConstraintMLP( ...
+            Population,2*N,W,Model,B,BInfo,PopulationC,UseMLP);
     else
         [FrontNo,CrowdDis] = ObjectiveSideIndicator(Population);
         MatingPool = TournamentSelection(2,2*N,FrontNo,-CrowdDis);
@@ -140,8 +180,9 @@ function [Offspring,B,BInfo,Diag] = EvaluateHelperOffspringWithBoundaryRefinemen
 
     nRef = numel(PairPlan);
     UsedRows = nRef*Kbis;
-    RefinedAll = B([]);
-    for step = 1 : Kbis %#ok<NASGU>
+    StepIndices = 1 : Kbis;
+    RefinedCells = cell(1,numel(StepIndices));
+    for step = 1 : numel(StepIndices) %#ok<NASGU>
         BatchDec = zeros(nRef,Problem.D);
         [BatchDec,RefineInfo] = InjectBoundaryRefinementIntoHelperOffspring( ...
             Problem,BatchDec,B,BInfo,PairPlan);
@@ -149,8 +190,9 @@ function [Offspring,B,BInfo,Diag] = EvaluateHelperOffspringWithBoundaryRefinemen
         [B,BInfo,StepDiag] = ContractBoundaryPairsByRefinedSamples( ...
             B,BInfo,Refined,RefineInfo,PopulationC,W,NBPair,Problem);
         Diag = MergeContractionDiag(Diag,StepDiag);
-        RefinedAll = [RefinedAll,Refined]; %#ok<AGROW>
+        RefinedCells{step} = Refined;
     end
+    RefinedAll = [RefinedCells{:}];
 
     RestDec = OffspringDec(UsedRows+1:end,:);
     if isempty(RestDec)
@@ -196,21 +238,17 @@ function Pick = SelectBoundaryRefinementPairs(Problem,B,BInfo,MaxPairs)
         return;
     end
 
-    FeasibleDec = double(B(2*Active-1).decs);
-    InfeasibleDec = double(B(2*Active).decs);
-    DecGap = DecisionDistanceNormalized(FeasibleDec,InfeasibleDec,Problem.lower,Problem.upper);
-    FrontGap = BInfo.FrontGap(Active);
+    PairGap = BInfo.PairGap(Active);
     PairAge = BInfo.Age(Active);
-    Valid = isfinite(FrontGap(:)) & isfinite(PairAge(:)) & isfinite(DecGap(:));
+    Valid = isfinite(PairGap(:)) & isfinite(PairAge(:));
     Active = Active(Valid);
-    DecGap = DecGap(Valid);
-    FrontGap = FrontGap(Valid);
+    PairGap = PairGap(Valid);
     PairAge = PairAge(Valid);
     if isempty(Active)
         return;
     end
 
-    [~,ord] = sortrows([-DecGap(:),-PairAge(:),FrontGap(:),Active(:)],[1 2 3 4]);
+    [~,ord] = sortrows([-PairGap(:),-PairAge(:),Active(:)],[1 2 3]);
     Pick = Active(ord(1:min(MaxPairs,numel(ord))));
 end
 
@@ -220,7 +258,7 @@ function BInfo = InitBoundaryArchiveInfo(NBPair)
     BInfo = struct( ...
         'PairCount',0, ...
         'Sector',zeros(NBPair,1), ...
-        'FrontGap',inf(NBPair,1), ...
+        'MidScalar',inf(NBPair,1), ...
         'PairGap',inf(NBPair,1), ...
         'FeasibleSource',ones(NBPair,1), ...
         'InfeasibleSource',ones(NBPair,1), ...
@@ -231,17 +269,15 @@ end
 function [B,BInfo,Target,BlendDiag] = UpdateBoundaryArchiveObjective( ...
     B,BInfo,PopulationC,PopulationU,OffspringC,OffspringU,W,NBPair,etaB,Problem)
 
-    [A,Source] = BuildBoundaryCandidatePool(B,BInfo,PopulationC,PopulationU,OffspringC,OffspringU);
-    FeRatio = min(Problem.FE/max(Problem.maxFE,1),1);
-    Target = BuildTargetBoundaryArchive(A,Source,PopulationC,W,NBPair,FeRatio);
+    %#ok<INUSD>
+    [A,Source] = BuildBoundaryCandidatePool(B,BInfo,OffspringC,OffspringU);
+    Target = BuildTargetBoundaryArchive(A,Source,W,NBPair);
     [B,BInfo,BlendDiag] = BlendBoundaryArchive(B,BInfo,Target,etaB,NBPair);
 end
 
-function [A,Source] = BuildBoundaryCandidatePool(B,BInfo,PopulationC,PopulationU,OffspringC,OffspringU)
-    A = [B,PopulationC,PopulationU,OffspringC,OffspringU];
+function [A,Source] = BuildBoundaryCandidatePool(B,BInfo,OffspringC,OffspringU)
+    A = [B,OffspringC,OffspringU];
     Source = [BoundaryEndpointSources(B,BInfo); ...
-        BoundarySourceCode('population_c')*ones(numel(PopulationC),1); ...
-        BoundarySourceCode('population_u')*ones(numel(PopulationU),1); ...
         BoundarySourceCode('offspring_c')*ones(numel(OffspringC),1); ...
         BoundarySourceCode('offspring_u')*ones(numel(OffspringU),1)];
     [A,Source] = KeepUniquePopulationWithSource(A,Source);
@@ -329,13 +365,12 @@ function [B,BInfo,Diag] = ContractBoundaryPairsByRefinedSamples( ...
         [Accept,CandKey,CandSector] = IsBracketTighter( ...
             OldF,OldI,CandF,CandI,Problem,PopulationC,W);
         Diag.attempted = Diag.attempted + 1;
-        Diag.refined = [Diag.refined,Refined]; %#ok<AGROW>
         if Accept
             B(2*p-1) = CandF;
             B(2*p) = CandI;
             BInfo.Sector(p) = CandSector;
-            BInfo.FrontGap(p) = CandKey(1);
-            BInfo.PairGap(p) = CandKey(2);
+            BInfo.PairGap(p) = CandKey(1);
+            BInfo.MidScalar(p) = CandKey(2);
             BInfo.Age(p) = 0;
             [FeasibleSource,InfeasibleSource] = BoundaryPairSources(BInfo,PairCount);
             BInfo.FeasibleSource(p) = FeasibleSource(p);
@@ -350,8 +385,10 @@ function [B,BInfo,Diag] = ContractBoundaryPairsByRefinedSamples( ...
             if isempty(Diag.accepted_key) || size(Diag.accepted_key,2) == size(Key,2)
                 Diag.accepted_key = [Diag.accepted_key;Key];
             end
+            Diag.accepted_refined = [Diag.accepted_refined,Refined]; %#ok<AGROW>
         else
             Diag.rejected = Diag.rejected + 1;
+            Diag.rejected_refined = [Diag.rejected_refined,Refined]; %#ok<AGROW>
         end
     end
 end
@@ -366,6 +403,8 @@ function Diag = InitContractionDiag(Prototype)
         'accepted',0, ...
         'rejected',0, ...
         'accepted_key',zeros(0,2*D), ...
+        'accepted_refined',Prototype([]), ...
+        'rejected_refined',Prototype([]), ...
         'refined',Prototype([]));
 end
 
@@ -378,7 +417,9 @@ function Diag = MergeContractionDiag(Diag,StepDiag)
     elseif ~isempty(StepDiag.accepted_key) && size(Diag.accepted_key,2) == size(StepDiag.accepted_key,2)
         Diag.accepted_key = [Diag.accepted_key;StepDiag.accepted_key];
     end
-    Diag.refined = [Diag.refined,StepDiag.refined];
+    Diag.accepted_refined = [Diag.accepted_refined,StepDiag.accepted_refined];
+    Diag.rejected_refined = [Diag.rejected_refined,StepDiag.rejected_refined];
+    Diag.refined = [Diag.accepted_refined,Diag.rejected_refined];
 end
 
 function BInfo = ResetContractedPairAges(B,BInfo,AcceptedKey)
@@ -420,7 +461,7 @@ end
 function [Flag,CandKey,CandSector] = IsBracketTighter( ...
     OldF,OldI,CandF,CandI,Problem,PopulationC,W)
 
-    [OldKey,CandKey,CandSector] = CompareBoundaryPairObjectiveKeys( ...
+    [OldKey,CandKey,CandSector] = BuildBoundaryPairObjectiveKeys( ...
         OldF,OldI,CandF,CandI,PopulationC,W);
     Flag = false;
     if ~IsFeasibleSolution(CandF) || IsFeasibleSolution(CandI) || any(~isfinite(CandKey))
@@ -439,43 +480,54 @@ function [Flag,CandKey,CandSector] = IsBracketTighter( ...
         return;
     end
 
-    Tol = 1e-12;
-    Flag = NewDecGap < OldDecGap - Tol || ...
-        (NewDecGap <= OldDecGap + Tol && IsObjPairGapNoWorse(CandKey,OldKey));
+    Flag = CompareBoundaryPairObjectiveKeys(CandKey,OldKey) < 0 || ...
+        (CompareBoundaryPairObjectiveKeys(CandKey,OldKey) == 0 && NewDecGap < OldDecGap - 1e-12);
 end
 
-function [OldKey,CandKey,CandSector] = CompareBoundaryPairObjectiveKeys( ...
+function [OldKey,CandKey,CandSector] = BuildBoundaryPairObjectiveKeys( ...
     OldF,OldI,CandF,CandI,PopulationC,W)
 
     PairObj = [double(OldF.objs);double(OldI.objs);double(CandF.objs);double(CandI.objs)];
     PopCObj = zeros(0,size(PairObj,2));
-    PopCLabel = zeros(0,1);
     if ~isempty(PopulationC)
         PopCObj = double(PopulationC.objs);
-        PopCLabel = double(all(PopulationC.cons<=0,2));
     end
     AllObj = [PairObj;PopCObj];
     [AllObjN,~,~] = NormalizeObjectives(AllObj);
     PairObjN = AllObjN(1:4,:);
-    PopCObjN = AllObjN(5:end,:);
-
-    if isempty(W)
-        Neighbors = cell(1,1);
-    else
-        Neighbors = BuildSectorNeighbors(W,min(3,max(size(W,1)-1,0)));
-    end
-    FallbackObjN = PairObjN([1 3],:);
-    FallbackLabel = [double(IsFeasibleSolution(OldF));double(IsFeasibleSolution(CandF))];
-    BestFeasibleScalar = ComputeBestFeasibleScalar( ...
-        PopCObjN,PopCLabel,W,Neighbors,FallbackObjN,FallbackLabel);
 
     [OldKey,~] = EvaluateBoundaryPairKeyFromNorm( ...
-        PairObjN(1,:),PairObjN(2,:),W,BestFeasibleScalar);
+        PairObjN(1,:),PairObjN(2,:),W);
     [CandKey,CandSector] = EvaluateBoundaryPairKeyFromNorm( ...
-        PairObjN(3,:),PairObjN(4,:),W,BestFeasibleScalar);
+        PairObjN(3,:),PairObjN(4,:),W);
 end
 
-function [Key,Sector] = EvaluateBoundaryPairKeyFromNorm(FObjN,IObjN,W,BestFeasibleScalar)
+function Cmp = CompareBoundaryPairObjectiveKeys(CandKey,OldKey)
+    CandKey = double(CandKey(:)');
+    OldKey = double(OldKey(:)');
+    if any(~isfinite(CandKey))
+        Cmp = 1;
+        return;
+    end
+    if any(~isfinite(OldKey))
+        Cmp = -1;
+        return;
+    end
+    Tol = 1e-12;
+    Width = min(numel(CandKey),numel(OldKey));
+    for i = 1 : Width
+        if CandKey(i) < OldKey(i) - Tol
+            Cmp = -1;
+            return;
+        elseif CandKey(i) > OldKey(i) + Tol
+            Cmp = 1;
+            return;
+        end
+    end
+    Cmp = 0;
+end
+
+function [Key,Sector] = EvaluateBoundaryPairKeyFromNorm(FObjN,IObjN,W)
     MidObj = 0.5*(FObjN + IObjN);
     if isempty(W)
         Sector = 1;
@@ -483,27 +535,15 @@ function [Key,Sector] = EvaluateBoundaryPairKeyFromNorm(FObjN,IObjN,W,BestFeasib
         Sector = AssociateSectorsLocal(MidObj,W,zeros(1,size(MidObj,2)));
     end
     PairGap = sqrt(sum((FObjN - IObjN).^2,2));
-    Scalar = ComputeSectorScalar(MidObj,W,zeros(1,size(MidObj,2)),Sector);
-    s = min(max(Sector,1),numel(BestFeasibleScalar));
-    FrontGap = max(0,Scalar - BestFeasibleScalar(s));
-    Key = [FrontGap,PairGap];
-end
-
-function Flag = IsObjPairGapNoWorse(CandKey,OldKey)
-    if any(~isfinite(CandKey))
-        Flag = false;
-    elseif any(~isfinite(OldKey))
-        Flag = true;
-    else
-        Flag = CandKey(2) <= OldKey(2) + 1e-12;
-    end
+    MidScalar = ComputeSectorScalar(MidObj,W,zeros(1,size(MidObj,2)),Sector);
+    Key = [PairGap,MidScalar];
 end
 
 function Target = InitTargetArchive(Prototype,NBPair)
     Target = struct( ...
         'Population',Prototype([]), ...
         'Sector',zeros(0,1), ...
-        'FrontGap',zeros(0,1), ...
+        'MidScalar',zeros(0,1), ...
         'PairGap',zeros(0,1), ...
         'FeasibleSource',zeros(0,1), ...
         'InfeasibleSource',zeros(0,1), ...
@@ -512,7 +552,7 @@ function Target = InitTargetArchive(Prototype,NBPair)
         'Priority',zeros(NBPair,1));
 end
 
-function Target = BuildTargetBoundaryArchive(A,Source,PopulationC,W,NBPair,FeRatio)
+function Target = BuildTargetBoundaryArchive(A,Source,W,NBPair)
     Target = InitTargetArchive(A,NBPair);
     if isempty(A) || NBPair <= 0
         return;
@@ -525,7 +565,7 @@ function Target = BuildTargetBoundaryArchive(A,Source,PopulationC,W,NBPair,FeRat
         return;
     end
 
-    [ObjN,zmin,zmax] = NormalizeObjectives(Obj);
+    [ObjN,~,~] = NormalizeObjectives(Obj);
     K = max(1,size(W,1));
     if isempty(W)
         SectorAll = ones(size(ObjN,1),1);
@@ -534,14 +574,6 @@ function Target = BuildTargetBoundaryArchive(A,Source,PopulationC,W,NBPair,FeRat
         SectorAll = AssociateSectorsLocal(ObjN,W,zeros(1,size(ObjN,2)));
         Neighbors = BuildSectorNeighbors(W,min(3,max(K-1,0)));
     end
-
-    PopCObjN = zeros(0,size(ObjN,2));
-    PopCLabel = zeros(0,1);
-    if ~isempty(PopulationC)
-        PopCObjN = NormalizeObjectivesWithBounds(double(PopulationC.objs),zmin,zmax);
-        PopCLabel = double(all(PopulationC.cons<=0,2));
-    end
-    BestFeasibleScalar = ComputeBestFeasibleScalar(PopCObjN,PopCLabel,W,Neighbors,ObjN,Label);
 
     LocalSectorMask = false(numel(Label),K);
     for s = 1 : K
@@ -558,11 +590,11 @@ function Target = BuildTargetBoundaryArchive(A,Source,PopulationC,W,NBPair,FeRat
         LocalFeasible = SelectBoundaryShellByScalar(ObjN,LocalFeasible,s,W);
         LocalInfeasible = SelectBoundaryShellByScalar(ObjN,LocalInfeasible,s,W);
         PairLists{s} = BuildSectorCandidatePairsObjective( ...
-            ObjN,Label,LocalFeasible,LocalInfeasible,s,W,BestFeasibleScalar);
+            ObjN,Label,LocalFeasible,LocalInfeasible,s,W);
     end
 
     Priority = ComputeSectorPriority(PairLists,K);
-    Quota = AllocateSectorQuota(PairLists,Priority,NBPair,FeRatio);
+    Quota = AllocateSectorQuota(PairLists,Priority,NBPair);
     Target = SelectTargetPairsFromQuota(A,Source,PairLists,Quota,Priority,NBPair);
     Target.AvailableSectorCount = sum(cellfun(@(P)~isempty(P.FeasibleIndex),PairLists));
     Target.Quota = MatchLength(Quota,NBPair,0);
@@ -586,11 +618,11 @@ function PairList = InitPairList()
         'InfeasibleIndex',zeros(0,1), ...
         'Sector',zeros(0,1), ...
         'PairGap',zeros(0,1), ...
-        'FrontGap',zeros(0,1));
+        'MidScalar',zeros(0,1));
 end
 
 function PairList = BuildSectorCandidatePairsObjective( ...
-    ObjN,~,LocalFeasible,LocalInfeasible,Sector,W,BestFeasibleScalar)
+    ObjN,~,LocalFeasible,LocalInfeasible,Sector,W)
     PairList = InitPairList();
     if isempty(LocalFeasible) || isempty(LocalInfeasible)
         return;
@@ -636,15 +668,14 @@ function PairList = BuildSectorCandidatePairsObjective( ...
 
     MidObj = 0.5*(ObjN(KeepI,:) + ObjN(KeepJ,:));
     MidScalar = ComputeSectorScalar(MidObj,W,zeros(1,size(ObjN,2)),Sector*ones(Count,1));
-    FrontGap = max(0,MidScalar - BestFeasibleScalar(min(Sector,numel(BestFeasibleScalar))));
 
-    Key = [KeepGap(:),FrontGap(:),(1:Count)'];
+    Key = [KeepGap(:),MidScalar(:),(1:Count)'];
     [~,ord] = sortrows(Key,[1 2 3]);
     PairList.FeasibleIndex = KeepI(ord);
     PairList.InfeasibleIndex = KeepJ(ord);
     PairList.Sector = Sector*ones(Count,1);
     PairList.PairGap = KeepGap(ord);
-    PairList.FrontGap = FrontGap(ord);
+    PairList.MidScalar = MidScalar(ord);
 end
 
 function Priority = ComputeSectorPriority(PairLists,K)
@@ -652,20 +683,18 @@ function Priority = ComputeSectorPriority(PairLists,K)
     for s = 1 : K
         Count = numel(PairLists{s}.FeasibleIndex);
         if Count > 0
-            Priority(s) = log(1+Count)/(eps + max(PairLists{s}.FrontGap(1),0));
+            BestPairGap = max(PairLists{s}.PairGap(1),0);
+            Priority(s) = log(1+Count)/(eps + BestPairGap);
         end
     end
 end
 
-function Quota = AllocateSectorQuota(PairLists,Priority,NBPair,FeRatio)
+function Quota = AllocateSectorQuota(PairLists,Priority,NBPair)
     K = numel(PairLists);
     Quota = zeros(K,1);
     Available = find(cellfun(@(P)~isempty(P.FeasibleIndex),PairLists));
     if isempty(Available) || NBPair <= 0
         return;
-    end
-    if nargin < 4 || isempty(FeRatio)
-        FeRatio = 0;
     end
 
     if numel(Available) > NBPair
@@ -674,10 +703,7 @@ function Quota = AllocateSectorQuota(PairLists,Priority,NBPair,FeRatio)
     end
     [~,ord] = sort(Priority(Available),'descend');
     Available = Available(ord);
-    CoverCount = min(numel(Available),ceil((1-min(max(FeRatio,0),1))*numel(Available)));
-    if CoverCount > 0
-        Quota(Available(1:CoverCount)) = 1;
-    end
+    Quota(Available)=1;
     Remain = NBPair - sum(Quota);
     while Remain > 0
         Utility = -inf(K,1);
@@ -709,7 +735,7 @@ function Target = SelectTargetPairsFromQuota(A,Source,PairLists,Quota,Priority,N
     PairI = zeros(NBPair,1);
     PairS = zeros(NBPair,1);
     PairGap = zeros(NBPair,1);
-    FrontGap = zeros(NBPair,1);
+    MidScalar = zeros(NBPair,1);
     PairFSource = zeros(NBPair,1);
     PairISource = zeros(NBPair,1);
     Count = 0;
@@ -737,7 +763,7 @@ function Target = SelectTargetPairsFromQuota(A,Source,PairLists,Quota,Priority,N
             PairI(Count) = i;
             PairS(Count) = s;
             PairGap(Count) = List.PairGap(p);
-            FrontGap(Count) = List.FrontGap(p);
+            MidScalar(Count) = List.MidScalar(p);
             PairFSource(Count) = Source(f);
             PairISource(Count) = Source(i);
         end
@@ -750,23 +776,23 @@ function Target = SelectTargetPairsFromQuota(A,Source,PairLists,Quota,Priority,N
     PairI = PairI(1:Count);
     PairS = PairS(1:Count);
     PairGap = PairGap(1:Count);
-    FrontGap = FrontGap(1:Count);
+    MidScalar = MidScalar(1:Count);
     PairFSource = PairFSource(1:Count);
     PairISource = PairISource(1:Count);
-    Key = [PairGap,FrontGap,PairS,(1:Count)'];
+    Key = [PairGap,MidScalar,PairS,(1:Count)'];
     [~,ord] = sortrows(Key,[1 2 3 4]);
     PairF = PairF(ord);
     PairI = PairI(ord);
     PairS = PairS(ord);
     PairGap = PairGap(ord);
-    FrontGap = FrontGap(ord);
+    MidScalar = MidScalar(ord);
     PairFSource = PairFSource(ord);
     PairISource = PairISource(ord);
 
     Target.Population = flattenPairPopulation(A,PairF,PairI);
     Target.Sector = PairS;
     Target.PairGap = PairGap;
-    Target.FrontGap = FrontGap;
+    Target.MidScalar = MidScalar;
     Target.FeasibleSource = PairFSource;
     Target.InfeasibleSource = PairISource;
     Target.Quota = MatchLength(Quota,NBPair,0);
@@ -815,7 +841,7 @@ function [B,BInfo,Diag] = BlendBoundaryArchive(B,BInfo,Target,etaB,NBPair)
     for c = find(InTarget(:))'
         t = TargetLoc(c);
         Current.Sector(c) = TargetPairs.Sector(t);
-        Current.FrontGap(c) = TargetPairs.FrontGap(t);
+        Current.MidScalar(c) = TargetPairs.MidScalar(t);
         Current.PairGap(c) = TargetPairs.PairGap(t);
         Current.FeasibleSource(c) = TargetPairs.FeasibleSource(t);
         Current.InfeasibleSource(c) = TargetPairs.InfeasibleSource(t);
@@ -823,12 +849,12 @@ function [B,BInfo,Diag] = BlendBoundaryArchive(B,BInfo,Target,etaB,NBPair)
 
     AddIdx = find(~InCurrent);
     if ~isempty(AddIdx)
-        [~,ord] = sortrows([TargetPairs.PairGap(AddIdx),TargetPairs.FrontGap(AddIdx),AddIdx(:)],[1 2 3]);
+        [~,ord] = sortrows([TargetPairs.PairGap(AddIdx),AddIdx(:)],[1 2]);
         AddIdx = AddIdx(ord);
     end
     DropIdx = find(~InTarget);
     if ~isempty(DropIdx)
-        [~,ord] = sortrows([Current.PairGap(DropIdx),Current.FrontGap(DropIdx),Current.Age(DropIdx),DropIdx(:)],[-1 -2 -3 4]);
+        [~,ord] = sortrows([Current.PairGap(DropIdx),Current.Age(DropIdx),DropIdx(:)],[-1 -2 3]);
         DropIdx = DropIdx(ord);
     end
 
@@ -852,7 +878,7 @@ function [B,BInfo,Diag] = BlendBoundaryArchive(B,BInfo,Target,etaB,NBPair)
     Diag.dropped = ReplaceCount;
 
     if NewPairs.Count > NBPair
-        [~,ord] = sortrows([NewPairs.PairGap,NewPairs.FrontGap,NewPairs.Age,(1:NewPairs.Count)'],[1 2 3 4]);
+        [~,ord] = sortrows([NewPairs.PairGap,NewPairs.Age,(1:NewPairs.Count)'],[1 2 3]);
         NewPairs = SlicePairStruct(NewPairs,sort(ord(1:NBPair)));
     end
     Diag.kept = max(0,NewPairs.Count - Diag.added - Diag.replaced);
@@ -863,7 +889,7 @@ function Pairs = InitPairStruct(Prototype)
     Pairs = struct( ...
         'Population',Prototype([]), ...
         'Sector',zeros(0,1), ...
-        'FrontGap',zeros(0,1), ...
+        'MidScalar',zeros(0,1), ...
         'PairGap',zeros(0,1), ...
         'FeasibleSource',zeros(0,1), ...
         'InfeasibleSource',zeros(0,1), ...
@@ -884,7 +910,7 @@ function Pairs = PopulationToPairStruct(B,BInfo)
     KeepRows = reshape([2*Active(:)-1,2*Active(:)]',1,[]);
     Pairs.Population = B(KeepRows);
     Pairs.Sector = BInfo.Sector(Active);
-    Pairs.FrontGap = BInfo.FrontGap(Active);
+    Pairs.MidScalar = BInfo.MidScalar(Active);
     Pairs.PairGap = BInfo.PairGap(Active);
     [FeasibleSource,InfeasibleSource] = BoundaryPairSources(BInfo,Count);
     Pairs.FeasibleSource = FeasibleSource(Active);
@@ -896,14 +922,14 @@ end
 function Pairs = TargetToPairStruct(Target)
     Pairs = InitPairStruct(Target.Population);
     Count = min([floor(numel(Target.Population)/2),numel(Target.Sector), ...
-        numel(Target.FrontGap),numel(Target.PairGap), ...
+        numel(Target.MidScalar),numel(Target.PairGap), ...
         numel(Target.FeasibleSource),numel(Target.InfeasibleSource)]);
     if Count <= 0
         return;
     end
     Pairs.Population = Target.Population(1:2*Count);
     Pairs.Sector = Target.Sector(1:Count);
-    Pairs.FrontGap = Target.FrontGap(1:Count);
+    Pairs.MidScalar = Target.MidScalar(1:Count);
     Pairs.PairGap = Target.PairGap(1:Count);
     Pairs.FeasibleSource = Target.FeasibleSource(1:Count);
     Pairs.InfeasibleSource = Target.InfeasibleSource(1:Count);
@@ -931,7 +957,7 @@ function Pairs = SlicePairStruct(Pairs,Keep)
     Rows = reshape([2*Keep-1,2*Keep]',1,[]);
     Pairs.Population = Pairs.Population(Rows);
     Pairs.Sector = Pairs.Sector(Keep);
-    Pairs.FrontGap = Pairs.FrontGap(Keep);
+    Pairs.MidScalar = Pairs.MidScalar(Keep);
     Pairs.PairGap = Pairs.PairGap(Keep);
     Pairs.FeasibleSource = Pairs.FeasibleSource(Keep);
     Pairs.InfeasibleSource = Pairs.InfeasibleSource(Keep);
@@ -949,7 +975,7 @@ function Pairs = AppendPairStruct(Pairs,Add)
     end
     Pairs.Population = [Pairs.Population,Add.Population];
     Pairs.Sector = [Pairs.Sector;Add.Sector];
-    Pairs.FrontGap = [Pairs.FrontGap;Add.FrontGap];
+    Pairs.MidScalar = [Pairs.MidScalar;Add.MidScalar];
     Pairs.PairGap = [Pairs.PairGap;Add.PairGap];
     Pairs.FeasibleSource = [Pairs.FeasibleSource;Add.FeasibleSource];
     Pairs.InfeasibleSource = [Pairs.InfeasibleSource;Add.InfeasibleSource];
@@ -962,7 +988,7 @@ function Pairs = ReplacePairStruct(Pairs,DropIndex,Source,SourceIndex)
     SourceRows = [2*SourceIndex-1,2*SourceIndex];
     Pairs.Population(Rows) = Source.Population(SourceRows);
     Pairs.Sector(DropIndex) = Source.Sector(SourceIndex);
-    Pairs.FrontGap(DropIndex) = Source.FrontGap(SourceIndex);
+    Pairs.MidScalar(DropIndex) = Source.MidScalar(SourceIndex);
     Pairs.PairGap(DropIndex) = Source.PairGap(SourceIndex);
     Pairs.FeasibleSource(DropIndex) = Source.FeasibleSource(SourceIndex);
     Pairs.InfeasibleSource(DropIndex) = Source.InfeasibleSource(SourceIndex);
@@ -980,7 +1006,7 @@ function [B,BInfo] = PairStructToPopulation(Pairs,Prototype,NBPair)
     Count = min(Pairs.Count,NBPair);
     BInfo.PairCount = Count;
     BInfo.Sector(1:Count) = Pairs.Sector(1:Count);
-    BInfo.FrontGap(1:Count) = Pairs.FrontGap(1:Count);
+    BInfo.MidScalar(1:Count) = Pairs.MidScalar(1:Count);
     BInfo.PairGap(1:Count) = Pairs.PairGap(1:Count);
     BInfo.FeasibleSource(1:Count) = Pairs.FeasibleSource(1:Count);
     BInfo.InfeasibleSource(1:Count) = Pairs.InfeasibleSource(1:Count);
@@ -990,43 +1016,28 @@ end
 
 %% Boundary metadata and environmental selection
 
-function [Population,Diag] = EnvironmentalSelectionC_ObjectBoundary(Population,N,W,Model,B,BInfo,PreviousC)
+function [Population,Diag] = EnvironmentalSelectionC_ObjectBoundary(Population,N,W,Model,B,BInfo,PreviousC,UseMLP)
     Diag = InitInfeasibleSelectionDiag();
     Population = KeepUniquePopulation(Population);
     if isempty(Population)
         return;
     end
+    if nargin < 8
+        UseMLP = true;
+    end
 
     Feasible = FilterFeasiblePopulation(Population);
     Infeasible = Population(any(Population.cons>0,2));
-    Diag.carry_pool_size = numel(Infeasible);
+    Diag.pool_size = numel(Infeasible);
 
-    Carry = 0;
-    EnoughB = BInfo.PairCount >= MinReadyBoundaryPairs(Population,W);
-    if EnoughB && ~isempty(Infeasible)
-        Carry = min(max(1,round(0.01*N)),numel(Infeasible));
-    end
-
-    FeasibleNeed = max(N - Carry,0);
     Next = ObjectiveSelectionWithLastSectorTruncation( ...
-        Feasible,min(FeasibleNeed,numel(Feasible)),W);
-
-    if Carry > 0
-        [CarryPick,CarryDiag] = SelectInfeasibleByBoundaryMeta( ...
-            Infeasible,Carry,W,Model,B,BInfo,PreviousC);
-        Diag.carry_applicable_count = CarryDiag.applicable_count;
-        Diag.carry_selected = numel(CarryPick);
-        Diag.carry_pool_mean_prob = CarryDiag.pool_mean_prob;
-        Diag.carry_selected_mean_prob = CarryDiag.selected_mean_prob;
-        Diag.carry_prob_gain = CarryDiag.prob_gain;
-        Next = [Next,CarryPick];
-        Infeasible = RemovePopulationByDecision(Infeasible,CarryPick);
-    end
+        Feasible,min(N,numel(Feasible)),W);
 
     Need = N - numel(Next);
-    if Need > 0 && ~isempty(Infeasible)
-        [Pick,Diag] = SelectInfeasibleByBoundaryMeta( ...
-            Infeasible,Need,W,Model,B,BInfo,PreviousC,Diag);
+    Diag.feasible_deficit = max(Need,0);
+    if Need > 0
+        [Pick,Diag] = SelectTopInfeasibleByUtilityMeta( ...
+            Infeasible,Need,W,Model,B,BInfo,PreviousC,UseMLP,Diag);
         Next = [Next,Pick];
     end
 
@@ -1038,8 +1049,11 @@ function [Population,Diag] = EnvironmentalSelectionC_ObjectBoundary(Population,N
     Population = PadPopulation(Next,N);
 end
 
-function [Pick,Diag] = SelectInfeasibleByBoundaryMeta(Population,N,W,Model,B,BInfo,PopulationC,Diag)
-    if nargin < 8 || isempty(Diag)
+function [Pick,Diag] = SelectTopInfeasibleByUtilityMeta(Population,N,W,Model,B,BInfo,PopulationC,UseMLP,Diag)
+    if nargin < 8
+        UseMLP = true;
+    end
+    if nargin < 9 || isempty(Diag)
         Diag = InitInfeasibleSelectionDiag();
     end
     Pick = Population([]);
@@ -1053,48 +1067,27 @@ function [Pick,Diag] = SelectInfeasibleByBoundaryMeta(Population,N,W,Model,B,BIn
     end
     N = min(N,numel(Population));
     Meta = BuildBoundaryMetaFromB(Population,W,Model,B,BInfo,PopulationC);
-    Applicable = FindModelApplicableInfeasible(Meta);
+    UtilityMeta = ComputeInfeasibleUtilityMeta(Meta,UseMLP);
+    CandidateIndex = find(Meta.feasible == 0);
     Diag.pool_size = numel(Population);
-    Diag.applicable_count = sum(Applicable);
-    Diag.pool_mean_prob = MeanOrNaN(Meta.prob);
-    if ~any(Applicable)
+    Diag.ranked_count = numel(CandidateIndex);
+    if isempty(CandidateIndex)
         return;
     end
 
-    if isempty(W)
-        Order = SortBySelectionKey(Meta,find(Applicable));
-        PickIndex = Order(1:min(N,numel(Order)));
-    else
-        Ranked = cell(size(W,1),1);
-        for s = 1 : size(W,1)
-            idx = find(Meta.sector == s & Applicable);
-            if ~isempty(idx)
-                Ranked{s} = SortBySelectionKey(Meta,idx);
-            end
-        end
-        Order = SectorRoundRobinPick(Ranked,N);
-        if isempty(Order)
-            Global = SortBySelectionKey(Meta,find(Applicable));
-            PickIndex = Global(1:min(N,numel(Global)));
-        else
-            PickIndex = Order(:,2);
-        end
-    end
+    Diag.mlp_used = double(UseMLP > 0 && ~isempty(Model) && ...
+        isfield(Model,'Lower') && isfield(Model,'Upper') && ...
+        IsBoundaryMLPCompatible(Model,size(Population.decs,2)));
+    Diag.pool_mean_utility = MeanOrNaN(UtilityMeta.utility(CandidateIndex));
+    Diag.pool_mean_prob = MeanOrNaN(Meta.prob(CandidateIndex));
+    Order = RankInfeasibleByUtilityMeta(UtilityMeta,CandidateIndex);
+    PickIndex = Order(1:min(N,numel(Order)));
     Pick = Population(PickIndex);
     Diag.selected = numel(Pick);
+    Diag.selected_mean_utility = MeanOrNaN(UtilityMeta.utility(PickIndex));
+    Diag.utility_gain = DifferenceOrNaN(Diag.selected_mean_utility,Diag.pool_mean_utility);
     Diag.selected_mean_prob = MeanOrNaN(Meta.prob(PickIndex));
-    Diag.prob_gain = Diag.selected_mean_prob - Diag.pool_mean_prob;
-end
-
-function Count = MinReadyBoundaryPairs(Population,W)
-    if ~isempty(W)
-        M = size(W,2);
-    elseif ~isempty(Population)
-        M = size(Population.objs,2);
-    else
-        M = 1;
-    end
-    Count = max(4,2*M);
+    Diag.selected_prob_gain = DifferenceOrNaN(Diag.selected_mean_prob,Diag.pool_mean_prob);
 end
 
 function Meta = BuildBoundaryMetaFromB(Candidates,W,Model,B,BInfo,PopulationC)
@@ -1103,7 +1096,7 @@ function Meta = BuildBoundaryMetaFromB(Candidates,W,Model,B,BInfo,PopulationC)
     if isempty(Candidates)
         return;
     end
-    [CandObjN,BObjN,PopCObjN] = NormalizeCandidateBObjects(Candidates,B,PopulationC);
+    [CandObjN,BObjN,~,~] = NormalizeCandidateBObjects(Candidates,B,PopulationC);
     if isempty(W)
         Sector = ones(N,1);
         Neighbors = cell(1,1);
@@ -1114,29 +1107,27 @@ function Meta = BuildBoundaryMetaFromB(Candidates,W,Model,B,BInfo,PopulationC)
     Prob = PredictBoundaryMLP(Model,Candidates.decs);
     Feasible = double(all(Candidates.cons<=0,2));
     SupportDist = ComputeSupportDistObjToB(CandObjN,Sector,BObjN,BInfo,Neighbors);
-    PopCLabel = zeros(0,1);
-    if ~isempty(PopulationC)
-        PopCLabel = double(all(PopulationC.cons<=0,2));
-    end
-    FrontGap = ComputeBoundaryFrontGapObj(CandObjN,Sector,PopCObjN,PopCLabel,W,Neighbors);
+    ScalarObj = ComputeSectorScalar(CandObjN,W,zeros(1,size(CandObjN,2)),Sector);
 
     Meta.sector = Sector;
     Meta.feasible = Feasible;
     Meta.prob = Prob;
     Meta.supportDistObjToB = SupportDist;
-    Meta.frontGap = FrontGap;
+    Meta.scalarObj = ScalarObj;
 end
 
-function [CandObjN,BObjN,PopCObjN] = NormalizeCandidateBObjects(Candidates,B,PopulationC)
+function [CandObjN,BObjN,PopCObjN,PopCFeasible] = NormalizeCandidateBObjects(Candidates,B,PopulationC)
     CandObj = double(Candidates.objs);
     M = size(CandObj,2);
     BObj = zeros(0,M);
     PopCObj = zeros(0,M);
+    PopCFeasible = false(0,1);
     if ~isempty(B)
         BObj = double(B.objs);
     end
     if ~isempty(PopulationC)
         PopCObj = double(PopulationC.objs);
+        PopCFeasible = all(PopulationC.cons<=0,2);
     end
     AllObj = [CandObj;BObj;PopCObj];
     [AllObjN,~,~] = NormalizeObjectives(AllObj);
@@ -1167,6 +1158,9 @@ function Dist = ComputeSupportDistObjToB(CandObjN,Sector,BObjN,BInfo,Neighbors)
         if any(Mask)
             Dist(i) = PointToSegmentsDistanceObj(CandObjN(i,:),SegmentA(Mask,:),SegmentB(Mask,:));
         end
+        if ~isfinite(Dist(i))
+            Dist(i) = PointToSegmentsDistanceObj(CandObjN(i,:),SegmentA,SegmentB);
+        end
     end
 end
 
@@ -1189,92 +1183,181 @@ function d = PointToSegmentsDistanceObj(p,A,B)
     d = min(Dist);
 end
 
-function FrontGap = ComputeBoundaryFrontGapObj(CandObjN,Sector,PopCObjN,PopCLabel,W,Neighbors)
-    if isempty(CandObjN)
-        FrontGap = zeros(0,1);
-        return;
-    end
-    Best = ComputeBestFeasibleScalar(PopCObjN,PopCLabel,W,Neighbors,PopCObjN,PopCLabel);
-    Scalar = ComputeSectorScalar(CandObjN,W,zeros(1,size(CandObjN,2)),Sector);
-    FrontGap = zeros(size(CandObjN,1),1);
-    for i = 1 : numel(FrontGap)
-        s = min(max(Sector(i),1),numel(Best));
-        FrontGap(i) = max(0,Scalar(i) - Best(s));
-    end
-end
-
-function Applicable = FindModelApplicableInfeasible(Meta)
-    Applicable = (Meta.feasible == 0);
-end
-
 function Meta = InitBoundaryMeta(Count)
     Meta = struct( ...
         'sector',zeros(Count,1), ...
         'feasible',zeros(Count,1), ...
         'prob',0.5*ones(Count,1), ...
         'supportDistObjToB',inf(Count,1), ...
-        'frontGap',zeros(Count,1));
+        'scalarObj',inf(Count,1));
 end
 
-function Order = SortBySelectionKey(Meta,idx)
+function UtilityMeta = ComputeInfeasibleUtilityMeta(Meta,UseMLP)
+    if nargin < 2
+        UseMLP = true;
+    end
+    SupportDist = double(Meta.supportDistObjToB(:));
+    SupportDist(~isfinite(SupportDist)) = inf;
+    ScalarObj = double(Meta.scalarObj(:));
+    ScalarObj(~isfinite(ScalarObj)) = inf;
+    ScalarObj = max(ScalarObj,0);
+    BRank = NormalizeLexRankAsc([SupportDist,ScalarObj]);
+    Prob = double(Meta.prob(:));
+    if ~UseMLP
+        Prob = 0.5*ones(size(Prob));
+    end
+    tauProb = 0.02;
+    ProbRank = NormalizeTieAwareRankDesc(Prob,tauProb);
+    Utility = ProbRank;
+    Utility(~isfinite(Utility)) = -inf;
+    UtilityMeta = Meta;
+    UtilityMeta.b_rank = BRank;
+    UtilityMeta.prob_rank = ProbRank;
+    UtilityMeta.utility = Utility;
+end
+
+function Score = NormalizeLexRankAsc(Keys)
+    if isempty(Keys)
+        Score = zeros(0,1);
+        return;
+    end
+    Keys = double(Keys);
+    n = size(Keys,1);
+    Keys(~isfinite(Keys)) = inf;
+    [~,ord] = sortrows([Keys,(1:n)'],1:size(Keys,2)+1);
+    Rank = zeros(n,1);
+    Rank(ord) = (1:n)';
+    if n <= 1
+        Score = ones(n,1);
+    else
+        Score = (n - Rank) ./ (n - 1);
+    end
+end
+
+function Score = NormalizeTieAwareRankDesc(Value,Tol)
+    if nargin < 2 || isempty(Tol)
+        Tol = 1e-12;
+    end
+    Tol = max(0,double(Tol));
+    Value = double(Value(:));
+    n = numel(Value);
+    if n <= 0
+        Score = zeros(0,1);
+        return;
+    end
+    Value(~isfinite(Value)) = -inf;
+    [Sorted,ord] = sort(Value,'descend');
+    Rank = zeros(n,1);
+    left = 1;
+    while left <= n
+        right = left;
+        while right < n && abs(Sorted(right+1)-Sorted(left)) <= Tol
+            right = right + 1;
+        end
+        Rank(ord(left:right)) = mean(left:right);
+        left = right + 1;
+    end
+    if n <= 1
+        Score = ones(n,1);
+    else
+        Score = (n - Rank) ./ (n - 1);
+    end
+end
+
+function Order = RankInfeasibleByUtilityMeta(UtilityMeta,idx)
     idx = idx(:);
     if isempty(idx)
         Order = idx;
         return;
     end
-    Key = [Meta.frontGap(idx),-Meta.prob(idx),Meta.supportDistObjToB(idx),idx];
+    Utility = double(UtilityMeta.utility(idx));
+    Utility(~isfinite(Utility)) = -inf;
+    SupportDist = double(UtilityMeta.supportDistObjToB(idx));
+    SupportDist(~isfinite(SupportDist)) = inf;
+    ScalarObj = double(UtilityMeta.scalarObj(idx));
+    ScalarObj(~isfinite(ScalarObj)) = inf;
+    Key=[-Utility,SupportDist,ScalarObj,idx];
     [~,ord] = sortrows(Key,1:size(Key,2));
     Order = idx(ord);
 end
 
-function Pick = SelectBoundaryBandTrainingPoints(Population,B,BInfo,PopulationC,W,MaxPick)
-    Pick = Population([]);
-    if isempty(Population) || isempty(B) || BInfo.PairCount <= 0 || MaxPick <= 0
-        return;
+function Cmp = CompareInfeasibleByUtility(UtilityMeta,A,B)
+    KeyA = InfeasibleUtilityKey(UtilityMeta,A);
+    KeyB = InfeasibleUtilityKey(UtilityMeta,B);
+    Cmp = CompareLexicographicKey(KeyA,KeyB);
+end
+
+function Key = InfeasibleUtilityKey(UtilityMeta,Index)
+    Utility = double(UtilityMeta.utility(Index));
+    if ~isfinite(Utility)
+        Utility = -inf;
     end
-    Population = KeepUniquePopulation(Population);
-    Meta = BuildBoundaryMetaFromB(Population,W,[],B,BInfo,PopulationC);
-    Candidate = find(isfinite(Meta.supportDistObjToB) & isfinite(Meta.frontGap));
-    if isempty(Candidate)
-        return;
+    SupportDist = double(UtilityMeta.supportDistObjToB(Index));
+    if ~isfinite(SupportDist)
+        SupportDist = inf;
     end
-    Key = [Meta.supportDistObjToB(Candidate),Meta.frontGap(Candidate),Candidate(:)];
-    [~,ord] = sortrows(Key,[1 2 3]);
-    Candidate = Candidate(ord(1:min(MaxPick,numel(ord))));
-    Pick = Population(Candidate);
+    ScalarObj = double(UtilityMeta.scalarObj(Index));
+    if ~isfinite(ScalarObj)
+        ScalarObj = inf;
+    end
+    Key = [-Utility,SupportDist,ScalarObj,Index];
+end
+
+function Cmp = CompareLexicographicKey(A,B)
+    Tol = 1e-12;
+    Width = min(numel(A),numel(B));
+    Cmp = 0;
+    for i = 1 : Width
+        if A(i) < B(i) - Tol
+            Cmp = -1;
+            return;
+        elseif A(i) > B(i) + Tol
+            Cmp = 1;
+            return;
+        end
+    end
 end
 
 %% T-buffer MLP
 
 function [Model,Diag] = UpdateBoundaryMLPPeriodically( ...
-    Model,B,BInfo,TrainBuffer,hidden,epoch,lr,Generation,Gstart,Tretrain,Problem)
+    Model,B,BInfo,TrainBuffer,PopulationC,PopulationU,OffspringU,W, ...
+    hidden,epoch,lr,Generation,Gstart,Tretrain,Problem,ContractionDiag)
 
-    Dataset = BuildTrainingBufferT(B,BInfo,TrainBuffer);
-    Balanced = BalanceTrainingDataset(Dataset);
+    if nargin < 16
+        ContractionDiag = InitContractionDiag(B);
+    end
+    Dataset = BuildBoundaryDrivenDataset(B,BInfo,TrainBuffer,PopulationC,PopulationU,OffspringU,W,Problem);
     Diag = InitMLPDiag(Generation,Problem.FE,Model,Dataset,BInfo);
     Diag.due = Generation >= Gstart && mod(Generation-Gstart,Tretrain) == 0;
+    MinTrain = MinimumRecoverabilityTrainingSize(Problem);
     MinPairs = max(4,2*Problem.M);
-    Diag.can_train = Diag.due && Dataset.pair_count >= MinPairs && ...
-        Balanced.pos_count > 0 && Balanced.neg_count > 0;
+    Diag.can_train = Diag.due && Dataset.train_size >= MinTrain && ...
+        Dataset.pos_count > 0 && Dataset.neg_count > 0 && ...
+        Dataset.pair_count >= MinPairs;
     if ~Diag.due
         Diag.skip_reason = "not_due";
+        Diag = EvaluateRefinementProbabilityDiag(Diag,Model,ContractionDiag);
         return;
     end
     if ~Diag.can_train
-        Diag.skip_reason = "insufficient_b";
+        Diag.skip_reason = "insufficient_boundary_driven_data";
+        Diag = EvaluateRefinementProbabilityDiag(Diag,Model,ContractionDiag);
         return;
     end
 
     if isempty(Model)
-        Model = TrainBoundaryMLPColdStart(Balanced,Problem,hidden,epoch,lr);
+        Model = TrainBoundaryMLPColdStart(Dataset,Problem,hidden,epoch,lr);
     else
-        WarmEpoch = max(1,round(0.25*epoch));
-        WarmLR = max(1e-4,0.2*lr);
-        Model = ContinueTrainBoundaryMLP(Model,Balanced,Problem,hidden,WarmEpoch,WarmLR);
+        WarmEpoch = 80;
+        WarmLR = 3e-4;
+        Model = ContinueTrainBoundaryMLP(Model,Dataset,Problem,hidden,WarmEpoch,WarmLR);
     end
     Diag.trained = true;
     Diag.acc_after = EvaluateBinaryAccuracy(Model,Dataset.Dec,Dataset.Label);
     Diag.degraded = IsAccuracyDegraded(Diag.acc_before,Diag.acc_after);
+    Diag = EvaluateBoundaryMLPProbabilityGroups(Diag,Model,Dataset);
+    Diag = EvaluateRefinementProbabilityDiag(Diag,Model,ContractionDiag);
     Diag.skip_reason = "trained";
 end
 
@@ -1282,28 +1365,26 @@ function TrainBuffer = InitTrainingBuffer(D)
     TrainBuffer = struct( ...
         'Dec',zeros(0,D), ...
         'Label',zeros(0,1), ...
-        'Source',zeros(0,1), ...
         'Time',zeros(0,1));
 end
 
-function TrainBuffer = UpdateTrainingBufferT(TrainBuffer,Refinement,BoundaryBand,Generation,MaxTrain)
-    if nargin < 5 || isempty(MaxTrain)
-        MaxTrain = inf;
+function TrainBuffer = UpdateTrainingBufferT(TrainBuffer,AcceptedRefinement,RejectedRefinement,Generation,MaxRefinementBufPerClass)
+    if nargin < 5 || isempty(MaxRefinementBufPerClass)
+        MaxRefinementBufPerClass = inf;
     end
-    TrainBuffer = AppendTrainingSamples(TrainBuffer,BoundaryBand,3,Generation);
-    TrainBuffer = AppendTrainingSamples(TrainBuffer,Refinement,2,Generation);
+    TrainBuffer = AppendTrainingSamples(TrainBuffer,AcceptedRefinement,Generation,1);
+    TrainBuffer = AppendTrainingSamples(TrainBuffer,RejectedRefinement,Generation,0);
     TrainBuffer = KeepLatestTrainingRows(TrainBuffer);
-    TrainBuffer = TrimTrainingBufferNonB(TrainBuffer,MaxTrain);
+    TrainBuffer = TrimTrainingBufferByClassTime(TrainBuffer,MaxRefinementBufPerClass);
 end
 
-function TrainBuffer = AppendTrainingSamples(TrainBuffer,Population,Source,Generation)
+function TrainBuffer = AppendTrainingSamples(TrainBuffer,Population,Generation,LabelValue)
     if isempty(Population)
         return;
     end
     Count = numel(Population);
     TrainBuffer.Dec = [TrainBuffer.Dec;double(Population.decs)];
-    TrainBuffer.Label = [TrainBuffer.Label;double(all(Population.cons<=0,2))];
-    TrainBuffer.Source = [TrainBuffer.Source;Source*ones(Count,1)];
+    TrainBuffer.Label = [TrainBuffer.Label;double(LabelValue > 0)*ones(Count,1)];
     TrainBuffer.Time = [TrainBuffer.Time;Generation*ones(Count,1)];
 end
 
@@ -1311,88 +1392,296 @@ function TrainBuffer = KeepLatestTrainingRows(TrainBuffer)
     Keep = KeepLatestDecisionRowsLocal(TrainBuffer.Dec);
     TrainBuffer.Dec = TrainBuffer.Dec(Keep,:);
     TrainBuffer.Label = TrainBuffer.Label(Keep);
-    TrainBuffer.Source = TrainBuffer.Source(Keep);
     TrainBuffer.Time = TrainBuffer.Time(Keep);
 end
 
-function TrainBuffer = TrimTrainingBufferNonB(TrainBuffer,MaxTrain)
-    if isempty(TrainBuffer.Dec) || ~isfinite(MaxTrain)
+function TrainBuffer = TrimTrainingBufferByClassTime(TrainBuffer,MaxPerClass)
+    if isempty(TrainBuffer.Dec) || ~isfinite(MaxPerClass)
         return;
     end
-    Keep = SelectNewestBySource(TrainBuffer,2,MaxTrain);
-    Remain = max(0,MaxTrain-numel(Keep));
-    Keep = [Keep;SelectNewestBySource(TrainBuffer,3,Remain)];
-    Keep = sort(Keep);
+    MaxPerClass = max(0,round(MaxPerClass));
+    Keep = false(size(TrainBuffer.Label));
+    for LabelValue = [1 0]
+        Rows = find(TrainBuffer.Label == LabelValue);
+        if isempty(Rows)
+            continue;
+        end
+        [~,ord] = sortrows([-TrainBuffer.Time(Rows),Rows(:)],[1 2]);
+        Keep(Rows(ord(1:min(MaxPerClass,numel(ord))))) = true;
+    end
+    Keep = find(Keep);
     TrainBuffer.Dec = TrainBuffer.Dec(Keep,:);
     TrainBuffer.Label = TrainBuffer.Label(Keep);
-    TrainBuffer.Source = TrainBuffer.Source(Keep);
     TrainBuffer.Time = TrainBuffer.Time(Keep);
 end
 
-function Keep = SelectNewestBySource(TrainBuffer,Source,MaxCount)
-    Keep = zeros(0,1);
-    if MaxCount <= 0
-        return;
+function Dataset = BuildBoundaryDrivenDataset(B,BInfo,TrainBuffer,PopulationC,PopulationU,OffspringU,W,Problem)
+    Dataset = InitTrainingDataset(BInfo,Problem.D);
+    TrainPairs = SelectBoundaryPairsForTraining(B,BInfo,Problem);
+    Dataset.pair_count = numel(TrainPairs);
+    Dataset = CollectRefinementOutcomeSamples(Dataset,TrainBuffer);
+    if TrainingDataNeedsSupplement(Dataset,Problem)
+        Dataset = CollectBoundaryEndpointAnchors(Dataset,B,BInfo,TrainPairs);
     end
-    Candidate = find(TrainBuffer.Source == Source);
-    if isempty(Candidate)
-        return;
+    if TrainingDataNeedsSupplement(Dataset,Problem)
+        Dataset = CollectCurrentPopulationAnchors( ...
+            Dataset,PopulationC,PopulationU,OffspringU,B,BInfo,W,PopulationC,Problem);
     end
-    [~,ord] = sortrows([-TrainBuffer.Time(Candidate),Candidate(:)],[1 2]);
-    Keep = Candidate(ord(1:min(MaxCount,numel(ord))));
+    Dataset = FinalizeBoundaryDrivenDataset(Dataset,Problem);
 end
 
-function Dataset = BuildTrainingBufferT(B,BInfo,TrainBuffer)
+function MinTrain = MinimumRecoverabilityTrainingSize(Problem)
+    MinTrain = max(64,round(0.8*Problem.N));
+end
+
+function tf = TrainingDataNeedsSupplement(Dataset,Problem)
+    Label = double(Dataset.Label(:) > 0);
+    tf = numel(Label) < MinimumRecoverabilityTrainingSize(Problem) || ...
+        ~any(Label == 1) || ~any(Label == 0);
+end
+
+function Dataset = InitTrainingDataset(BInfo,D)
+    if nargin < 2 || isempty(D)
+        D = 0;
+    end
     Dataset = struct( ...
-        'Dec',zeros(0,0), ...
+        'Dec',zeros(0,D), ...
         'Label',zeros(0,1), ...
         'Source',zeros(0,1), ...
+        'Time',zeros(0,1), ...
+        'Pair',zeros(0,1), ...
+        'Priority',zeros(0,1), ...
         'train_size',0, ...
         'pos_count',0, ...
         'neg_count',0, ...
-        'src_b',0, ...
-        'src_refinement',0, ...
-        'src_boundary_band',0, ...
+        'b_core_count',0, ...
+        'refinement_count',0, ...
+        'refinement_pos_count',0, ...
+        'refinement_neg_count',0, ...
+        'refinement_ratio',0, ...
+        'current_pop_count',0, ...
         'pair_count',BInfo.PairCount);
-    if ~isempty(B)
-        Dataset.Dec = double(B.decs);
-        Dataset.Label = double(all(B.cons<=0,2));
-        Dataset.Source = ones(size(Dataset.Label));
+end
+
+function Pick = SelectBoundaryPairsForTraining(B,BInfo,Problem)
+    Pick = zeros(0,1);
+    if isempty(B) || BInfo.PairCount <= 0
+        return;
     end
-    if isstruct(TrainBuffer) && ~isempty(TrainBuffer.Dec)
-        Dataset.Dec = [Dataset.Dec;double(TrainBuffer.Dec)];
-        Dataset.Label = [Dataset.Label;double(TrainBuffer.Label(:) > 0)];
-        Dataset.Source = [Dataset.Source;double(TrainBuffer.Source(:))];
+
+    PairCount = min([BInfo.PairCount,floor(numel(B)/2),numel(BInfo.Active)]);
+    Active = find(BInfo.Active(1:PairCount));
+    if isempty(Active)
+        return;
     end
+
+    PairGap = double(BInfo.PairGap(Active));
+    MidScalar = double(BInfo.MidScalar(Active));
+    Sector = double(BInfo.Sector(Active));
+    Valid = isfinite(PairGap(:)) & isfinite(MidScalar(:)) & isfinite(Sector(:)) & Sector(:) > 0;
+    Active = Active(Valid);
+    PairGap = PairGap(Valid);
+    MidScalar = MidScalar(Valid);
+    Sector = Sector(Valid);
+    if isempty(Active)
+        return;
+    end
+
+    K = max([max(Sector),Problem.N,1]);
+    Ranked = cell(K,1);
+    for s = 1 : K
+        Local = find(Sector == s);
+        if isempty(Local)
+            Ranked{s} = zeros(0,1);
+            continue;
+        end
+        [~,ord] = sortrows([PairGap(Local),MidScalar(Local),Active(Local)],[1 2 3]);
+        Ranked{s} = Active(Local(ord));
+    end
+
+    MaxPairs = max(4,ceil(0.5*Problem.N));
+    PickWithSector = SectorRoundRobinPick(Ranked,MaxPairs);
+    if ~isempty(PickWithSector)
+        Pick = PickWithSector(:,2);
+    end
+end
+
+function Dataset = CollectRefinementOutcomeSamples(Dataset,TrainBuffer)
+    if isstruct(TrainBuffer) && isfield(TrainBuffer,'Dec') && ~isempty(TrainBuffer.Dec)
+        Dataset = AppendTrainingDatasetRows( ...
+            Dataset,double(TrainBuffer.Dec),double(TrainBuffer.Label > 0), ...
+            2*ones(size(TrainBuffer.Label)),double(TrainBuffer.Time), ...
+            zeros(size(TrainBuffer.Label)),ones(size(TrainBuffer.Label)));
+    end
+end
+
+function Dataset = CollectBoundaryEndpointAnchors(Dataset,B,BInfo,PairPick)
+    %#ok<INUSD>
+    PairPick = double(PairPick(:));
+    if ~isempty(B) && ~isempty(PairPick)
+        Rows = reshape([2*PairPick(:)-1,2*PairPick(:)]',[],1);
+        Rows = Rows(Rows >= 1 & Rows <= numel(B));
+        if ~isempty(Rows)
+            PairId = ceil(Rows(:)/2);
+            Dataset = AppendTrainingDatasetRows( ...
+                Dataset,double(B(Rows).decs),double(all(B(Rows).cons<=0,2)), ...
+                ones(numel(Rows),1),inf(numel(Rows),1),PairId,2*ones(numel(Rows),1));
+        end
+    end
+end
+
+function Dataset = CollectCurrentPopulationAnchors( ...
+    Dataset,PopulationC,PopulationU,OffspringU,B,BInfo,W,PopulationCContext,Problem)
+
+    PerClass = max(1,ceil(0.8*Problem.N));
+    Feasible = FilterFeasiblePopulation(PopulationC);
+    FeasiblePick = SelectCurrentPopulationRows( ...
+        Feasible,PerClass,B,BInfo,W,PopulationCContext);
+    if ~isempty(FeasiblePick)
+        Dataset = AppendTrainingDatasetRows( ...
+            Dataset,double(FeasiblePick.decs),ones(numel(FeasiblePick),1), ...
+            3*ones(numel(FeasiblePick),1),inf(numel(FeasiblePick),1), ...
+            zeros(numel(FeasiblePick),1),3*ones(numel(FeasiblePick),1));
+    end
+
+    Infeasible = [PopulationU,OffspringU];
+    if ~isempty(Infeasible)
+        Infeasible = Infeasible(any(Infeasible.cons>0,2));
+    end
+    InfeasiblePick = SelectCurrentPopulationRows( ...
+        Infeasible,PerClass,B,BInfo,W,PopulationCContext);
+    if ~isempty(InfeasiblePick)
+        Dataset = AppendTrainingDatasetRows( ...
+            Dataset,double(InfeasiblePick.decs),zeros(numel(InfeasiblePick),1), ...
+            3*ones(numel(InfeasiblePick),1),inf(numel(InfeasiblePick),1), ...
+            zeros(numel(InfeasiblePick),1),3*ones(numel(InfeasiblePick),1));
+    end
+end
+
+function Pick = SelectCurrentPopulationRows(Population,MaxPick,B,BInfo,W,PopulationC)
+    Pick = Population([]);
+    if isempty(Population) || MaxPick <= 0
+        return;
+    end
+    Population = KeepUniquePopulation(Population);
+    if isempty(Population)
+        return;
+    end
+    Meta = BuildBoundaryMetaFromB(Population,W,[],B,BInfo,PopulationC);
+    Candidate = (1:numel(Population))';
+    SupportDist = double(Meta.supportDistObjToB(:));
+    ScalarObj = double(Meta.scalarObj(:));
+    Near = Candidate(isfinite(SupportDist));
+    if isempty(Near)
+        Ranked = zeros(0,1);
+    else
+        [~,ord] = sortrows([SupportDist(Near),ScalarObj(Near),Near],[1 2 3]);
+        Ranked = Near(ord);
+    end
+    Remaining = setdiff(Candidate,Ranked,'stable');
+    Fill = UniformSupplementRows(Remaining,max(0,MaxPick-numel(Ranked)));
+    Rows = [Ranked(:);Fill(:)];
+    Rows = Rows(1:min(MaxPick,numel(Rows)));
+    Pick = Population(Rows);
+end
+
+function Rows = UniformSupplementRows(Candidate,MaxPick)
+    Candidate = Candidate(:);
+    if isempty(Candidate) || MaxPick <= 0
+        Rows = zeros(0,1);
+        return;
+    end
+    Count = min(MaxPick,numel(Candidate));
+    if Count == numel(Candidate)
+        Rows = Candidate;
+    else
+        Pos = unique(round(linspace(1,numel(Candidate),Count)),'stable');
+        Rows = Candidate(Pos(:));
+    end
+end
+
+function Dataset = AppendTrainingDatasetRows(Dataset,Dec,Label,Source,Time,Pair,Priority)
+    if isempty(Dec)
+        return;
+    end
+    Count = size(Dec,1);
+    if Count ~= numel(Label) || Count ~= numel(Source) || Count ~= numel(Time) || ...
+            Count ~= numel(Pair) || Count ~= numel(Priority)
+        error('PRBCCMO:InvalidTrainingDatasetRows','Training dataset row fields must have matching lengths.');
+    end
+    Dataset.Dec = [Dataset.Dec;double(Dec)];
+    Dataset.Label = [Dataset.Label;double(Label(:) > 0)];
+    Dataset.Source = [Dataset.Source;double(Source(:))];
+    Dataset.Time = [Dataset.Time;double(Time(:))];
+    Dataset.Pair = [Dataset.Pair;double(Pair(:))];
+    Dataset.Priority = [Dataset.Priority;double(Priority(:))];
+end
+
+function Dataset = FinalizeBoundaryDrivenDataset(Dataset,Problem)
+    if ~isempty(Dataset.Dec)
+        Keep = KeepBestTrainingDatasetRows(Dataset);
+        Dataset = SliceTrainingDataset(Dataset,Keep);
+    end
+    Pos = find(Dataset.Label == 1);
+    Neg = find(Dataset.Label == 0);
+    MaxTotal = max(96,min(192,round(1.6*Problem.N)));
+    Count = min([numel(Pos),numel(Neg),floor(MaxTotal/2)]);
+    if Count <= 0
+        Dataset = SliceTrainingDataset(Dataset,zeros(0,1));
+    else
+        PosKeep = SelectDatasetRowsByPriority(Dataset,Pos,Count);
+        NegKeep = SelectDatasetRowsByPriority(Dataset,Neg,Count);
+        Keep = sort([PosKeep;NegKeep]);
+        Dataset = SliceTrainingDataset(Dataset,Keep);
+    end
+    Dataset = UpdateTrainingDatasetCounts(Dataset);
+end
+
+function Keep = KeepBestTrainingDatasetRows(Dataset)
+    if isempty(Dataset.Dec)
+        Keep = zeros(0,1);
+        return;
+    end
+    n = size(Dataset.Dec,1);
+    [~,ord] = sortrows([Dataset.Priority(:),-Dataset.Time(:),(1:n)'],[1 2 3]);
+    [~,ia] = unique(Dataset.Dec(ord,:),'rows','stable');
+    Keep = sort(ord(ia));
+end
+
+function Keep = SelectDatasetRowsByPriority(Dataset,Rows,Count)
+    Rows = Rows(:);
+    if isempty(Rows) || Count <= 0
+        Keep = zeros(0,1);
+        return;
+    end
+    [~,ord] = sortrows([Dataset.Priority(Rows),-Dataset.Time(Rows),Dataset.Pair(Rows),Rows],[1 2 3 4]);
+    Keep = Rows(ord(1:min(Count,numel(ord))));
+end
+
+function Dataset = UpdateTrainingDatasetCounts(Dataset)
     Dataset.train_size = size(Dataset.Dec,1);
     Dataset.pos_count = sum(Dataset.Label == 1);
     Dataset.neg_count = sum(Dataset.Label == 0);
-    Dataset.src_b = sum(Dataset.Source == 1);
-    Dataset.src_refinement = sum(Dataset.Source == 2);
-    Dataset.src_boundary_band = sum(Dataset.Source == 3);
+    Dataset.b_core_count = sum(Dataset.Source == 1);
+    Dataset.refinement_count = sum(Dataset.Source == 2);
+    Dataset.refinement_pos_count = sum(Dataset.Source == 2 & Dataset.Label == 1);
+    Dataset.refinement_neg_count = sum(Dataset.Source == 2 & Dataset.Label == 0);
+    Dataset.refinement_ratio = Dataset.refinement_count / max(Dataset.train_size,1);
+    Dataset.current_pop_count = sum(Dataset.Source == 3);
 end
 
-function Balanced = BalanceTrainingDataset(Dataset)
-    Balanced = Dataset;
-    Pos = find(Dataset.Label == 1);
-    Neg = find(Dataset.Label == 0);
-    Count = min(numel(Pos),numel(Neg));
-    if Count <= 0
-        Balanced.Dec = zeros(0,size(Dataset.Dec,2));
-        Balanced.Label = zeros(0,1);
-        Balanced.Source = zeros(0,1);
-    else
-        Keep = sort([Pos(1:Count);Neg(1:Count)]);
-        Balanced.Dec = Dataset.Dec(Keep,:);
-        Balanced.Label = Dataset.Label(Keep);
-        Balanced.Source = Dataset.Source(Keep);
+function Dataset = SliceTrainingDataset(Dataset,Keep)
+    Keep = Keep(:);
+    D = size(Dataset.Dec,2);
+    Dataset.Dec = Dataset.Dec(Keep,:);
+    if isempty(Dataset.Dec)
+        Dataset.Dec = zeros(0,D);
     end
-    Balanced.train_size = size(Balanced.Dec,1);
-    Balanced.pos_count = sum(Balanced.Label == 1);
-    Balanced.neg_count = sum(Balanced.Label == 0);
-    Balanced.src_b = sum(Balanced.Source == 1);
-    Balanced.src_refinement = sum(Balanced.Source == 2);
-    Balanced.src_boundary_band = sum(Balanced.Source == 3);
+    Dataset.Label = Dataset.Label(Keep);
+    Dataset.Source = Dataset.Source(Keep);
+    Dataset.Time = Dataset.Time(Keep);
+    Dataset.Pair = Dataset.Pair(Keep);
+    Dataset.Priority = Dataset.Priority(Keep);
 end
 
 function Model = TrainBoundaryMLPColdStart(Dataset,Problem,Hidden,Epoch,LR)
@@ -1401,13 +1690,7 @@ function Model = TrainBoundaryMLPColdStart(Dataset,Problem,Hidden,Epoch,LR)
         Model = [];
         return;
     end
-    [~,D] = size(Xn);
-    W1 = 0.1*randn(D,Hidden);
-    b1 = zeros(1,Hidden);
-    W2 = 0.1*randn(Hidden,1);
-    b2 = 0;
-    Model = struct('Lower',Lower,'Upper',Upper,'W1',W1,'b1',b1,'W2',W2,'b2',b2);
-    Model = RunBoundaryMLPTraining(Model,Xn,Y,Epoch,LR);
+    Model = TrainBoundaryMLPWithDeepLearningToolbox([],Xn,Y,Lower,Upper,Hidden,Epoch,LR,false);
 end
 
 function Model = ContinueTrainBoundaryMLP(Model,Dataset,Problem,Hidden,Epoch,LR)
@@ -1419,33 +1702,70 @@ function Model = ContinueTrainBoundaryMLP(Model,Dataset,Problem,Hidden,Epoch,LR)
         Model = TrainBoundaryMLPColdStart(Dataset,Problem,Hidden,Epoch,LR);
         return;
     end
-    Model.Lower = Lower;
-    Model.Upper = Upper;
-    Model = RunBoundaryMLPTraining(Model,Xn,Y,Epoch,LR);
+    Model = TrainBoundaryMLPWithDeepLearningToolbox(Model.Net,Xn,Y,Lower,Upper,Hidden,Epoch,LR,true);
 end
 
-function Model = RunBoundaryMLPTraining(Model,Xn,Y,Epoch,LR)
-    W1 = Model.W1;
-    b1 = Model.b1;
-    W2 = Model.W2;
-    b2 = Model.b2;
-    for e = 1 : Epoch
-        H = tanh(Xn*W1 + b1);
-        Z = H*W2 + b2;
-        P = 1./(1+exp(-Z));
-        Delta2 = (P-Y)./max(size(Xn,1),1);
-        D1 = (Delta2*W2').*(1-H.^2);
-        Step = LR/sqrt(e);
-        W2 = W2 - Step*(H'*Delta2);
-        b2 = b2 - Step*sum(Delta2);
-        W1 = W1 - Step*(Xn'*D1);
-        b1 = b1 - Step*sum(D1,1);
+function Model = TrainBoundaryMLPWithDeepLearningToolbox(PreviousNet,Xn,Y,Lower,Upper,Hidden,Epoch,LR,IsWarm)
+    assert(exist('trainnet','file') == 2, ...
+        'PRBCCMO:MissingTrainnet', ...
+        'MATLAB Deep Learning Toolbox trainnet is required for PRBCCMO MLP training.');
+    Hidden1 = max(2,round(Hidden));
+    Hidden2 = max(16,round(Hidden1/2));
+    Xn = single(Xn);
+    Y = single(Y(:));
+    [TrainIdx,ValIdx] = StratifiedValidationSplit(Y,0.20);
+    XTrain = Xn(TrainIdx,:);
+    YTrain = Y(TrainIdx,:);
+    XVal = Xn(ValIdx,:);
+    YVal = Y(ValIdx,:);
+    MiniBatch = min(64,max(1,size(XTrain,1)));
+
+    if isempty(PreviousNet)
+        NetOrLayers = [
+            featureInputLayer(size(XTrain,2),Normalization="none")
+            fullyConnectedLayer(Hidden1)
+            reluLayer
+            fullyConnectedLayer(Hidden2)
+            reluLayer
+            fullyConnectedLayer(1)
+            sigmoidLayer];
+    else
+        NetOrLayers = PreviousNet;
     end
 
-    Model.W1 = W1;
-    Model.b1 = b1;
-    Model.W2 = W2;
-    Model.b2 = b2;
+    if isempty(ValIdx)
+        Options = trainingOptions("adam", ...
+            InitialLearnRate=LR, ...
+            MaxEpochs=Epoch, ...
+            MiniBatchSize=MiniBatch, ...
+            Shuffle="every-epoch", ...
+            Verbose=false, ...
+            Plots="none", ...
+            ExecutionEnvironment="cpu");
+    else
+        Options = trainingOptions("adam", ...
+            InitialLearnRate=LR, ...
+            MaxEpochs=Epoch, ...
+            MiniBatchSize=MiniBatch, ...
+            Shuffle="every-epoch", ...
+            ValidationData={XVal,YVal}, ...
+            ValidationFrequency=max(1,floor(size(XTrain,1)/MiniBatch)), ...
+            ValidationPatience=15, ...
+            OutputNetwork="best-validation", ...
+            Verbose=false, ...
+            Plots="none", ...
+            ExecutionEnvironment="cpu");
+    end
+
+    Net = trainnet(XTrain,YTrain,NetOrLayers,"binary-crossentropy",Options);
+    Model = struct( ...
+        'Kind',"deep_learning_toolbox", ...
+        'Lower',Lower, ...
+        'Upper',Upper, ...
+        'Net',Net, ...
+        'Hidden',[Hidden1,Hidden2], ...
+        'InputSize',size(XTrain,2), ...
+        'IsWarm',logical(IsWarm));
 end
 
 function Prob = PredictBoundaryMLP(Model,X)
@@ -1458,10 +1778,14 @@ function Prob = PredictBoundaryMLP(Model,X)
         Prob = 0.5*ones(size(X,1),1);
         return;
     end
-    Xn = NormalizeDecisionByBounds(double(X),Model.Lower,Model.Upper);
-    H = tanh(Xn*Model.W1 + Model.b1);
-    Z = H*Model.W2 + Model.b2;
-    Prob = min(max(1./(1+exp(-Z)),1e-6),1-1e-6);
+    Xn = single(NormalizeDecisionByBounds(double(X),Model.Lower,Model.Upper));
+    Scores = minibatchpredict(Model.Net,Xn,MiniBatchSize=1024, ...
+        ExecutionEnvironment="cpu",Acceleration="auto");
+    if isa(Scores,'dlarray')
+        Scores = extractdata(Scores);
+    end
+    Scores = gather(Scores);
+    Prob = min(max(double(Scores(:)),1e-6),1-1e-6);
 end
 
 function [Xn,Y,Lower,Upper,Ready] = PrepareBoundaryMLPTrainingData(Dataset,Problem)
@@ -1475,6 +1799,30 @@ function [Xn,Y,Lower,Upper,Ready] = PrepareBoundaryMLPTrainingData(Dataset,Probl
         return;
     end
     Xn = NormalizeDecisionByBounds(X,Lower,Upper);
+end
+
+function [TrainIdx,ValIdx] = StratifiedValidationSplit(Y,Holdout)
+    Y = double(Y(:) > 0);
+    TrainIdx = (1:numel(Y))';
+    ValIdx = zeros(0,1);
+    if numel(Y) < 10 || numel(unique(Y)) < 2
+        return;
+    end
+    ValCells = cell(2,1);
+    cellCount = 0;
+    for Label = [0 1]
+        Rows = find(Y == Label);
+        if numel(Rows) < 5
+            ValIdx = zeros(0,1);
+            return;
+        end
+        Count = max(1,floor(Holdout*numel(Rows)));
+        Count = min(Count,numel(Rows)-1);
+        cellCount = cellCount + 1;
+        ValCells{cellCount} = Rows(end-Count+1:end);
+    end
+    ValIdx = vertcat(ValCells{1:cellCount});
+    TrainIdx = setdiff(TrainIdx,ValIdx,'stable');
 end
 
 function Xn = NormalizeDecisionByBounds(X,Lower,Upper)
@@ -1493,8 +1841,8 @@ function Dist = DecisionDistanceNormalized(A,B,Lower,Upper)
 end
 
 function tf = IsBoundaryMLPCompatible(Model,D)
-    tf = ~isempty(Model) && isfield(Model,'W1') && isfield(Model,'W2') && ...
-        size(Model.W1,1) == D && size(Model.W1,2) == size(Model.W2,1);
+    tf = ~isempty(Model) && isstruct(Model) && isfield(Model,'Net') && ...
+        isfield(Model,'InputSize') && double(Model.InputSize) == D;
 end
 
 function Flag = IsAccuracyDegraded(AccBefore,AccAfter)
@@ -1583,9 +1931,83 @@ function Population = PadPopulation(Population,N)
     end
 end
 
-function [Flag,FrontNo,CrowdDis] = ConstraintSideIndicator(Population)
+function [MatingPool,Diag] = TournamentSelectionConstraintMLP(Population,K,W,Model,B,BInfo,PopulationC,UseMLP)
+    N = numel(Population);
+    MatingPool = zeros(1,K);
+    Diag = InitMatingDiag();
+    if N <= 0 || K <= 0
+        return;
+    end
+    if nargin < 8
+        UseMLP = true;
+    end
     [FrontNo,CrowdDis] = ObjectiveSideIndicator(Population);
-    Flag = sum(max(0,Population.cons),2);
+    Meta = BuildBoundaryMetaFromB(Population,W,Model,B,BInfo,PopulationC);
+    UtilityMeta = ComputeInfeasibleUtilityMeta(Meta,UseMLP);
+    BaselineUtilityMeta = ComputeInfeasibleUtilityMeta(Meta,false);
+    IsFeasible = all(Population.cons<=0,2);
+    Diag.mlp_used = double(UseMLP > 0 && ~isempty(Model) && ...
+        IsBoundaryMLPCompatible(Model,size(Population.decs,2)));
+    TwoInfCount = 0;
+    EffectiveCount = 0;
+    PrimaryResolutionCount = 0;
+    BFallbackCount = 0;
+    for i = 1 : K
+        Candidate = randi(N,1,2);
+        MatingPool(i) = SelectConstraintTournamentWinner( ...
+            Candidate(1),Candidate(2),IsFeasible,FrontNo,CrowdDis,UtilityMeta);
+        if ~IsFeasible(Candidate(1)) && ~IsFeasible(Candidate(2))
+            TwoInfCount = TwoInfCount + 1;
+            if abs(UtilityMeta.prob_rank(Candidate(1)) - UtilityMeta.prob_rank(Candidate(2))) > 1e-12
+                PrimaryResolutionCount = PrimaryResolutionCount + 1;
+            else
+                BFallbackCount = BFallbackCount + 1;
+            end
+            BaselineWinner = SelectConstraintTournamentWinner( ...
+                Candidate(1),Candidate(2),IsFeasible,FrontNo,CrowdDis,BaselineUtilityMeta);
+            EffectiveCount = EffectiveCount + double(MatingPool(i) ~= BaselineWinner);
+        end
+    end
+    Diag.two_inf_total = TwoInfCount;
+    Diag.effective_total = EffectiveCount;
+    Diag.primary_resolution_total = PrimaryResolutionCount;
+    Diag.b_fallback_total = BFallbackCount;
+    Diag.two_inf_tournament_rate = TwoInfCount / max(K,1);
+    if TwoInfCount > 0
+        Diag.effective_win_rate = EffectiveCount / TwoInfCount;
+        Diag.mlp_primary_resolution_rate = PrimaryResolutionCount / TwoInfCount;
+        Diag.b_fallback_rate = BFallbackCount / TwoInfCount;
+    end
+end
+
+function Winner = SelectConstraintTournamentWinner(A,B,IsFeasible,FrontNo,CrowdDis,UtilityMeta)
+    if IsFeasible(A) && ~IsFeasible(B)
+        Winner = A;
+    elseif ~IsFeasible(A) && IsFeasible(B)
+        Winner = B;
+    elseif IsFeasible(A) && IsFeasible(B)
+        Winner = SelectObjectiveTournamentWinner(A,B,FrontNo,CrowdDis);
+    else
+        if CompareInfeasibleByUtility(UtilityMeta,A,B) <= 0
+            Winner = A;
+        else
+            Winner = B;
+        end
+    end
+end
+
+function Winner = SelectObjectiveTournamentWinner(A,B,FrontNo,CrowdDis)
+    if FrontNo(A) < FrontNo(B)
+        Winner = A;
+    elseif FrontNo(A) > FrontNo(B)
+        Winner = B;
+    elseif CrowdDis(A) > CrowdDis(B)
+        Winner = A;
+    elseif CrowdDis(A) < CrowdDis(B)
+        Winner = B;
+    else
+        Winner = A;
+    end
 end
 
 function [FrontNo,CrowdDis] = ObjectiveSideIndicator(Population)
@@ -1657,43 +2079,6 @@ function ObjN = NormalizeObjectivesWithBounds(Obj,zmin,zmax)
         return;
     end
     ObjN = (Obj - zmin)./max(zmax-zmin,1e-12);
-end
-
-function Best = ComputeBestFeasibleScalar(RefObjN,RefLabel,W,Neighbors,FallbackObjN,FallbackLabel)
-    if isempty(W)
-        K = 1;
-    else
-        K = size(W,1);
-    end
-    Best = inf(K,1);
-    Obj = RefObjN;
-    Label = RefLabel;
-    if isempty(Obj) || ~any(Label == 1)
-        Obj = FallbackObjN;
-        Label = FallbackLabel;
-    end
-    if isempty(Obj) || ~any(Label == 1)
-        Best(:) = 0;
-        return;
-    end
-
-    FeasibleObj = Obj(Label == 1,:);
-    if isempty(W)
-        Best(:) = min(sum(FeasibleObj,2));
-        return;
-    end
-    FeasibleSector = AssociateSectorsLocal(FeasibleObj,W,zeros(1,size(FeasibleObj,2)));
-    FeasibleScalar = ComputeSectorScalar(FeasibleObj,W,zeros(1,size(FeasibleObj,2)),FeasibleSector);
-    for s = 1 : K
-        Local = ResolveLocalSectorSet(s,Neighbors,K);
-        idx = ismember(FeasibleSector,Local);
-        if any(idx)
-            Best(s) = min(FeasibleScalar(idx));
-        else
-            Best(s) = min(FeasibleScalar);
-        end
-    end
-    Best(~isfinite(Best)) = 0;
 end
 
 function [Sector,Scalar] = AssociateSectorsLocal(Obj,W,RefObj)
@@ -2047,15 +2432,16 @@ function Observer = InitObserver(Algorithm,Problem,Params)
 
     WriteCsvHeader(Observer.meta_file,{ ...
         'algorithm','problem','family','run','M','D','N','maxFE', ...
-        'hidden','epoch','lr','betaB','etaB','Tretrain','Gstart','output_folder'});
+        'hidden','epoch','lr','betaB','etaB','Tretrain','Gstart','saveB','useMLP','output_folder'});
     AppendCsvRows(Observer.meta_file,{ ...
         class(Algorithm),class(Problem),familyOfProblem(class(Problem)), ...
         resolveRunId(Algorithm),Problem.M,Problem.D,Problem.N,Problem.maxFE, ...
-        Params(1),Params(2),Params(3),Params(4),Params(5),Params(6),Params(7),RunFolder});
+        Params(1),Params(2),Params(3),Params(4),Params(5),Params(6),Params(7),Params(8),Params(9),RunFolder});
 
-    WriteCsvHeader(Observer.core_file,{ ...
+    WriteCsvHeader(Observer.core_file,[ ...
+        { ...
         'generation','fe','fe_ratio', ...
-        'b_pair_count','b_mean_pair_gap','b_p90_pair_gap','b_mean_front_gap','b_p90_front_gap', ...
+        'b_pair_count','b_mean_pair_gap','b_p90_pair_gap','b_mean_mid_scalar','b_p90_mid_scalar', ...
         'b_active_sector_ratio','b_changed_pair_count','b_changed_pair_ratio', ...
         'b_added_pair_count','b_replaced_pair_count','b_dropped_pair_count','b_contracted_pair_count', ...
         'b_global_change_pair_ratio','b_contraction_pair_ratio', ...
@@ -2067,25 +2453,38 @@ function Observer = InitObserver(Algorithm,Problem,Params)
         'b_src_b','b_src_popc','b_src_popu','b_src_offc','b_src_offu','b_src_refinement', ...
         'b_inf_src_b','b_inf_src_popc','b_inf_src_popu','b_inf_src_offc','b_inf_src_offu','b_inf_src_refinement', ...
         'b_inf_unconstrained_src_ratio', ...
-        'mlp_due','mlp_can_train','mlp_trained','mlp_acc_before','mlp_train_acc','mlp_degraded', ...
+        'mlp_due','mlp_can_train','mlp_trained', ...
         'train_size','train_pos','train_neg', ...
-        'train_src_b','train_src_refinement','train_src_boundary_band', ...
-        'inf_pool_size','inf_selected','inf_pool_mean_prob','inf_selected_mean_prob','inf_prob_gain', ...
-        'inf_carry_pool_size','inf_carry_applicable_count', ...
-        'inf_carry_selected','inf_carry_pool_mean_prob','inf_carry_selected_mean_prob','inf_carry_prob_gain'});
+        'train_b_core_count','train_refinement_count','train_current_pop_count', ...
+        'train_refinement_pos_count','train_refinement_neg_count','train_refinement_ratio', ...
+        'mlp_prob_bcore_feasible','mlp_prob_bcore_infeasible', ...
+        'mlp_prob_curr_feasible','mlp_prob_curr_infeasible', ...
+        'prob_accepted_refinement','prob_rejected_refinement', ...
+        'mlp_prob_bcore_gap','mlp_prob_current_gap','prob_refinement_gap'}, ...
+        MLPProbabilityHistogramColumnNames(), ...
+        { ...
+        'mlp_two_inf_tournament_total','mlp_effective_win_total', ...
+        'mlp_primary_resolution_total','b_fallback_total', ...
+        'mlp_two_inf_tournament_rate','mlp_effective_win_rate', ...
+        'mlp_primary_resolution_rate','b_fallback_rate', ...
+        'inf_mlp_used','inf_feasible_deficit', ...
+        'inf_pool_size','inf_ranked_count','inf_selected', ...
+        'inf_pool_mean_utility','inf_selected_mean_utility','inf_utility_gain', ...
+        'inf_pool_mean_prob','inf_selected_mean_prob','inf_selected_prob_gain'}]);
 end
 
 function Observer = LogGenerationDiagnostics(Observer,Problem,Generation, ...
-    B,BInfo,PopulationC,PopulationU,BlendDiag,MLPDiag,SelectionDiag)
+    B,BInfo,PopulationC,PopulationU,BlendDiag,MLPDiag,MatingDiag,SelectionDiag)
     Active = BInfo.Active;
     BDiag = BuildBoundaryArchiveDiagnostics(B,BInfo,PopulationC,PopulationU,Problem);
     ChangedPairCount = double(BlendDiag.added) + double(BlendDiag.replaced) + ...
         double(StructFieldOr(BlendDiag,'contracted',0));
     ActiveSectors = unique(BInfo.Sector(Active));
-    AppendCsvRows(Observer.core_file,{ ...
+    Row = [ ...
+        { ...
         Generation,Problem.FE,min(Problem.FE/max(Problem.maxFE,1),1), ...
         BInfo.PairCount,MeanOrNaN(BInfo.PairGap(Active)),PercentileOrNaN(BInfo.PairGap(Active),90), ...
-        MeanOrNaN(BInfo.FrontGap(Active)),PercentileOrNaN(BInfo.FrontGap(Active),90), ...
+        MeanOrNaN(BInfo.MidScalar(Active)),PercentileOrNaN(BInfo.MidScalar(Active),90), ...
         numel(ActiveSectors)/max(Problem.N,1),ChangedPairCount,ChangedPairCount/max(numel(BInfo.Active),1), ...
         BlendDiag.added,BlendDiag.replaced,BlendDiag.dropped,StructFieldOr(BlendDiag,'contracted',0), ...
         (double(BlendDiag.added)+double(BlendDiag.replaced))/max(BInfo.PairCount,1), ...
@@ -2098,13 +2497,25 @@ function Observer = LogGenerationDiagnostics(Observer,Problem,Generation, ...
         BDiag.src_b,BDiag.src_popc,BDiag.src_popu,BDiag.src_offc,BDiag.src_offu,BDiag.src_refinement, ...
         BDiag.inf_src_b,BDiag.inf_src_popc,BDiag.inf_src_popu,BDiag.inf_src_offc,BDiag.inf_src_offu,BDiag.inf_src_refinement, ...
         BDiag.inf_unconstrained_src_ratio, ...
-        MLPDiag.due,MLPDiag.can_train,MLPDiag.trained,MLPDiag.acc_before,MLPDiag.acc_after,MLPDiag.degraded, ...
+        MLPDiag.due,MLPDiag.can_train,MLPDiag.trained, ...
         MLPDiag.train_size,MLPDiag.pos_count,MLPDiag.neg_count, ...
-        MLPDiag.src_b,MLPDiag.src_refinement,MLPDiag.src_boundary_band, ...
-        SelectionDiag.pool_size,SelectionDiag.selected,SelectionDiag.pool_mean_prob,SelectionDiag.selected_mean_prob,SelectionDiag.prob_gain, ...
-        SelectionDiag.carry_pool_size,SelectionDiag.carry_applicable_count, ...
-        SelectionDiag.carry_selected,SelectionDiag.carry_pool_mean_prob, ...
-        SelectionDiag.carry_selected_mean_prob,SelectionDiag.carry_prob_gain});
+        MLPDiag.b_core_count,MLPDiag.refinement_count,MLPDiag.current_pop_count, ...
+        MLPDiag.refinement_pos_count,MLPDiag.refinement_neg_count,MLPDiag.refinement_ratio, ...
+        MLPDiag.prob_bcore_feasible,MLPDiag.prob_bcore_infeasible, ...
+        MLPDiag.prob_curr_feasible,MLPDiag.prob_curr_infeasible, ...
+        MLPDiag.prob_accepted_refinement,MLPDiag.prob_rejected_refinement, ...
+        MLPDiag.mlp_prob_bcore_gap,MLPDiag.mlp_prob_current_gap,MLPDiag.prob_refinement_gap}, ...
+        MLPProbabilityHistogramRow(MLPDiag), ...
+        { ...
+        MatingDiag.two_inf_total,MatingDiag.effective_total, ...
+        MatingDiag.primary_resolution_total,MatingDiag.b_fallback_total, ...
+        MatingDiag.two_inf_tournament_rate,MatingDiag.effective_win_rate, ...
+        MatingDiag.mlp_primary_resolution_rate,MatingDiag.b_fallback_rate, ...
+        SelectionDiag.mlp_used,SelectionDiag.feasible_deficit, ...
+        SelectionDiag.pool_size,SelectionDiag.ranked_count,SelectionDiag.selected, ...
+        SelectionDiag.pool_mean_utility,SelectionDiag.selected_mean_utility,SelectionDiag.utility_gain, ...
+        SelectionDiag.pool_mean_prob,SelectionDiag.selected_mean_prob,SelectionDiag.selected_prob_gain}];
+    AppendCsvRows(Observer.core_file,Row);
 end
 
 function Observer = WriteBoundarySnapshotsIfDue(Observer,Problem,Generation,B,BInfo)
@@ -2129,6 +2540,62 @@ function Observer = WriteBoundarySnapshotsIfDue(Observer,Problem,Generation,B,BI
     Observer.boundary_next_checkpoint = Next;
 end
 
+function Names = MLPProbabilityHistogramColumnNames()
+    Names = [ ...
+        probabilityHistogramColumns('mlp_prob_train_hist'), ...
+        probabilityHistogramColumns('mlp_prob_bcore_feasible_hist'), ...
+        probabilityHistogramColumns('mlp_prob_bcore_infeasible_hist'), ...
+        probabilityHistogramColumns('mlp_prob_curr_feasible_hist'), ...
+        probabilityHistogramColumns('mlp_prob_curr_infeasible_hist')];
+end
+
+function Values = MLPProbabilityHistogramRow(Diag)
+    Values = [ ...
+        num2cell(Diag.prob_train_hist), ...
+        num2cell(Diag.prob_bcore_feasible_hist), ...
+        num2cell(Diag.prob_bcore_infeasible_hist), ...
+        num2cell(Diag.prob_curr_feasible_hist), ...
+        num2cell(Diag.prob_curr_infeasible_hist)];
+end
+
+function Columns = probabilityHistogramColumns(Prefix)
+    switch char(Prefix)
+        case 'mlp_prob_train_hist'
+            Columns = {'mlp_prob_train_hist_00_10','mlp_prob_train_hist_10_20', ...
+                'mlp_prob_train_hist_20_30','mlp_prob_train_hist_30_40', ...
+                'mlp_prob_train_hist_40_50','mlp_prob_train_hist_50_60', ...
+                'mlp_prob_train_hist_60_70','mlp_prob_train_hist_70_80', ...
+                'mlp_prob_train_hist_80_90','mlp_prob_train_hist_90_100'};
+        case 'mlp_prob_bcore_feasible_hist'
+            Columns = {'mlp_prob_bcore_feasible_hist_00_10','mlp_prob_bcore_feasible_hist_10_20', ...
+                'mlp_prob_bcore_feasible_hist_20_30','mlp_prob_bcore_feasible_hist_30_40', ...
+                'mlp_prob_bcore_feasible_hist_40_50','mlp_prob_bcore_feasible_hist_50_60', ...
+                'mlp_prob_bcore_feasible_hist_60_70','mlp_prob_bcore_feasible_hist_70_80', ...
+                'mlp_prob_bcore_feasible_hist_80_90','mlp_prob_bcore_feasible_hist_90_100'};
+        case 'mlp_prob_bcore_infeasible_hist'
+            Columns = {'mlp_prob_bcore_infeasible_hist_00_10','mlp_prob_bcore_infeasible_hist_10_20', ...
+                'mlp_prob_bcore_infeasible_hist_20_30','mlp_prob_bcore_infeasible_hist_30_40', ...
+                'mlp_prob_bcore_infeasible_hist_40_50','mlp_prob_bcore_infeasible_hist_50_60', ...
+                'mlp_prob_bcore_infeasible_hist_60_70','mlp_prob_bcore_infeasible_hist_70_80', ...
+                'mlp_prob_bcore_infeasible_hist_80_90','mlp_prob_bcore_infeasible_hist_90_100'};
+        case 'mlp_prob_curr_feasible_hist'
+            Columns = {'mlp_prob_curr_feasible_hist_00_10','mlp_prob_curr_feasible_hist_10_20', ...
+                'mlp_prob_curr_feasible_hist_20_30','mlp_prob_curr_feasible_hist_30_40', ...
+                'mlp_prob_curr_feasible_hist_40_50','mlp_prob_curr_feasible_hist_50_60', ...
+                'mlp_prob_curr_feasible_hist_60_70','mlp_prob_curr_feasible_hist_70_80', ...
+                'mlp_prob_curr_feasible_hist_80_90','mlp_prob_curr_feasible_hist_90_100'};
+        case 'mlp_prob_curr_infeasible_hist'
+            Columns = {'mlp_prob_curr_infeasible_hist_00_10','mlp_prob_curr_infeasible_hist_10_20', ...
+                'mlp_prob_curr_infeasible_hist_20_30','mlp_prob_curr_infeasible_hist_30_40', ...
+                'mlp_prob_curr_infeasible_hist_40_50','mlp_prob_curr_infeasible_hist_50_60', ...
+                'mlp_prob_curr_infeasible_hist_60_70','mlp_prob_curr_infeasible_hist_70_80', ...
+                'mlp_prob_curr_infeasible_hist_80_90','mlp_prob_curr_infeasible_hist_90_100'};
+        otherwise
+            error('PRBCCMO:UnknownProbabilityHistogramPrefix', ...
+                'Unknown MLP probability histogram prefix: %s',char(Prefix));
+    end
+end
+
 function WriteBoundarySnapshotFile(FilePath,Problem,B,BInfo,Generation,ActualFE,TargetFE)
     if isempty(FilePath)
         return;
@@ -2143,7 +2610,7 @@ function WriteBoundarySnapshotFile(FilePath,Problem,B,BInfo,Generation,ActualFE,
 
     ObjHeader = arrayfun(@(m)sprintf('obj%d',m),1:Problem.M,'UniformOutput',false);
     Header = [{'target_fe','actual_fe','generation', ...
-        'pair_index','pair_side','feasible','source_code','sector','pair_gap','front_gap'},ObjHeader];
+        'pair_index','pair_side','feasible','source_code','sector','pair_gap','mid_scalar'},ObjHeader];
     WriteCsvHeader(FilePath,Header);
 
     if ~isempty(Active)
@@ -2172,7 +2639,7 @@ function WriteBoundarySnapshotFile(FilePath,Problem,B,BInfo,Generation,ActualFE,
                 end
                 Rows(r,1:10) = {TargetFE,ActualFE,Generation, ...
                     p,SideNames{side},IsFeasible, ...
-                    SourceCode,BInfo.Sector(p),BInfo.PairGap(p),BInfo.FrontGap(p)};
+                    SourceCode,BInfo.Sector(p),BInfo.PairGap(p),BInfo.MidScalar(p)};
                 for m = 1 : Problem.M
                     Rows{r,10+m} = Obj(m);
                 end
@@ -2195,29 +2662,58 @@ function Diag = InitMLPDiag(Generation,FE,Model,Dataset,BInfo)
         'train_size',Dataset.train_size, ...
         'pos_count',Dataset.pos_count, ...
         'neg_count',Dataset.neg_count, ...
-        'src_b',Dataset.src_b, ...
-        'src_refinement',Dataset.src_refinement, ...
-        'src_boundary_band',Dataset.src_boundary_band, ...
-        'pair_count',BInfo.PairCount, ...
+        'b_core_count',Dataset.b_core_count, ...
+        'refinement_count',Dataset.refinement_count, ...
+        'refinement_pos_count',Dataset.refinement_pos_count, ...
+        'refinement_neg_count',Dataset.refinement_neg_count, ...
+        'refinement_ratio',Dataset.refinement_ratio, ...
+        'current_pop_count',Dataset.current_pop_count, ...
+        'prob_bcore_feasible',NaN, ...
+        'prob_bcore_infeasible',NaN, ...
+        'prob_curr_feasible',NaN, ...
+        'prob_curr_infeasible',NaN, ...
+        'prob_accepted_refinement',NaN, ...
+        'prob_rejected_refinement',NaN, ...
+        'mlp_prob_bcore_gap',NaN, ...
+        'mlp_prob_current_gap',NaN, ...
+        'prob_refinement_gap',NaN, ...
+        'prob_train_hist',zeros(1,10), ...
+        'prob_bcore_feasible_hist',zeros(1,10), ...
+        'prob_bcore_infeasible_hist',zeros(1,10), ...
+        'prob_curr_feasible_hist',zeros(1,10), ...
+        'prob_curr_infeasible_hist',zeros(1,10), ...
+        'pair_count',Dataset.pair_count, ...
         'acc_before',EvaluateBinaryAccuracy(Model,Dataset.Dec,Dataset.Label), ...
         'degraded',false, ...
         'acc_after',NaN);
 end
 
+function Diag = InitMatingDiag()
+    Diag = struct( ...
+        'mlp_used',0, ...
+        'two_inf_total',0, ...
+        'effective_total',0, ...
+        'primary_resolution_total',0, ...
+        'b_fallback_total',0, ...
+        'two_inf_tournament_rate',0, ...
+        'effective_win_rate',NaN, ...
+        'mlp_primary_resolution_rate',NaN, ...
+        'b_fallback_rate',NaN);
+end
+
 function Diag = InitInfeasibleSelectionDiag()
     Diag = struct( ...
+        'mlp_used',0, ...
+        'feasible_deficit',0, ...
         'pool_size',0, ...
-        'applicable_count',0, ...
+        'ranked_count',0, ...
         'selected',0, ...
+        'pool_mean_utility',NaN, ...
+        'selected_mean_utility',NaN, ...
+        'utility_gain',NaN, ...
         'pool_mean_prob',NaN, ...
         'selected_mean_prob',NaN, ...
-        'prob_gain',NaN, ...
-        'carry_pool_size',0, ...
-        'carry_applicable_count',0, ...
-        'carry_selected',0, ...
-        'carry_pool_mean_prob',NaN, ...
-        'carry_selected_mean_prob',NaN, ...
-        'carry_prob_gain',NaN);
+        'selected_prob_gain',NaN);
 end
 
 function Acc = EvaluateBinaryAccuracy(Model,X,Y)
@@ -2231,6 +2727,55 @@ function Acc = EvaluateBinaryAccuracy(Model,X,Y)
     Acc = mean(Pred == Y);
 end
 
+function Diag = EvaluateBoundaryMLPProbabilityGroups(Diag,Model,Dataset)
+    if isempty(Model) || isempty(Dataset.Dec)
+        return;
+    end
+    Prob = PredictBoundaryMLP(Model,Dataset.Dec);
+    BCoreFeasible = Dataset.Source == 1 & Dataset.Label == 1;
+    BCoreInfeasible = Dataset.Source == 1 & Dataset.Label == 0;
+    CurrFeasible = Dataset.Source == 3 & Dataset.Label == 1;
+    CurrInfeasible = Dataset.Source == 3 & Dataset.Label == 0;
+
+    Diag.prob_bcore_feasible = MeanOrNaN(Prob(BCoreFeasible));
+    Diag.prob_bcore_infeasible = MeanOrNaN(Prob(BCoreInfeasible));
+    Diag.prob_curr_feasible = MeanOrNaN(Prob(CurrFeasible));
+    Diag.prob_curr_infeasible = MeanOrNaN(Prob(CurrInfeasible));
+    Diag.mlp_prob_bcore_gap = DifferenceOrNaN(Diag.prob_bcore_feasible,Diag.prob_bcore_infeasible);
+    Diag.mlp_prob_current_gap = DifferenceOrNaN(Diag.prob_curr_feasible,Diag.prob_curr_infeasible);
+    Diag.prob_train_hist = ProbabilityDecileHistogram(Prob);
+    Diag.prob_bcore_feasible_hist = ProbabilityDecileHistogram(Prob(BCoreFeasible));
+    Diag.prob_bcore_infeasible_hist = ProbabilityDecileHistogram(Prob(BCoreInfeasible));
+    Diag.prob_curr_feasible_hist = ProbabilityDecileHistogram(Prob(CurrFeasible));
+    Diag.prob_curr_infeasible_hist = ProbabilityDecileHistogram(Prob(CurrInfeasible));
+end
+
+function Diag = EvaluateRefinementProbabilityDiag(Diag,Model,ContractionDiag)
+    if isempty(Model) || ~isstruct(ContractionDiag)
+        return;
+    end
+    if isfield(ContractionDiag,'accepted_refined') && ~isempty(ContractionDiag.accepted_refined)
+        Diag.prob_accepted_refinement = MeanOrNaN( ...
+            PredictBoundaryMLP(Model,ContractionDiag.accepted_refined.decs));
+    end
+    if isfield(ContractionDiag,'rejected_refined') && ~isempty(ContractionDiag.rejected_refined)
+        Diag.prob_rejected_refinement = MeanOrNaN( ...
+            PredictBoundaryMLP(Model,ContractionDiag.rejected_refined.decs));
+    end
+    Diag.prob_refinement_gap = DifferenceOrNaN(Diag.prob_accepted_refinement,Diag.prob_rejected_refinement);
+end
+
+function Hist = ProbabilityDecileHistogram(Prob)
+    Prob = double(Prob(:));
+    Prob = Prob(isfinite(Prob));
+    if isempty(Prob)
+        Hist = zeros(1,10);
+        return;
+    end
+    Prob = min(max(Prob,0),1);
+    Hist = histcounts(Prob,0:0.1:1);
+end
+
 function Value = MeanOrNaN(Value)
     Value = double(Value(:));
     Value = Value(isfinite(Value));
@@ -2238,6 +2783,16 @@ function Value = MeanOrNaN(Value)
         Value = NaN;
     else
         Value = mean(Value);
+    end
+end
+
+function Value = DifferenceOrNaN(A,B)
+    A = double(A);
+    B = double(B);
+    if isscalar(A) && isscalar(B) && isfinite(A) && isfinite(B)
+        Value = A - B;
+    else
+        Value = NaN;
     end
 end
 
