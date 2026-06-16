@@ -47,6 +47,8 @@ function [Offspring,Diag] = DiagnosticSampleBoundaryGAN_BDG( ...
     Diag = SetSolutionLayer_BDG(Diag,'injected',S,feasible);
     Diag.rawgen_condition_index = Info.conditionIndex(:);
     Diag.injected_condition_index = Info.conditionIndex(:);
+    Diag.rawgen_pair_index = Info.pairIndex(:);
+    Diag.injected_pair_index = Info.pairIndex(:);
     Diag.rawgen_var_clip_rate = Info.varClipRate;
     Diag.rawgen_var_clip_count = Info.varClipCount;
     Diag.rawgen_var_value_count = Info.varValueCount;
@@ -84,7 +86,7 @@ function GAN = TrainDirectBoundaryGAN_BDG(XTrain,XAI,lower,upper,zDim,maxIter,GA
     end
 
     D = numel(lower);
-    zDim = max(1,round(double(zDim)));
+    zDim = max(0,round(double(zDim)));
     Options = NormalizeDirectGANOptions_BDG(Options);
     XTrain = PrepareTrainingDecs_BDG(XTrain,D);
     XAI = PrepareTrainingDecs_BDG(XAI,D);
@@ -98,6 +100,8 @@ function GAN = TrainDirectBoundaryGAN_BDG(XTrain,XAI,lower,upper,zDim,maxIter,GA
         size(XPositive,1),Options.generatorMode);
     condDim = size(CTrain,2);
     ValidateModeCombo_BDG(Options,condDim,size(XPositive,1));
+    conditionPairIndex = NormalizeConditionPairIndex_BDG( ...
+        Options.conditionPairIndex,size(CTrain,1));
     generatorCondDim = GeneratorConditionDim_BDG(Options.generatorMode,condDim);
     sampleWeights = NormalizeSampleWeights_BDG(Options.sampleWeights, ...
         size(XPositive,1));
@@ -134,7 +138,8 @@ function GAN = TrainDirectBoundaryGAN_BDG(XTrain,XAI,lower,upper,zDim,maxIter,GA
         [netD,trailingAvgD,trailingAvgSqD,targetDiag] = ...
             UpdateDiscriminator_BDG(netG,netD,XPositive,CTrain, ...
             sampleWeights,zDim,miniBatch,Options,targetDiag, ...
-            trailingAvgD,trailingAvgSqD,dUpdate,lrD,beta1,beta2);
+            trailingAvgD,trailingAvgSqD,dUpdate,lrD,beta1,beta2, ...
+            generatorCondDim);
     end
     pretrainDiag = PrefixTrainDiagnostic_BDG( ...
         EvaluateTrainDiagnostic_BDG(netG,netD,XPositive,XAI, ...
@@ -154,7 +159,7 @@ function GAN = TrainDirectBoundaryGAN_BDG(XTrain,XAI,lower,upper,zDim,maxIter,GA
                         UpdateDiscriminator_BDG(netG,netD,XPositive, ...
                         CTrain,sampleWeights,zDim,miniBatch,Options, ...
                         targetDiag,trailingAvgD,trailingAvgSqD,dUpdate, ...
-                        lrD,beta1,beta2,batchIdx);
+                        lrD,beta1,beta2,generatorCondDim,batchIdx);
                 end
                 for gStep = 1 : Options.gSteps
                     gUpdate = gUpdate + 1;
@@ -173,7 +178,8 @@ function GAN = TrainDirectBoundaryGAN_BDG(XTrain,XAI,lower,upper,zDim,maxIter,GA
                 [netD,trailingAvgD,trailingAvgSqD,targetDiag] = ...
                     UpdateDiscriminator_BDG(netG,netD,XPositive,CTrain, ...
                     sampleWeights,zDim,miniBatch,Options,targetDiag, ...
-                    trailingAvgD,trailingAvgSqD,dUpdate,lrD,beta1,beta2);
+                    trailingAvgD,trailingAvgSqD,dUpdate,lrD,beta1,beta2, ...
+                    generatorCondDim);
             end
             for gStep = 1 : Options.gSteps
                 gUpdate = gUpdate + 1;
@@ -208,11 +214,14 @@ function GAN = TrainDirectBoundaryGAN_BDG(XTrain,XAI,lower,upper,zDim,maxIter,GA
         'trainRealLabelP90',PercentileOrNaN_BDG(realLabels,90), ...
         'generatorMode',char(Options.generatorMode), ...
         'generatorLossMode',char(Options.generatorLossMode), ...
+        'reconstructionWeight',double(Options.reconstructionWeight), ...
+        'reconstructionHuberDelta',double(Options.reconstructionHuberDelta), ...
         'criticMode',char(Options.criticMode), ...
         'conditionDim',double(condDim), ...
         'generatorConditionDim',double(generatorCondDim), ...
         'conditionCount',double(size(CTrain,1)), ...
         'conditionData',single(CTrain), ...
+        'conditionPairIndex',double(conditionPairIndex(:)), ...
         'conditionSamplingWeights',double(sampleWeights(:)), ...
         'archMode',char(Options.archMode), ...
         'miniBatch',double(miniBatch), ...
@@ -231,8 +240,8 @@ end
 function [netD,trailingAvgD,trailingAvgSqD,targetDiag] = ...
         UpdateDiscriminator_BDG(netG,netD,XPositive,CTrain,sampleWeights, ...
         zDim,miniBatch,Options,targetDiag,trailingAvgD,trailingAvgSqD, ...
-        dUpdate,lrD,beta1,beta2,batchIdx)
-    if nargin < 16 || isempty(batchIdx)
+        dUpdate,lrD,beta1,beta2,generatorCondDim,batchIdx)
+    if nargin < 17 || isempty(batchIdx)
         [XBatch,batchIdx] = DrawTrainBatch_BDG(XPositive,miniBatch, ...
             sampleWeights);
     else
@@ -248,16 +257,14 @@ function [netD,trailingAvgD,trailingAvgSqD,targetDiag] = ...
             CTrain,batchIdx);
         [~,gradD] = dlfeval(@TargetConditionedDiscriminatorGradients_BDG, ...
             netG,netD,XBatch,CBatch,CMismatch,Z, ...
-            GeneratorConditionDim_BDG(Options.generatorMode,size(CTrain,2)), ...
-            realLabelBatch);
+            generatorCondDim,realLabelBatch);
         targetDiag = AccumulateTargetConditionedDiag_BDG( ...
             targetDiag,MismatchDiag);
     else
         CFake = DrawRandomConditionBatch_BDG(CTrain,miniBatch);
         [~,gradD] = dlfeval(@DirectBoundaryDiscriminatorGradients_BDG, ...
             netG,netD,XBatch,CBatch,Z,CFake, ...
-            GeneratorConditionDim_BDG(Options.generatorMode,size(CTrain,2)), ...
-            realLabelBatch);
+            generatorCondDim,realLabelBatch);
     end
     [netD,trailingAvgD,trailingAvgSqD] = adamupdate( ...
         netD,gradD,trailingAvgD,trailingAvgSqD,dUpdate, ...
@@ -287,9 +294,16 @@ function [netG,trailingAvgG,trailingAvgSqG,targetDiag] = ...
         CFake = DrawRandomConditionBatch_BDG(CTrain,miniBatch);
     end
     Z = dlarray(randn(zDim,miniBatch,'single'),"CB");
-    [~,gradG] = dlfeval( ...
+    if Options.generatorLossMode == "conditional_adversarial_huber" && ...
+            ~isempty(batchIdx)
+        XTarget = DrawTrainBatchByIndex_BDG(XPositive,batchIdx);
+    else
+        XTarget = [];
+    end
+    [~,gradG,StepDiag] = dlfeval( ...
         @DirectBoundaryGeneratorGradients_BDG,netG,netD,Z, ...
-        CFake,generatorCondDim);
+        CFake,generatorCondDim,XTarget,Options);
+    targetDiag = AccumulateGeneratorDiag_BDG(targetDiag,StepDiag);
     [netG,trailingAvgG,trailingAvgSqG] = adamupdate( ...
         netG,gradG,trailingAvgG,trailingAvgSqG,gUpdate, ...
         lrG,beta1,beta2);
@@ -307,7 +321,10 @@ function Options = NormalizeDirectGANOptions_BDG(Options)
     Options = WithDefault_BDG(Options,'realLabels',[]);
     Options = WithDefault_BDG(Options,'generatorMode',"objective_target_unconditioned");
     Options = WithDefault_BDG(Options,'generatorLossMode',"adversarial");
+    Options = WithDefault_BDG(Options,'reconstructionWeight',0);
+    Options = WithDefault_BDG(Options,'reconstructionHuberDelta',0.10);
     Options = WithDefault_BDG(Options,'conditionData',[]);
+    Options = WithDefault_BDG(Options,'conditionPairIndex',[]);
     Options = WithDefault_BDG(Options,'criticMode',"af_like");
     Options = WithDefault_BDG(Options,'miniBatch',16);
     Options = WithDefault_BDG(Options,'archMode',"small");
@@ -331,6 +348,10 @@ function Options = NormalizeDirectGANOptions_BDG(Options)
     Options.generatorMode = NormalizeGeneratorMode_BDG(Options.generatorMode);
     Options.generatorLossMode = NormalizeGeneratorLossMode_BDG( ...
         Options.generatorLossMode);
+    Options.reconstructionWeight = max(0,double( ...
+        Options.reconstructionWeight));
+    Options.reconstructionHuberDelta = max(eps,double( ...
+        Options.reconstructionHuberDelta));
     Options.criticMode = NormalizeCriticMode_BDG(Options.criticMode);
 end
 
@@ -339,9 +360,10 @@ function ValidateModeCombo_BDG(Options,condDim,nTrain)
         assert(Options.generatorMode == "objective_target_conditioned", ...
             'BoundaryGAN_BDG:BadTargetConditionedCombo', ...
             'target_conditioned critic requires objective_target_conditioned generator.');
-        assert(Options.generatorLossMode == "conditional_adversarial", ...
+        assert(ismember(Options.generatorLossMode, ...
+            ["conditional_adversarial","conditional_adversarial_huber"]), ...
             'BoundaryGAN_BDG:BadTargetConditionedLoss', ...
-            'target_conditioned critic requires conditional_adversarial loss.');
+            'target_conditioned critic requires conditional adversarial loss.');
         assert(condDim > 0 && nTrain >= 2, ...
             'BoundaryGAN_BDG:InsufficientTargetConditionData', ...
             'Target-conditioned GAN requires at least two condition rows.');
@@ -386,7 +408,8 @@ end
 
 function mode = NormalizeGeneratorLossMode_BDG(mode)
     mode = lower(strtrim(string(mode)));
-    valid = ["adversarial","conditional_adversarial"];
+    valid = ["adversarial","conditional_adversarial", ...
+        "conditional_adversarial_huber"];
     assert(ismember(mode,valid), ...
         'BoundaryGAN_BDG:BadGeneratorLossMode', ...
         'generatorLossMode must be one of: %s.',strjoin(valid,", "));
@@ -446,6 +469,22 @@ function C = PrepareConditionData_BDG(C,n,mode)
     assert(all(isfinite(C),'all'), ...
         'BoundaryGAN_BDG:BadConditionData', ...
         'conditionData must be finite.');
+end
+
+function idx = NormalizeConditionPairIndex_BDG(idx,n)
+    if n <= 0
+        idx = zeros(0,1);
+        return;
+    end
+    if isempty(idx)
+        idx = (1:n)';
+        return;
+    end
+    idx = double(idx(:));
+    assert(numel(idx) == n, ...
+        'BoundaryGAN_BDG:BadConditionPairIndex', ...
+        'conditionPairIndex must contain one value per condition row.');
+    idx(~isfinite(idx) | idx < 1) = NaN;
 end
 
 function flag = ReinitializeDirectBoundaryGAN_BDG(GAN,zDim,D,archMode, ...
@@ -584,6 +623,8 @@ function [Offspring,Diag] = SampleBoundaryGAN_BDG(Problem,GAN,nGen)
     Diag = SetSolutionLayer_BDG(Diag,'injected',S,feasible);
     Diag.rawgen_condition_index = Info.conditionIndex(:);
     Diag.injected_condition_index = Info.conditionIndex(:);
+    Diag.rawgen_pair_index = Info.pairIndex(:);
+    Diag.injected_pair_index = Info.pairIndex(:);
     Diag.rawgen_var_clip_rate = Info.varClipRate;
     Diag.rawgen_var_clip_count = Info.varClipCount;
     Diag.rawgen_var_value_count = Info.varValueCount;
@@ -702,6 +743,7 @@ function Diag = EmptySampleDiag_BDG(M,D)
         'rawgen_cons',zeros(0,0), ...
         'rawgen_feasible',false(0,1), ...
         'rawgen_condition_index',zeros(0,1), ...
+        'rawgen_pair_index',zeros(0,1), ...
         'rawgen_var_clip_rate',NaN, ...
         'rawgen_var_clip_count',0, ...
         'rawgen_var_value_count',0, ...
@@ -710,7 +752,8 @@ function Diag = EmptySampleDiag_BDG(M,D)
         'injected_objs',zeros(0,M), ...
         'injected_cons',zeros(0,0), ...
         'injected_feasible',false(0,1), ...
-        'injected_condition_index',zeros(0,1));
+        'injected_condition_index',zeros(0,1), ...
+        'injected_pair_index',zeros(0,1));
 end
 
 function Diag = SetSolutionLayer_BDG(Diag,prefix,S,feasible)
@@ -723,7 +766,8 @@ end
 
 function [X,Info] = GenerateRawDecisions_BDG(GAN,n)
     Info = struct('varClipRate',NaN,'varClipCount',0, ...
-        'varValueCount',0,'conditionIndex',zeros(0,1));
+        'varValueCount',0,'conditionIndex',zeros(0,1), ...
+        'pairIndex',zeros(0,1));
     n = max(0,round(double(n)));
     D = double(GAN.D);
     if n == 0
@@ -733,6 +777,7 @@ function [X,Info] = GenerateRawDecisions_BDG(GAN,n)
     Z = dlarray(randn(GAN.zDim,n,'single'),"CB");
     [C,conditionIndex] = SampleStoredCondition_BDG(GAN,n);
     Info.conditionIndex = conditionIndex(:);
+    Info.pairIndex = StoredConditionPairIndex_BDG(GAN,conditionIndex);
     X = predict(GAN.netG,AppendGeneratorConditionToFeatures_BDG( ...
         Z,C,StoredGeneratorConditionDim_BDG(GAN)));
     X = double(extractdata(X)');
@@ -749,7 +794,8 @@ end
 function [X,Info] = GenerateRawDecisionsByConditionIndex_BDG( ...
         GAN,conditionIndex,ZRows,n)
     Info = struct('varClipRate',NaN,'varClipCount',0, ...
-        'varValueCount',0,'conditionIndex',zeros(0,1));
+        'varValueCount',0,'conditionIndex',zeros(0,1), ...
+        'pairIndex',zeros(0,1));
     n = max(0,round(double(n)));
     D = double(GAN.D);
     if n == 0
@@ -759,6 +805,7 @@ function [X,Info] = GenerateRawDecisionsByConditionIndex_BDG( ...
     [CBatch,idx] = StoredConditionByIndex_BDG(GAN,conditionIndex,n);
     Z = DiagnosticZBatch_BDG(GAN,ZRows,n);
     Info.conditionIndex = idx(:);
+    Info.pairIndex = StoredConditionPairIndex_BDG(GAN,idx);
     X = predict(GAN.netG,AppendGeneratorConditionToFeatures_BDG( ...
         Z,CBatch,StoredGeneratorConditionDim_BDG(GAN)));
     X = double(extractdata(X)');
@@ -880,6 +927,22 @@ function weights = StoredConditionSamplingWeights_BDG(GAN,nData)
     weights = candidate ./ total;
 end
 
+function pairIndex = StoredConditionPairIndex_BDG(GAN,conditionIndex)
+    idx = round(double(conditionIndex(:)));
+    pairIndex = idx;
+    if isempty(idx)
+        pairIndex = zeros(0,1);
+        return;
+    end
+    if ~isfield(GAN,'conditionPairIndex') || isempty(GAN.conditionPairIndex)
+        return;
+    end
+    map = double(GAN.conditionPairIndex(:));
+    valid = isfinite(idx) & idx >= 1 & idx <= numel(map);
+    pairIndex(valid) = map(idx(valid));
+    pairIndex(~isfinite(pairIndex) | pairIndex < 0) = NaN;
+end
+
 function dim = StoredGeneratorConditionDim_BDG(GAN)
     if isfield(GAN,'generatorConditionDim')
         dim = max(0,round(double(GAN.generatorConditionDim)));
@@ -981,17 +1044,41 @@ function [lossD,gradD] = TargetConditionedDiscriminatorGradients_BDG( ...
     gradD = dlgradient(lossD,netD.Learnables);
 end
 
-function [lossG,gradG] = DirectBoundaryGeneratorGradients_BDG( ...
-        netG,netD,Z,CFake,generatorCondDim)
+function [lossG,gradG,Diag] = DirectBoundaryGeneratorGradients_BDG( ...
+        netG,netD,Z,CFake,generatorCondDim,XTarget,Options)
     if nargin < 5 || isempty(generatorCondDim)
         generatorCondDim = size(CFake,1);
+    end
+    if nargin < 6
+        XTarget = [];
+    end
+    if nargin < 7 || isempty(Options)
+        Options = struct('generatorLossMode',"adversarial", ...
+            'reconstructionWeight',0,'reconstructionHuberDelta',0.10);
     end
     epsVal = single(1e-8);
     XFake = forward(netG,AppendGeneratorConditionToFeatures_BDG( ...
         Z,CFake,generatorCondDim));
     YFake = forward(netD,AppendConditionToFeatures_BDG(XFake,CFake));
-    lossG = -mean(log(ClipProb_BDG(YFake)+epsVal),'all');
+    advLoss = -mean(log(ClipProb_BDG(YFake)+epsVal),'all');
+    recLoss = dlarray(single(0));
+    if string(Options.generatorLossMode) == "conditional_adversarial_huber" && ...
+            ~isempty(XTarget) && double(Options.reconstructionWeight) > 0
+        recLoss = PseudoHuberLoss_BDG(XFake - XTarget, ...
+            single(Options.reconstructionHuberDelta));
+    end
+    lossG = advLoss + single(Options.reconstructionWeight) .* recLoss;
     gradG = dlgradient(lossG,netG.Learnables);
+    Diag = struct( ...
+        'gan_g_adv_loss_sum',double(gather(extractdata(advLoss))), ...
+        'gan_g_rec_loss_sum',double(gather(extractdata(recLoss))), ...
+        'gan_g_loss_count',1);
+end
+
+function loss = PseudoHuberLoss_BDG(err,delta)
+    delta = max(single(delta),single(eps));
+    r = err ./ delta;
+    loss = mean(delta.^2 .* (sqrt(1 + r.^2) - 1),'all');
 end
 
 function XC = AppendConditionToFeatures_BDG(X,C)
@@ -1121,10 +1208,10 @@ function Diag = SummarizeTrainDiagnostic_BDG(PReal,PAI,PFake,PUniform, ...
     acc = [Diag.gan_d_real_acc,Diag.gan_d_fake_acc, ...
         Diag.gan_d_uniform_acc];
     if isfinite(Diag.gan_d_ai_acc)
-        acc(end+1) = Diag.gan_d_ai_acc; %#ok<AGROW>
+        acc(end+1) = Diag.gan_d_ai_acc;
     end
     if isfinite(Diag.gan_d_mismatch_acc)
-        acc(end+1) = Diag.gan_d_mismatch_acc; %#ok<AGROW>
+        acc(end+1) = Diag.gan_d_mismatch_acc;
     end
     Diag.gan_d_bal_acc = mean(acc);
 end
@@ -1133,7 +1220,10 @@ function Diag = EmptyTargetConditionedTrainDiag_BDG()
     Diag = struct( ...
         'target_mismatch_count',0, ...
         'target_mismatch_identity_count',0, ...
-        'target_mismatch_batch_count',0);
+        'target_mismatch_batch_count',0, ...
+        'gan_g_adv_loss_sum',0, ...
+        'gan_g_rec_loss_sum',0, ...
+        'gan_g_loss_count',0);
 end
 
 function Diag = AccumulateTargetConditionedDiag_BDG(Diag,Step)
@@ -1145,6 +1235,19 @@ function Diag = AccumulateTargetConditionedDiag_BDG(Diag,Step)
     Diag.target_mismatch_batch_count = Diag.target_mismatch_batch_count + 1;
 end
 
+function Diag = AccumulateGeneratorDiag_BDG(Diag,Step)
+    if ~isstruct(Step)
+        return;
+    end
+    names = ["gan_g_adv_loss_sum","gan_g_rec_loss_sum","gan_g_loss_count"];
+    for i = 1 : numel(names)
+        name = char(names(i));
+        if isfield(Step,name)
+            Diag.(name) = Diag.(name) + double(Step.(name));
+        end
+    end
+end
+
 function Diag = FinalizeTargetConditionedDiag_BDG(Diag)
     if Diag.target_mismatch_count > 0
         Diag.target_mismatch_identity_rate = ...
@@ -1152,6 +1255,15 @@ function Diag = FinalizeTargetConditionedDiag_BDG(Diag)
             Diag.target_mismatch_count;
     else
         Diag.target_mismatch_identity_rate = NaN;
+    end
+    if Diag.gan_g_loss_count > 0
+        Diag.gan_g_adv_loss_mean = Diag.gan_g_adv_loss_sum ./ ...
+            Diag.gan_g_loss_count;
+        Diag.gan_g_rec_loss_mean = Diag.gan_g_rec_loss_sum ./ ...
+            Diag.gan_g_loss_count;
+    else
+        Diag.gan_g_adv_loss_mean = NaN;
+        Diag.gan_g_rec_loss_mean = NaN;
     end
 end
 

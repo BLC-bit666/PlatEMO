@@ -1,13 +1,13 @@
 function Results = run_CCMO_GAN_BDG_fixmd_four_experiments( ...
         workerCount,problemNames,N,D,maxFE,runIds)
-%run_CCMO_GAN_BDG_fixmd_four_experiments Run fix.md C4-C7 experiments.
-%   Each variant is written to an independent timestamped directory under
-%   Data/CCMO_GAN_BDG. Plotting is disabled.
+%run_CCMO_GAN_BDG_fixmd_four_experiments Compatibility wrapper.
+%   Old C4-C7/ref-vector branches have been retired. New runs use the
+%   FixMD global nondominated mainline.
 
     rootDir = fileparts(which('platemo'));
     addpath(genpath(rootDir));
     if nargin < 1 || isempty(workerCount)
-        workerCount = 7;
+        workerCount = 6;
     end
     if nargin < 2 || isempty(problemNames)
         problemNames = defaultProblemList_fixmd_BDG();
@@ -25,44 +25,43 @@ function Results = run_CCMO_GAN_BDG_fixmd_four_experiments( ...
         runIds = 1:3;
     end
 
-    workerCount = max(1,round(double(workerCount)));
-    variants = ["C4_condFilter"; ...
-        "C5_aiDomOnlyTrain"; ...
-        "C6_refToken"; ...
-        "C7_boundaryQualityEval"];
-    variantSets = ["c4_condfilter"; ...
-        "c5_aidomonlytrain"; ...
-        "c6_reftoken"; ...
-        "c7_boundaryqualityeval"];
-    algorithmParams = fixmdC0AlgorithmParams_BDG();
     stamp = char(datetime('now','Format','yyyyMMdd_HHmmss'));
     baseDir = fullfile(rootDir,'Data','CCMO_GAN_BDG');
-    Rows = repmat(emptyFixmdRunRow_BDG(),numel(variants),1);
-    for i = 1 : numel(variants)
-        outDir = fullfile(baseDir,sprintf( ...
-            '%s_runs%d_n%d_fe%d_%dw_%s', ...
-            char(variants(i)),numel(runIds),round(double(N)), ...
-            round(double(maxFE)),workerCount,stamp));
-        Rows(i).variant = variants(i);
-        Rows(i).outDir = string(outDir);
-        try
-            run_CCMO_GAN_BDG_archive_pareto_filters_fullscope( ...
-                outDir,workerCount,problemNames,N,D,maxFE,runIds, ...
-                variantSets(i),algorithmParams,false);
-            Rows(i).status = "ok";
-        catch err
-            Rows(i).status = "failed";
-            Rows(i).error_message = string(getReport(err,'extended', ...
-                'hyperlinks','off'));
+    outRoot = fullfile(baseDir,sprintf( ...
+        'FixMD_global_runs%d_n%d_fe%d_%dw_%s', ...
+        numel(runIds),round(double(N)),round(double(maxFE)), ...
+        workerCount,stamp));
+    try
+        diagOptions = struct( ...
+            'variant',"FixMD_GNDk60_nearseg_huber_z0", ...
+            'algorithmParams',{fixmdGlobalAlgorithmParams_BDG()});
+        [Summary,outDir] = run_CCMO_GAN_BDG_boundary_diagnostics( ...
+            outRoot,workerCount,problemNames,N,D,maxFE,runIds, ...
+            maxFE,diagOptions);
+        Row = emptyFixmdRunRow_BDG();
+        Row.variant = "FixMD_GNDk60_nearseg_huber_z0";
+        Row.outDir = string(outDir);
+        Row.status = string(all(Summary.status == "ok"));
+        if Row.status == "true"
+            Row.status = "ok";
+        else
+            Row.status = "has_error";
         end
+    catch err
+        Row = emptyFixmdRunRow_BDG();
+        Row.variant = "FixMD_GNDk60_nearseg_huber_z0";
+        Row.outDir = string(outRoot);
+        Row.status = "failed";
+        Row.error_message = string(getReport(err,'extended', ...
+            'hyperlinks','off'));
     end
-    Results = struct2table(Rows);
+    Results = struct2table(Row);
     writetable(Results,fullfile(baseDir,sprintf( ...
-        'fixmd_four_experiment_dirs_%s.csv',stamp)));
+        'fixmd_global_experiment_dir_%s.csv',stamp)));
 end
 
-function Params = fixmdC0AlgorithmParams_BDG()
-    Params = {1,50,4,5,0.20,50,0,200,0,1,1,1, ...
+function Params = fixmdGlobalAlgorithmParams_BDG()
+    Params = {1,20,0,5,0.20,50,0,200,0,1,1,1, ...
         "g2sl",64,0.9,1e-4,1e-4,"epoch"};
 end
 

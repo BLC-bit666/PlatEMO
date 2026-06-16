@@ -185,18 +185,23 @@ function [Fdecs,Fobjs,Idecs,Iobjs,evalCount] = CollectFlipPairs_BDG(Problem,P,O,
     d = sqrt(sum((Y(1:n,:) - Y(n+1:end,:)).^2,2));
     [~,ord] = sort(d,'ascend');
     idx = idx(ord(1:min(maxPair,numel(ord))));
+    nKeep = numel(idx);
+    Fdecs = zeros(nKeep,Problem.D);
+    Fobjs = zeros(nKeep,Problem.M);
+    Idecs = zeros(nKeep,Problem.D);
+    Iobjs = zeros(nKeep,Problem.M);
 
-    for k = 1 : numel(idx)
+    for k = 1 : nKeep
         i = idx(k);
         if flagP(i)
             sF = P(i); sI = O(i);
         else
             sF = O(i); sI = P(i);
         end
-        Fdecs(end+1,:) = sF.decs; %#ok<AGROW>
-        Fobjs(end+1,:) = sF.objs; %#ok<AGROW>
-        Idecs(end+1,:) = sI.decs; %#ok<AGROW>
-        Iobjs(end+1,:) = sI.objs; %#ok<AGROW>
+        Fdecs(k,:) = sF.decs;
+        Fobjs(k,:) = sF.objs;
+        Idecs(k,:) = sI.decs;
+        Iobjs(k,:) = sI.objs;
     end
 end
 
@@ -233,6 +238,11 @@ function [Fdecs,Fobjs,Idecs,Iobjs,evalCount] = CollectNearestPairs_BDG(Problem,P
 
     [~,ord] = sort(sum(YF,2),'ascend');
     ord = ord(1:min(maxPair,numel(ord)));
+    cap = numel(ord);
+    Fdecs = zeros(cap,Problem.D);
+    Fobjs = zeros(cap,Problem.M);
+    Idecs = zeros(cap,Problem.D);
+    Iobjs = zeros(cap,Problem.M);
     cnt = 0;
     for t = 1 : numel(ord)
         d = sqrt(sum((YI - YF(ord(t),:)).^2,2));
@@ -241,17 +251,20 @@ function [Fdecs,Fobjs,Idecs,Iobjs,evalCount] = CollectNearestPairs_BDG(Problem,P
             sF = FA(ord(t));
             sI = IB(pos);
 
-            Fdecs(end+1,:) = sF.decs; %#ok<AGROW>
-            Fobjs(end+1,:) = sF.objs; %#ok<AGROW>
-            Idecs(end+1,:) = sI.decs; %#ok<AGROW>
-            Iobjs(end+1,:) = sI.objs; %#ok<AGROW>
-
             cnt = cnt + 1;
+            Fdecs(cnt,:) = sF.decs;
+            Fobjs(cnt,:) = sF.objs;
+            Idecs(cnt,:) = sI.decs;
+            Iobjs(cnt,:) = sI.objs;
             if cnt >= maxPair
-                return;
+                break;
             end
         end
     end
+    Fdecs = Fdecs(1:cnt,:);
+    Fobjs = Fobjs(1:cnt,:);
+    Idecs = Idecs(1:cnt,:);
+    Iobjs = Iobjs(1:cnt,:);
 end
 
 function flag = UseUnifiedRefNeighborPairing_BDG(Options)
@@ -329,6 +342,10 @@ function [Fdecs,Fobjs,Idecs,Iobjs,count] = ...
     [~,ord] = sort(d,'ascend');
     idx = idx(ord(1:min(maxPair,numel(ord))));
     count = numel(idx);
+    Fdecs = zeros(count,Problem.D);
+    Fobjs = zeros(count,Problem.M);
+    Idecs = zeros(count,Problem.D);
+    Iobjs = zeros(count,Problem.M);
     for k = 1 : numel(idx)
         i = idx(k);
         if flagP(i)
@@ -336,10 +353,10 @@ function [Fdecs,Fobjs,Idecs,Iobjs,count] = ...
         else
             sF = O(i); sI = P(i);
         end
-        Fdecs(end+1,:) = sF.decs; %#ok<AGROW>
-        Fobjs(end+1,:) = sF.objs; %#ok<AGROW>
-        Idecs(end+1,:) = sI.decs; %#ok<AGROW>
-        Iobjs(end+1,:) = sI.objs; %#ok<AGROW>
+        Fdecs(k,:) = sF.decs;
+        Fobjs(k,:) = sF.objs;
+        Idecs(k,:) = sI.decs;
+        Iobjs(k,:) = sI.objs;
     end
 end
 
@@ -402,7 +419,13 @@ function [Fdecs,Fobjs,Idecs,Iobjs] = PairUnifiedRefNeighborCandidates_BDG( ...
     refF = AssignRefFromObj_BDG(FPoolObjs,W,zmin,zmax);
     refI = AssignRefFromObj_BDG(IPoolObjs,W,zmin,zmax);
     neighborCount = ArchivePairRefNeighborCount_BDG(pairRefMode);
-    pairDist = zeros(0,1);
+    rowCap = size(FPoolDecs,1);
+    Fdecs = zeros(rowCap,Problem.D);
+    Fobjs = zeros(rowCap,Problem.M);
+    Idecs = zeros(rowCap,Problem.D);
+    Iobjs = zeros(rowCap,Problem.M);
+    pairDist = zeros(rowCap,1);
+    row = 0;
 
     for i = 1 : size(FPoolDecs,1)
         local = RefNeighborAllowed_BDG(refF(i),refI,W,neighborCount);
@@ -417,12 +440,18 @@ function [Fdecs,Fobjs,Idecs,Iobjs] = PairUnifiedRefNeighborCandidates_BDG( ...
         idx = find(local);
         [bestDist,pos] = min(d(idx));
         j = idx(pos);
-        Fdecs(end+1,:) = FPoolDecs(i,:); %#ok<AGROW>
-        Fobjs(end+1,:) = FPoolObjs(i,:); %#ok<AGROW>
-        Idecs(end+1,:) = IPoolDecs(j,:); %#ok<AGROW>
-        Iobjs(end+1,:) = IPoolObjs(j,:); %#ok<AGROW>
-        pairDist(end+1,1) = bestDist; %#ok<AGROW>
+        row = row + 1;
+        Fdecs(row,:) = FPoolDecs(i,:);
+        Fobjs(row,:) = FPoolObjs(i,:);
+        Idecs(row,:) = IPoolDecs(j,:);
+        Iobjs(row,:) = IPoolObjs(j,:);
+        pairDist(row,1) = bestDist;
     end
+    Fdecs = Fdecs(1:row,:);
+    Fobjs = Fobjs(1:row,:);
+    Idecs = Idecs(1:row,:);
+    Iobjs = Iobjs(1:row,:);
+    pairDist = pairDist(1:row);
 
     if isfinite(maxPair) && size(Fdecs,1) > maxPair
         [~,ord] = sort(pairDist,'ascend');
@@ -634,7 +663,7 @@ end
 
 function mode = NormalizeArchiveParetoFilterMode_BDG(mode)
     mode = lower(strtrim(string(mode)));
-    valid = ["global_af_nd","ref_af_nd"];
+    valid = "global_af_nd";
     assert(ismember(mode,valid), ...
         'UpdateBoundaryArchive_BDG:BadParetoFilterMode', ...
         'Archive paretoFilterMode must be one of: %s.', ...
@@ -642,25 +671,9 @@ function mode = NormalizeArchiveParetoFilterMode_BDG(mode)
 end
 
 function keep = ArchiveParetoFilterMask_BDG(PopObj,ref,mode)
+    %#ok<INUSD>
     mode = NormalizeArchiveParetoFilterMode_BDG(mode);
-    n = size(PopObj,1);
-    keep = true(n,1);
-    switch mode
-        case "global_af_nd"
-            keep = FirstFront_BDG(PopObj);
-        case "ref_af_nd"
-            keep = false(n,1);
-            ref = double(ref(:));
-            refs = unique(ref(isfinite(ref) & ref > 0),'stable');
-            for i = 1 : numel(refs)
-                idx = find(ref == refs(i));
-                if isempty(idx)
-                    continue;
-                end
-                localFront = FirstFront_BDG(PopObj(idx,:));
-                keep(idx(localFront)) = true;
-            end
-    end
+    keep = FirstFront_BDG(PopObj);
 end
 
 function mode = NormalizeArchivePairDirectionMode_BDG(mode)

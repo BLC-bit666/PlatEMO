@@ -40,8 +40,11 @@ function [XOut,COut,AIOut,weights,Diag] = FilterBoundaryTargetTriples_BDG( ...
         case "none"
             return;
         case "condition_knn"
-            [keep,spread,k] = ConditionKNNKeepMask_BDG( ...
-                X,C,Options,ProblemBounds_BDG(Options,n,size(X,2)));
+            bounds = ProblemBounds_BDG(Options,n,size(X,2));
+            [keep,spread,k] = BoundaryConditionKNNKeepMask_BDG( ...
+                X,C,Options.conditionKNNK, ...
+                Options.conditionKNNRetainRatio, ...
+                Options.conditionKNNMinCount,bounds.lower,bounds.upper);
             Diag.target_filter_mode_code = 1;
             Diag.condition_knn_k = double(k);
             Diag.condition_knn_decision_spread_mean = MeanFinite_BDG(spread);
@@ -274,35 +277,6 @@ function bounds = ProblemBounds_BDG(Options,n,D)
         bounds.lower = zeros(1,D);
         bounds.upper = ones(1,D);
     end
-end
-
-function [keep,spread,k] = ConditionKNNKeepMask_BDG(X,C,Options,bounds)
-    n = size(X,1);
-    keep = true(n,1);
-    spread = nan(n,1);
-    k = min(Options.conditionKNNK,max(0,n-1));
-    if n <= Options.conditionKNNMinCount || isempty(C) || k <= 0
-        return;
-    end
-    C = double(C);
-    Xn = NormalizeDecision_BDG(double(X),bounds.lower,bounds.upper);
-    dCond = pdist2(C,C);
-    dCond(1:n+1:end) = Inf;
-    for i = 1 : n
-        [~,ord] = sort(dCond(i,:),'ascend');
-        ord = ord(1:min(k,numel(ord)));
-        d = sqrt(sum((Xn(ord,:) - Xn(i,:)).^2,2));
-        spread(i) = MeanFinite_BDG(d);
-    end
-    if ~any(isfinite(spread))
-        return;
-    end
-    nKeep = max(Options.conditionKNNMinCount, ...
-        ceil(Options.conditionKNNRetainRatio * n));
-    nKeep = min(n,max(2,nKeep));
-    [~,ord] = sort(spread,'ascend','MissingPlacement','last');
-    keep = false(n,1);
-    keep(ord(1:nKeep)) = true;
 end
 
 function [weights,spread,k] = LocalMADDecisionWeights_BDG(X,C,Options,bounds)
