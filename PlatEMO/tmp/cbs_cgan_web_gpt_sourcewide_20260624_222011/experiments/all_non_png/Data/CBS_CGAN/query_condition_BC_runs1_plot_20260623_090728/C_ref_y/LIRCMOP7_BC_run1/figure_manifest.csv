@@ -1,0 +1,7 @@
+problem,run,target_FE,actual_FE,gen,figure_file
+LIRCMOP7_BC,1,10000,10116,47,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/query_condition_BC_runs1_plot_20260623_090728/C_ref_y/LIRCMOP7_BC_run1/figures/LIRCMOP7_BC_run1_targetFE010000.png
+LIRCMOP7_BC,1,30000,30136,138,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/query_condition_BC_runs1_plot_20260623_090728/C_ref_y/LIRCMOP7_BC_run1/figures/LIRCMOP7_BC_run1_targetFE030000.png
+LIRCMOP7_BC,1,50000,50156,229,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/query_condition_BC_runs1_plot_20260623_090728/C_ref_y/LIRCMOP7_BC_run1/figures/LIRCMOP7_BC_run1_targetFE050000.png
+LIRCMOP7_BC,1,70000,70176,320,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/query_condition_BC_runs1_plot_20260623_090728/C_ref_y/LIRCMOP7_BC_run1/figures/LIRCMOP7_BC_run1_targetFE070000.png
+LIRCMOP7_BC,1,100000,100096,456,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/query_condition_BC_runs1_plot_20260623_090728/C_ref_y/LIRCMOP7_BC_run1/figures/LIRCMOP7_BC_run1_targetFE100000.png
+LIRCMOP7_BC,1,NaN,NaN,456,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/query_condition_BC_runs1_plot_20260623_090728/C_ref_y/LIRCMOP7_BC_run1/figures/LIRCMOP7_BC_run1_diagnostic_trends.png

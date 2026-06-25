@@ -1,0 +1,7 @@
+problem,run,target_FE,actual_FE,gen,figure_file
+DASCMOP2_BC,1,10000,10211,46,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/query_condition_BC_runs1_plot_20260623_090728/C_ref_y/DASCMOP2_BC_run1/figures/DASCMOP2_BC_run1_targetFE010000.png
+DASCMOP2_BC,1,30000,30011,136,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/query_condition_BC_runs1_plot_20260623_090728/C_ref_y/DASCMOP2_BC_run1/figures/DASCMOP2_BC_run1_targetFE030000.png
+DASCMOP2_BC,1,50000,50031,227,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/query_condition_BC_runs1_plot_20260623_090728/C_ref_y/DASCMOP2_BC_run1/figures/DASCMOP2_BC_run1_targetFE050000.png
+DASCMOP2_BC,1,70000,70051,318,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/query_condition_BC_runs1_plot_20260623_090728/C_ref_y/DASCMOP2_BC_run1/figures/DASCMOP2_BC_run1_targetFE070000.png
+DASCMOP2_BC,1,100000,100191,455,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/query_condition_BC_runs1_plot_20260623_090728/C_ref_y/DASCMOP2_BC_run1/figures/DASCMOP2_BC_run1_targetFE100000.png
+DASCMOP2_BC,1,NaN,NaN,455,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/query_condition_BC_runs1_plot_20260623_090728/C_ref_y/DASCMOP2_BC_run1/figures/DASCMOP2_BC_run1_diagnostic_trends.png

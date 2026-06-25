@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "url": "https://raw.githubusercontent.com/justhalfbit/ghostty-terminal-config/main/ghostty/config",
+  "provider": "tavily",
+  "content": "# ==============================================================================\n# 字体\n# ==============================================================================\n# font-family: 终端字体，需要 Nerd Font 版本才能显示图标\n# font-size: 字号\n# font-thicken: 字体加粗渲染，macOS Retina 屏上更清晰\n# adjust-cell-height: 行间距，0 为默认紧凑，可调大（如 10%、20%）增加行距\nfont-family = \"Maple Mono NF\"\nfont-size = 13\nfont-thicken = true\nadjust-cell-height = 0\n# ==============================================================================\n# 主题\n# ==============================================================================\n# ghostty +list-themes 可预览全部 300+ 内置主题\ntheme = \"Catppuccin Mocha\"\n# ==============================================================================\n# 窗口\n# ==============================================================================\n# window-padding-x/y: 内容与窗口边缘的内边距，文字不贴边\n# macos-titlebar-style: tabs 让标签页融入标题栏，更简洁\n# background-opacity: 背景透明度，0.92 微透明能隐约看到桌面壁纸\n# background-blur: 毛玻璃模糊强度，配合半透明使用（值越大越模糊，true=20）\n# window-save-state: 退出后保留窗口状态（分屏、标签页、窗口大小位置），下次启动自动恢复\nwindow-padding-x = 12\nwindow-padding-y = 8\nmacos-titlebar-style = tabs\nbackground-opacity = 0.92\nbackground-blur = 20\nwindow-save-state = always\n# ==============================================================================\n# 光标\n# ==============================================================================\n# cursor-style: bar 细竖线 | block 方块 | underline 下划线\n# cursor-style-blink: 光标是否闪烁\ncursor-style = bar\ncursor-style-blink = true\n# ==============================================================================\n# 交互\n# ==============================================================================\n# copy-on-select: 鼠标选中文本自动复制到剪贴板\n# confirm-close-surface: 关闭窗口时不弹确认框\n# mouse-hide-while-typing: 打字时自动隐藏鼠标光标\n# shell-integration: 启用 zsh shell 集成（支持命令跳转等功能）\ncopy-on-select = clipboard\nconfirm-close-surface = false\nmouse-hide-while-typing = true\nshell-integration = zsh",
+  "provider_attempts": [
+    {
+      "capability": "web_fetch",
+      "provider": "tavily",
+      "status": "ok",
+      "error_type": "",
+      "error": "",
+      "elapsed_ms": 1431.0,
+      "result_count": 1
+    }
+  ],
+  "fallback_used": false,
+  "elapsed_ms": 1431.02
+}

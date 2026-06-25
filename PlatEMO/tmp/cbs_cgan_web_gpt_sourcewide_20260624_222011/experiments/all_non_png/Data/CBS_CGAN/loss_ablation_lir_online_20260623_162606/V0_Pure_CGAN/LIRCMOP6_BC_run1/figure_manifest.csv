@@ -1,0 +1,11 @@
+problem,run,target_FE,actual_FE,gen,figure_file
+LIRCMOP6_BC,1,10000,10172,49,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/loss_ablation_lir_online_20260623_162606/V0_Pure_CGAN/LIRCMOP6_BC_run1/figures/LIRCMOP6_BC_run1_targetFE010000.png
+LIRCMOP6_BC,1,10000,10172,49,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/loss_ablation_lir_online_20260623_162606/V0_Pure_CGAN/LIRCMOP6_BC_run1/figures/LIRCMOP6_BC_run1_targetFE010000_visual_z_diagnostic.png
+LIRCMOP6_BC,1,30000,30192,140,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/loss_ablation_lir_online_20260623_162606/V0_Pure_CGAN/LIRCMOP6_BC_run1/figures/LIRCMOP6_BC_run1_targetFE030000.png
+LIRCMOP6_BC,1,30000,30192,140,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/loss_ablation_lir_online_20260623_162606/V0_Pure_CGAN/LIRCMOP6_BC_run1/figures/LIRCMOP6_BC_run1_targetFE030000_visual_z_diagnostic.png
+LIRCMOP6_BC,1,50000,50212,231,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/loss_ablation_lir_online_20260623_162606/V0_Pure_CGAN/LIRCMOP6_BC_run1/figures/LIRCMOP6_BC_run1_targetFE050000.png
+LIRCMOP6_BC,1,50000,50212,231,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/loss_ablation_lir_online_20260623_162606/V0_Pure_CGAN/LIRCMOP6_BC_run1/figures/LIRCMOP6_BC_run1_targetFE050000_visual_z_diagnostic.png
+LIRCMOP6_BC,1,70000,70012,321,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/loss_ablation_lir_online_20260623_162606/V0_Pure_CGAN/LIRCMOP6_BC_run1/figures/LIRCMOP6_BC_run1_targetFE070000.png
+LIRCMOP6_BC,1,70000,70012,321,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/loss_ablation_lir_online_20260623_162606/V0_Pure_CGAN/LIRCMOP6_BC_run1/figures/LIRCMOP6_BC_run1_targetFE070000_visual_z_diagnostic.png
+LIRCMOP6_BC,1,100000,100152,458,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/loss_ablation_lir_online_20260623_162606/V0_Pure_CGAN/LIRCMOP6_BC_run1/figures/LIRCMOP6_BC_run1_targetFE100000.png
+LIRCMOP6_BC,1,100000,100152,458,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/loss_ablation_lir_online_20260623_162606/V0_Pure_CGAN/LIRCMOP6_BC_run1/figures/LIRCMOP6_BC_run1_targetFE100000_visual_z_diagnostic.png

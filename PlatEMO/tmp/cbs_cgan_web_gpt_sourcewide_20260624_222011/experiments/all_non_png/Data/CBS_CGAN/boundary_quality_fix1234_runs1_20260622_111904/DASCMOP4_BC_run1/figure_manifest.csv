@@ -1,0 +1,6 @@
+problem,run,target_FE,actual_FE,gen,figure_file
+DASCMOP4_BC,1,10000,10090,48,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/boundary_quality_fix1234_runs1_20260622_111904/DASCMOP4_BC_run1/figures/DASCMOP4_BC_run1_targetFE010000.png
+DASCMOP4_BC,1,30000,30104,139,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/boundary_quality_fix1234_runs1_20260622_111904/DASCMOP4_BC_run1/figures/DASCMOP4_BC_run1_targetFE030000.png
+DASCMOP4_BC,1,50000,50124,230,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/boundary_quality_fix1234_runs1_20260622_111904/DASCMOP4_BC_run1/figures/DASCMOP4_BC_run1_targetFE050000.png
+DASCMOP4_BC,1,70000,70144,321,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/boundary_quality_fix1234_runs1_20260622_111904/DASCMOP4_BC_run1/figures/DASCMOP4_BC_run1_targetFE070000.png
+DASCMOP4_BC,1,100000,100064,457,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/boundary_quality_fix1234_runs1_20260622_111904/DASCMOP4_BC_run1/figures/DASCMOP4_BC_run1_targetFE100000.png

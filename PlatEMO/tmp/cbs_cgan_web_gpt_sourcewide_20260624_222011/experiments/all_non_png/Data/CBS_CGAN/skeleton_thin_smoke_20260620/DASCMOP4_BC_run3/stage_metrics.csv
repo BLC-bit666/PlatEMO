@@ -1,0 +1,3 @@
+problem,run,target_FE,actual_FE,gen,bmem_count,chain_count,train_count,query_count,raw_generated_count,feasible_generated_count,boundary_dist50,boundary_dist90,query_width90,feasible_rate
+DASCMOP4_BC,3,10000,10080,48,29,5,29,5,20,0,0.425861645579645,0.832169183659272,0.0494300719194379,0
+DASCMOP4_BC,3,30000,30100,139,44,9,44,5,20,0,0.721537655210956,1.05532509484728,0.0221012583636927,0

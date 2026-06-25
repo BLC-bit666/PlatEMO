@@ -1,0 +1,5 @@
+problem,run,targetFE,actualFE,D,gen,train_count,query_count,bmem_count,chain_count,status,error_message
+DASCMOP4_BC,1,100000,100167,30,462,23,20,23,6,ok,
+DASCMOP5_BC,1,100000,100175,30,484,33,20,33,12,ok,
+LIRCMOP9_BC,1,100000,100178,30,465,19,19,19,4,ok,
+LIRCMOP10_BC,1,100000,100124,30,460,36,20,36,8,ok,

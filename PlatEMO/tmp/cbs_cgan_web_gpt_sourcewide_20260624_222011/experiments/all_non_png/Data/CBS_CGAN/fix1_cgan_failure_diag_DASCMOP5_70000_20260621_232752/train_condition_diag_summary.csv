@@ -1,0 +1,2 @@
+problem,run,targetFE,actualFE,D,gen,train_count,query_count,bmem_count,boundary_count,status,error_message
+DASCMOP5_BC,1,70000,70200,30,346,26,5,26,1,ok,

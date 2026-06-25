@@ -1,0 +1,2 @@
+problem,run,seed,N,D,maxFE,target_text,plot_enabled,runtime,finalFE,stage_count,figure_count,run_folder,stage_metrics_file,figure_manifest_file,status,error_message
+DASCMOP1_BC,1,1,20,6,220,200,1,4.504851375,256,1,1,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/boundary_quality_20260621_000716/DASCMOP1_BC_run1,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/boundary_quality_20260621_000716/DASCMOP1_BC_run1/stage_metrics.csv,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/boundary_quality_20260621_000716/DASCMOP1_BC_run1/figure_manifest.csv,ok,

@@ -1,0 +1,11 @@
+problem,run,target_FE,actual_FE,gen,figure_file
+DASCMOP1_BC,1,10000,10218,46,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/query_condition_BC_runs1_visual_z_20260623_102646/C_ref_y/DASCMOP1_BC_run1/figures/DASCMOP1_BC_run1_targetFE010000.png
+DASCMOP1_BC,1,10000,10218,46,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/query_condition_BC_runs1_visual_z_20260623_102646/C_ref_y/DASCMOP1_BC_run1/figures/DASCMOP1_BC_run1_targetFE010000_visual_z_diagnostic.png
+DASCMOP1_BC,1,30000,30184,137,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/query_condition_BC_runs1_visual_z_20260623_102646/C_ref_y/DASCMOP1_BC_run1/figures/DASCMOP1_BC_run1_targetFE030000.png
+DASCMOP1_BC,1,30000,30184,137,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/query_condition_BC_runs1_visual_z_20260623_102646/C_ref_y/DASCMOP1_BC_run1/figures/DASCMOP1_BC_run1_targetFE030000_visual_z_diagnostic.png
+DASCMOP1_BC,1,50000,50204,228,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/query_condition_BC_runs1_visual_z_20260623_102646/C_ref_y/DASCMOP1_BC_run1/figures/DASCMOP1_BC_run1_targetFE050000.png
+DASCMOP1_BC,1,50000,50204,228,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/query_condition_BC_runs1_visual_z_20260623_102646/C_ref_y/DASCMOP1_BC_run1/figures/DASCMOP1_BC_run1_targetFE050000_visual_z_diagnostic.png
+DASCMOP1_BC,1,70000,70004,318,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/query_condition_BC_runs1_visual_z_20260623_102646/C_ref_y/DASCMOP1_BC_run1/figures/DASCMOP1_BC_run1_targetFE070000.png
+DASCMOP1_BC,1,70000,70004,318,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/query_condition_BC_runs1_visual_z_20260623_102646/C_ref_y/DASCMOP1_BC_run1/figures/DASCMOP1_BC_run1_targetFE070000_visual_z_diagnostic.png
+DASCMOP1_BC,1,100000,100144,455,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/query_condition_BC_runs1_visual_z_20260623_102646/C_ref_y/DASCMOP1_BC_run1/figures/DASCMOP1_BC_run1_targetFE100000.png
+DASCMOP1_BC,1,100000,100144,455,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/query_condition_BC_runs1_visual_z_20260623_102646/C_ref_y/DASCMOP1_BC_run1/figures/DASCMOP1_BC_run1_targetFE100000_visual_z_diagnostic.png

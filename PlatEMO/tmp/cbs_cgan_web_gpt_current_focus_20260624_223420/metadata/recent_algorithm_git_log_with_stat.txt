@@ -1,0 +1,128 @@
+commit 7cbe01442d281548d30aa29fef549630f63df72d (UC-GAN)
+Author: BLC-bit666 <luchengbei32@gmail.com>
+Date:   Thu Jun 18 00:16:53 2026 +0800
+
+    feat(ccmo-gan-bdg): add compact pair-cell margin validation
+
+ .../CCMO-GAN-BDG/BuildBoundaryTrainBundle_BDG.m    | 588 +++++++++++++++++++++
+ .../CCMO-GAN-BDG/CCMO_GAN_BDG.m                    |  96 +++-
+ .../run_CCMO_GAN_BDG_compact_margin_validation.m   | 279 ++++++++++
+ .../Support/test_CCMO_GAN_BDG_target_conditioned.m | 139 +++++
+ 4 files changed, 1095 insertions(+), 7 deletions(-)
+
+commit 437531d5e48e7dd2a1a756b4e2c46213a08d2ac2 (HEAD -> endpoint-yb-norm, UC-GAN-2)
+Author: BLC-bit666 <luchengbei32@gmail.com>
+Date:   Tue Jun 16 16:33:18 2026 +0800
+
+    6-16,目前最好的边界生成效果，但是算法运行速度慢
+
+ .../BoundaryConditionKNNKeepMask_BDG.m             |  56 ++
+ .../CCMO-GAN-BDG/BoundaryGAN_BDG.m                 | 160 +++-
+ .../CCMO-GAN-BDG/BuildBoundaryTargetTriples_BDG.m  | 590 +++++++++++++-
+ .../CCMO-GAN-BDG/BuildBoundaryTrainBundle_BDG.m    | 211 +++++
+ .../CCMO-GAN-BDG/CCMO_GAN_BDG.m                    | 712 +++++++++++++----
+ .../CCMO-GAN-BDG/FilterBoundaryTargetTriples_BDG.m |  36 +-
+ .../plot_CCMO_GAN_BDG_fixmd_pairt_run_figures.m    | 414 ++++++++++
+ ...CCMO_GAN_BDG_archive_pareto_filters_fullscope.m | 353 ++++-----
+ .../run_CCMO_GAN_BDG_boundary_diagnostics.m        | 117 ++-
+ .../run_CCMO_GAN_BDG_c4_mechanism_experiments.m    | 104 +--
+ .../Support/run_CCMO_GAN_BDG_cgan_retained_run3.m  | 133 +---
+ .../run_CCMO_GAN_BDG_fixmd_all8_accel_chain.m      | 864 +++++++++++++++++++++
+ .../run_CCMO_GAN_BDG_fixmd_four_experiments.m      |  69 +-
+ ...run_CCMO_GAN_BDG_fixmd_mainline_stage_figures.m | 332 ++++++++
+ ...run_CCMO_GAN_BDG_fixmd_pairt_diagnostic_suite.m | 304 ++++++++
+ .../run_CCMO_GAN_BDG_g2sl_uncond_retained.m        | 120 +--
+ .../run_CCMO_GAN_BDG_gnd_covgate_experiments.m     | 102 +--
+ .../run_CCMO_GAN_BDG_localmad_ngen_experiments.m   | 109 +--
+ .../summarize_CCMO_GAN_BDG_fixmd_pairt_results.m   | 321 ++++++++
+ .../test_CCMO_GAN_BDG_archive_pareto_filters.m     | 166 +---
+ .../Support/test_CCMO_GAN_BDG_target_conditioned.m | 337 ++++----
+ .../CCMO-GAN-BDG/UpdateBoundaryArchive_BDG.m       |  95 ++-
+ PlatEMO/fix.md                                     | 700 ++++++++++-------
+ 23 files changed, 4858 insertions(+), 1547 deletions(-)
+
+commit 4212a3d54817c40ea6e9d919789dc7ff73ed0687
+Author: BLC-bit666 <luchengbei32@gmail.com>
+Date:   Sun Jun 14 23:14:54 2026 +0800
+
+    6-14,CGAN暂时告一段落，但是生成解仍然不是很贴边
+
+ .../CCMO-GAN-BDG/BoundaryGAN_BDG.m                 | 1249 +++++++-
+ .../CCMO-GAN-BDG/BoundaryQualityTarget_BDG.m       |  685 +++++
+ .../CCMO-GAN-BDG/BuildBoundaryTargetTriples_BDG.m  |  229 ++
+ .../CCMO-GAN-BDG/CCMO_GAN_BDG.m                    | 3013 ++++++++++++++++----
+ .../CCMO-GAN-BDG/FilterBoundaryTargetTriples_BDG.m |  442 +++
+ .../aggregate_CCMO_GAN_BDG_snapshot_metrics.m      |  207 ++
+ .../benchmark_CCMO_GAN_BDG_boundary_metrics.m      |  394 ---
+ .../run_CCMO_GAN_BDG_archive_objective_snapshots.m |   49 +
+ ...CCMO_GAN_BDG_archive_pareto_filters_fullscope.m | 1716 +++++++++++
+ .../run_CCMO_GAN_BDG_boundary_diagnostics.m        |  376 +++
+ .../run_CCMO_GAN_BDG_c4_mechanism_experiments.m    |   95 +
+ .../Support/run_CCMO_GAN_BDG_cgan_retained_run3.m  |  144 +
+ .../run_CCMO_GAN_BDG_fixmd_four_experiments.m      |   86 +
+ .../run_CCMO_GAN_BDG_g2sl_uncond_retained.m        |  133 +
+ .../run_CCMO_GAN_BDG_gnd_covgate_experiments.m     |   93 +
+ .../run_CCMO_GAN_BDG_localmad_ngen_experiments.m   |  100 +
+ .../summarize_CCMO_GAN_BDG_c4_mechanism_results.m  |  334 +++
+ .../summarize_CCMO_GAN_BDG_gnd_covgate_results.m   |  309 ++
+ .../test_CCMO_GAN_BDG_archive_pareto_filters.m     |  988 +++++++
+ .../test_CCMO_GAN_BDG_archive_shrink_guard.m       |  102 +
+ .../Support/test_CCMO_GAN_BDG_metrics.m            |  307 --
+ .../Support/test_CCMO_GAN_BDG_target_conditioned.m |  646 +++++
+ .../CCMO-GAN-BDG/UpdateBoundaryArchive_BDG.m       |  756 +++--
+ PlatEMO/fix.md                                     |  617 ++--
+ PlatEMO/fix1.md                                    |  543 ----
+ PlatEMO/fix2.md                                    |  185 --
+ 26 files changed, 11164 insertions(+), 2634 deletions(-)
+
+commit cf503f631ad8cf41f290e5f4519926b275f5f73e
+Author: BLC-bit666 <luchengbei32@gmail.com>
+Date:   Sat May 23 23:36:27 2026 +0800
+
+    5-23：边界数据训练有效，GAN生成无效
+
+ .../CCMO-GAN-BDG/BoundaryGAN_BDG.m                 | 265 ++++++
+ .../CCMO-GAN-BDG/CCMO_GAN_BDG.m                    | 935 +++++++++++++++++++++
+ .../benchmark_CCMO_GAN_BDG_boundary_metrics.m      | 394 +++++++++
+ .../Support/test_CCMO_GAN_BDG_metrics.m            | 307 +++++++
+ .../CCMO-GAN-BDG/UpdateBoundaryArchive_BDG.m       | 461 ++++++++++
+ PlatEMO/fix.md                                     | 460 +++++-----
+ PlatEMO/fix1.md                                    | 543 ++++++++++++
+ PlatEMO/fix2.md                                    | 185 ++++
+ 8 files changed, 3306 insertions(+), 244 deletions(-)
+
+commit 64f82e4f105832f8ab6b4380204e91304feea4b4 (UC)
+Author: BLC-bit666 <luchengbei32@gmail.com>
+Date:   Thu May 21 20:14:59 2026 +0800
+
+    5-21，本思路失败，终结！
+
+ PlatEMO/fix.md | 479 ++++++++++++++++++++++++++++-----------------------------
+ 1 file changed, 238 insertions(+), 241 deletions(-)
+
+commit 3de05c8e825683ee596c51a51171878af43431c2
+Author: BLC-bit666 <luchengbei32@gmail.com>
+Date:   Tue May 12 01:01:41 2026 +0800
+
+    5-12，效果不错但是创新点未闭合
+
+ PlatEMO/fix.md | 532 ++++++++++++++++++++++++++++-----------------------------
+ 1 file changed, 262 insertions(+), 270 deletions(-)
+
+commit 03b08c146e70da19c16191e1b1e806148426c99e (origin/UC)
+Author: BLC-bit666 <luchengbei32@gmail.com>
+Date:   Thu May 7 15:02:02 2026 +0800
+
+    5-7:重构前夕
+
+ PlatEMO/fix.md | 455 ++++++++++++++++++++++++++++++++++-----------------------
+ 1 file changed, 269 insertions(+), 186 deletions(-)
+
+commit eee61099f8074404eb832cc2d622290319796e5f
+Author: BLC-bit666 <luchengbei32@gmail.com>
+Date:   Thu Apr 30 15:23:48 2026 +0800
+
+    4-30，效果不错但是边界存档语意不够
+
+ PlatEMO/fix.md | 376 +++++++++++++++++++++++++++++----------------------------
+ 1 file changed, 190 insertions(+), 186 deletions(-)

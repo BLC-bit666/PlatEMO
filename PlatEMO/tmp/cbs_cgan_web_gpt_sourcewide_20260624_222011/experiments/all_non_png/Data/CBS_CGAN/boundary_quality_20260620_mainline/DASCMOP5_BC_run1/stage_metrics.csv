@@ -1,0 +1,6 @@
+problem,run,target_FE,actual_FE,gen,bmem_count,chain_count,train_count,query_count,raw_generated_count,feasible_generated_count,boundary_dist50,boundary_dist90,query_width90,feasible_rate
+DASCMOP5_BC,1,10000,10000,49,0,0,0,0,0,0,NaN,NaN,NaN,NaN
+DASCMOP5_BC,1,30000,30000,149,0,0,0,0,0,0,NaN,NaN,NaN,NaN
+DASCMOP5_BC,1,50000,50000,249,0,0,0,0,0,0,NaN,NaN,NaN,NaN
+DASCMOP5_BC,1,70000,70020,345,39,10,39,5,20,0,0.57410430647476,0.674429027355846,0.0493895595146685,0
+DASCMOP5_BC,1,100000,100160,482,24,7,24,5,20,0,0.885145163768604,1.34178748660136,0.0472351884982371,0

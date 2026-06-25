@@ -1,0 +1,10 @@
+file,gen,chain,node_count,ref_count,ref_min,ref_max,frontier_count,finite_gap_count,gap_min,gap_median,gap_max
+/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/fix1_cgan_failure_diag_DASCMOP5_70000_20260621_232752/DASCMOP5_BC_run1/captured_dataset.mat,346,1,3,3,1,4,3,0,NaN,NaN,NaN
+/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/fix1_cgan_failure_diag_DASCMOP5_70000_20260621_232752/DASCMOP5_BC_run1/captured_dataset.mat,346,2,4,4,9,12,0,4,0.00268516688401458,0.00467733122176184,0.00633636415011283
+/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/fix1_cgan_failure_diag_DASCMOP5_70000_20260621_232752/DASCMOP5_BC_run1/captured_dataset.mat,346,3,2,2,18,19,1,1,0.00339491833352651,0.00339491833352651,0.00339491833352651
+/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/fix1_cgan_failure_diag_DASCMOP5_70000_20260621_232752/DASCMOP5_BC_run1/captured_dataset.mat,346,4,2,2,23,24,0,2,0.00230081359902907,0.00241153714247863,0.00252226068592819
+/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/fix1_cgan_failure_diag_DASCMOP5_70000_20260621_232752/DASCMOP5_BC_run1/captured_dataset.mat,346,5,2,2,34,35,2,0,NaN,NaN,NaN
+/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/fix1_cgan_failure_diag_DASCMOP5_70000_20260621_232752/DASCMOP5_BC_run1/captured_dataset.mat,346,6,2,2,39,40,0,2,0.0014932134924901,0.0910889919650714,0.180684770437653
+/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/fix1_cgan_failure_diag_DASCMOP5_70000_20260621_232752/DASCMOP5_BC_run1/captured_dataset.mat,346,7,5,5,63,67,2,3,0.001808945616407,0.019408394209643,0.019603112318652
+/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/fix1_cgan_failure_diag_DASCMOP5_70000_20260621_232752/DASCMOP5_BC_run1/captured_dataset.mat,346,8,4,4,85,88,4,0,NaN,NaN,NaN
+/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/fix1_cgan_failure_diag_DASCMOP5_70000_20260621_232752/DASCMOP5_BC_run1/captured_dataset.mat,346,9,2,2,91,92,2,0,NaN,NaN,NaN

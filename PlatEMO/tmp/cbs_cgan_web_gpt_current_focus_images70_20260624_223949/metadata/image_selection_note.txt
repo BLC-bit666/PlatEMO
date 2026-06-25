@@ -1,0 +1,6 @@
+Representative image selection for this package:
+- 36 contact sheets: baseline, mechanism, epoch, pair, endpoint, endpoint_yb_norm
+- 15 A_ref_only_adv raw training reconstruction failures
+- 15 B_ref_only_adv_huber raw training reconstruction failures
+- 4 single-stage overfit diagnostic figures
+Total target: 70 PNG files or fewer.

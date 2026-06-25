@@ -1,0 +1,4 @@
+problem,run,mode,sigma,iter,reconstructionWeight,repeat,n,dec_rmse,obj_dist50,obj_dist90,feasible_rate
+LIRCMOP9_BC,1,true_train,0,NaN,NaN,NaN,6,0,0,0,1
+LIRCMOP9_BC,1,perturb,0.01,NaN,NaN,1,6,0.0102070390779123,0.00169193346365293,0.00355602555574249,0.333333333333333
+LIRCMOP9_BC,1,overfit,0,2,20,1,6,0.282962858753576,0.26436183107098,0.270141958253256,1

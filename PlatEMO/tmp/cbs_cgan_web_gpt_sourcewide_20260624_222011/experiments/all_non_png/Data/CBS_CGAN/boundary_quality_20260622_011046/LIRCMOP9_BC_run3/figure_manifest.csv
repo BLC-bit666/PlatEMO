@@ -1,0 +1,6 @@
+problem,run,target_FE,actual_FE,gen,figure_file
+LIRCMOP9_BC,3,10000,10100,45,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/boundary_quality_20260622_011046/LIRCMOP9_BC_run3/figures/LIRCMOP9_BC_run3_targetFE010000.png
+LIRCMOP9_BC,3,30000,30120,136,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/boundary_quality_20260622_011046/LIRCMOP9_BC_run3/figures/LIRCMOP9_BC_run3_targetFE030000.png
+LIRCMOP9_BC,3,50000,50140,227,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/boundary_quality_20260622_011046/LIRCMOP9_BC_run3/figures/LIRCMOP9_BC_run3_targetFE050000.png
+LIRCMOP9_BC,3,70000,70160,318,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/boundary_quality_20260622_011046/LIRCMOP9_BC_run3/figures/LIRCMOP9_BC_run3_targetFE070000.png
+LIRCMOP9_BC,3,100000,100080,454,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/boundary_quality_20260622_011046/LIRCMOP9_BC_run3/figures/LIRCMOP9_BC_run3_targetFE100000.png

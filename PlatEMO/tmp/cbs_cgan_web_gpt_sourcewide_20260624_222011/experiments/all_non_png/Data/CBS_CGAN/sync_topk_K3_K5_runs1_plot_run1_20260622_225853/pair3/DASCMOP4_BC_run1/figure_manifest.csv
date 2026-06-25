@@ -1,0 +1,7 @@
+problem,run,target_FE,actual_FE,gen,figure_file
+DASCMOP4_BC,1,10000,10067,48,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/sync_topk_K3_K5_runs1_plot_run1_20260622_225853/pair3/DASCMOP4_BC_run1/figures/DASCMOP4_BC_run1_targetFE010000.png
+DASCMOP4_BC,1,30000,30087,139,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/sync_topk_K3_K5_runs1_plot_run1_20260622_225853/pair3/DASCMOP4_BC_run1/figures/DASCMOP4_BC_run1_targetFE030000.png
+DASCMOP4_BC,1,50000,50107,230,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/sync_topk_K3_K5_runs1_plot_run1_20260622_225853/pair3/DASCMOP4_BC_run1/figures/DASCMOP4_BC_run1_targetFE050000.png
+DASCMOP4_BC,1,70000,70127,321,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/sync_topk_K3_K5_runs1_plot_run1_20260622_225853/pair3/DASCMOP4_BC_run1/figures/DASCMOP4_BC_run1_targetFE070000.png
+DASCMOP4_BC,1,100000,100047,457,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/sync_topk_K3_K5_runs1_plot_run1_20260622_225853/pair3/DASCMOP4_BC_run1/figures/DASCMOP4_BC_run1_targetFE100000.png
+DASCMOP4_BC,1,NaN,NaN,457,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/sync_topk_K3_K5_runs1_plot_run1_20260622_225853/pair3/DASCMOP4_BC_run1/figures/DASCMOP4_BC_run1_diagnostic_trends.png

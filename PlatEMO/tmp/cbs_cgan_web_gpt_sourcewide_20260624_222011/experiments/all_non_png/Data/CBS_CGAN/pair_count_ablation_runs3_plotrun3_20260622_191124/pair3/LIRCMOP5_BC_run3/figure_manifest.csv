@@ -1,0 +1,7 @@
+problem,run,target_FE,actual_FE,gen,figure_file
+LIRCMOP5_BC,3,10000,10000,49,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/pair_count_ablation_runs3_plotrun3_20260622_191124/pair3/LIRCMOP5_BC_run3/figures/LIRCMOP5_BC_run3_targetFE010000.png
+LIRCMOP5_BC,3,30000,30020,140,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/pair_count_ablation_runs3_plotrun3_20260622_191124/pair3/LIRCMOP5_BC_run3/figures/LIRCMOP5_BC_run3_targetFE030000.png
+LIRCMOP5_BC,3,50000,50040,231,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/pair_count_ablation_runs3_plotrun3_20260622_191124/pair3/LIRCMOP5_BC_run3/figures/LIRCMOP5_BC_run3_targetFE050000.png
+LIRCMOP5_BC,3,70000,70060,322,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/pair_count_ablation_runs3_plotrun3_20260622_191124/pair3/LIRCMOP5_BC_run3/figures/LIRCMOP5_BC_run3_targetFE070000.png
+LIRCMOP5_BC,3,100000,100200,459,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/pair_count_ablation_runs3_plotrun3_20260622_191124/pair3/LIRCMOP5_BC_run3/figures/LIRCMOP5_BC_run3_targetFE100000.png
+LIRCMOP5_BC,3,NaN,NaN,459,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/pair_count_ablation_runs3_plotrun3_20260622_191124/pair3/LIRCMOP5_BC_run3/figures/LIRCMOP5_BC_run3_diagnostic_trends.png

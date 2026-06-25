@@ -1,0 +1,7 @@
+entry_type,variant,description,advWeight,reconstructionWeight,pairMarginWeight,useMismatchD,trainZMode,condition_mode,workerCount,problem_count,snapshot_count,snapshot_file
+variant,V0_Pure_CGAN,"D real/fake, G adversarial only",1,0,0,0,zero,ref_y,10,6,6,
+variant,V1_CGAN_mismatchD,"D real/fake/mismatch, G adversarial only",1,0,0,1,zero,ref_y,10,6,6,
+variant,V2_Adv_Huber,"Adversarial plus Huber reconstruction",1,1,0,1,zero,ref_y,10,6,6,
+variant,V3_Adv_Pair,"Adversarial plus pair-margin",1,0,1,1,zero,ref_y,10,6,6,
+variant,V4_Full_current,"Adversarial plus Huber plus pair-margin",1,1,1,1,zero,ref_y,10,6,6,
+variant,V5_Huber_Pair_no_adv,"Huber plus pair-margin, no adversarial",0,1,1,0,zero,ref_y,10,6,6,

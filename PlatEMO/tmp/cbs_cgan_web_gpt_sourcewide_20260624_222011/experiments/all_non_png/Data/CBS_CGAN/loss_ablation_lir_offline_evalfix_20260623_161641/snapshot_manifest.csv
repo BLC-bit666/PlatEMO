@@ -1,0 +1,7 @@
+problem,run,seed,condition_mode,snapshot_source,snapshot_file,N,D,maxFE,actualFE,gen,train_count,query_count,condition_dim,bmem_count,status,error_message
+LIRCMOP10_BC,1,1,ref_y,provided,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/loss_ablation_lir_offline_20260623_155831/snapshots/LIRCMOP10_BC_run1_snapshot.mat,100,30,100000,100136,456,132,20,4,132,ok,
+LIRCMOP5_BC,1,1,ref_y,provided,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/loss_ablation_lir_offline_20260623_155831/snapshots/LIRCMOP5_BC_run1_snapshot.mat,100,30,100000,100080,457,78,20,4,78,ok,
+LIRCMOP6_BC,1,1,ref_y,provided,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/loss_ablation_lir_offline_20260623_155831/snapshots/LIRCMOP6_BC_run1_snapshot.mat,100,30,100000,100152,458,69,20,4,69,ok,
+LIRCMOP7_BC,1,1,ref_y,provided,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/loss_ablation_lir_offline_20260623_155831/snapshots/LIRCMOP7_BC_run1_snapshot.mat,100,30,100000,100096,456,243,20,4,243,ok,
+LIRCMOP8_BC,1,1,ref_y,provided,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/loss_ablation_lir_offline_20260623_155831/snapshots/LIRCMOP8_BC_run1_snapshot.mat,100,30,100000,100146,457,255,20,4,255,ok,
+LIRCMOP9_BC,1,1,ref_y,provided,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/loss_ablation_lir_offline_20260623_155831/snapshots/LIRCMOP9_BC_run1_snapshot.mat,100,30,100000,100167,456,81,20,4,81,ok,

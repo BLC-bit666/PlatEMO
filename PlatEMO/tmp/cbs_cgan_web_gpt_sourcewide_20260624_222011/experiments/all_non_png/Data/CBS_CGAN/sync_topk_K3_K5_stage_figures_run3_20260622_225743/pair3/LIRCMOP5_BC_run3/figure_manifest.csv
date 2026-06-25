@@ -1,0 +1,7 @@
+problem,run,target_FE,actual_FE,gen,figure_file
+LIRCMOP5_BC,3,10000,10001,49,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/sync_topk_K3_K5_stage_figures_run3_20260622_225743/pair3/LIRCMOP5_BC_run3/figures/LIRCMOP5_BC_run3_targetFE010000.png
+LIRCMOP5_BC,3,30000,30215,141,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/sync_topk_K3_K5_stage_figures_run3_20260622_225743/pair3/LIRCMOP5_BC_run3/figures/LIRCMOP5_BC_run3_targetFE030000.png
+LIRCMOP5_BC,3,50000,50015,231,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/sync_topk_K3_K5_stage_figures_run3_20260622_225743/pair3/LIRCMOP5_BC_run3/figures/LIRCMOP5_BC_run3_targetFE050000.png
+LIRCMOP5_BC,3,70000,70035,322,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/sync_topk_K3_K5_stage_figures_run3_20260622_225743/pair3/LIRCMOP5_BC_run3/figures/LIRCMOP5_BC_run3_targetFE070000.png
+LIRCMOP5_BC,3,100000,100175,459,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/sync_topk_K3_K5_stage_figures_run3_20260622_225743/pair3/LIRCMOP5_BC_run3/figures/LIRCMOP5_BC_run3_targetFE100000.png
+LIRCMOP5_BC,3,NaN,NaN,459,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/sync_topk_K3_K5_stage_figures_run3_20260622_225743/pair3/LIRCMOP5_BC_run3/figures/LIRCMOP5_BC_run3_diagnostic_trends.png

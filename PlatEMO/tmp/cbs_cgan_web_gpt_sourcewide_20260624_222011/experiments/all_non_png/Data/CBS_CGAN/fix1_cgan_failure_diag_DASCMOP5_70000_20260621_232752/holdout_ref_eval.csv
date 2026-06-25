@@ -1,0 +1,2 @@
+file,problem,run,train_count,holdout_count,generated_count,holdout_ref_hit_rate,holdout_obj_dist50,holdout_obj_dist90,novel_useful_rate,feasible_rate,status,error_message
+/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/fix1_cgan_failure_diag_DASCMOP5_70000_20260621_232752/DASCMOP5_BC_run1/captured_dataset.mat,DASCMOP5_BC,1,14,12,12,0,1.11523863984088,1.14863891635502,0,0,ok,
