@@ -1,0 +1,6 @@
+problem,run,target_FE,actual_FE,generation,figure_file
+LIRCMOP5_BC,3,10000,10000,49,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_RegionGAN_compare/ablation_z_condition_wgan_20260627_195918/z_sigma_025/LIRCMOP5_BC_run3/figures/LIRCMOP5_BC_run3_FE010000_region_boundary.png
+LIRCMOP5_BC,3,30000,30210,137,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_RegionGAN_compare/ablation_z_condition_wgan_20260627_195918/z_sigma_025/LIRCMOP5_BC_run3/figures/LIRCMOP5_BC_run3_FE030000_region_boundary.png
+LIRCMOP5_BC,3,50000,50220,224,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_RegionGAN_compare/ablation_z_condition_wgan_20260627_195918/z_sigma_025/LIRCMOP5_BC_run3/figures/LIRCMOP5_BC_run3_FE050000_region_boundary.png
+LIRCMOP5_BC,3,70000,70160,318,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_RegionGAN_compare/ablation_z_condition_wgan_20260627_195918/z_sigma_025/LIRCMOP5_BC_run3/figures/LIRCMOP5_BC_run3_FE070000_region_boundary.png
+LIRCMOP5_BC,3,100000,100100,465,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_RegionGAN_compare/ablation_z_condition_wgan_20260627_195918/z_sigma_025/LIRCMOP5_BC_run3/figures/LIRCMOP5_BC_run3_FE100000_region_boundary.png

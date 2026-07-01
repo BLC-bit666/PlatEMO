@@ -1,0 +1,171 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2200" height="980" viewBox="0 0 2200 980">
+  <defs>
+    <style>
+      .bg { fill: #171717; }
+      .panel { fill: #202020; stroke: #4f4f4f; stroke-width: 2; rx: 12; ry: 12; }
+      .input { fill: #2f3b46; stroke: #7d99aa; stroke-width: 2.5; }
+      .layerG { fill: #284150; stroke: #82a7bb; stroke-width: 2.5; rx: 12; ry: 12; }
+      .layerD { fill: #44362f; stroke: #a08475; stroke-width: 2.5; rx: 12; ry: 12; }
+      .act { fill: #373737; stroke: #777777; stroke-width: 2.5; rx: 12; ry: 12; }
+      .out { fill: #304735; stroke: #81a783; stroke-width: 2.5; rx: 12; ry: 12; }
+      .concat { fill: #333333; stroke: #8a8a8a; stroke-width: 2.5; }
+      .line { fill: none; stroke: #d8d8d8; stroke-width: 2.7; }
+      .dash { fill: none; stroke: #d8d8d8; stroke-width: 2.4; stroke-dasharray: 8 8; }
+      .arrow { fill: #d8d8d8; }
+      .title { fill: #ffffff; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; font-size: 38px; font-weight: 700; text-anchor: middle; }
+      .section { fill: #ffffff; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; font-size: 30px; font-weight: 700; text-anchor: start; }
+      .h { fill: #ffffff; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; font-size: 27px; font-weight: 700; text-anchor: middle; }
+      .t { fill: #ffffff; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; font-size: 20px; text-anchor: middle; }
+      .small { fill: #e8e8e8; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; font-size: 18px; text-anchor: middle; }
+      .note { fill: #e8e8e8; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; font-size: 20px; text-anchor: start; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="2200" height="980"/>
+  <text class="title" x="1100" y="54">Region-CGAN 网络节点结构</text>
+
+  <rect class="panel" x="40" y="90" width="2120" height="390"/>
+  <text class="section" x="75" y="135">Generator G：按区域条件生成边界候选解</text>
+
+  <!-- Generator inputs -->
+  <circle class="input" cx="145" cy="245" r="62"/>
+  <text class="h" x="145" y="238">z</text>
+  <text class="small" x="145" y="268">噪声 6</text>
+
+  <circle class="input" cx="145" cy="365" r="62"/>
+  <text class="h" x="145" y="356">W_ref</text>
+  <text class="small" x="145" y="386">区域条件 M</text>
+
+  <polygon class="concat" points="315,245 385,305 315,365 245,305"/>
+  <text class="h" x="315" y="298">concat</text>
+  <text class="small" x="315" y="328">M + 6</text>
+
+  <!-- Generator layers -->
+  <rect class="layerG" x="455" y="245" width="165" height="120"/>
+  <text class="h" x="537.5" y="295">FC</text>
+  <text class="t" x="537.5" y="328">32</text>
+
+  <rect class="act" x="680" y="245" width="165" height="120"/>
+  <text class="h" x="762.5" y="292">Leaky</text>
+  <text class="t" x="762.5" y="326">ReLU 0.2</text>
+
+  <rect class="layerG" x="905" y="245" width="165" height="120"/>
+  <text class="h" x="987.5" y="295">FC</text>
+  <text class="t" x="987.5" y="328">32</text>
+
+  <rect class="act" x="1130" y="245" width="165" height="120"/>
+  <text class="h" x="1212.5" y="292">Leaky</text>
+  <text class="t" x="1212.5" y="326">ReLU 0.2</text>
+
+  <rect class="layerG" x="1355" y="245" width="165" height="120"/>
+  <text class="h" x="1437.5" y="295">FC</text>
+  <text class="t" x="1437.5" y="328">D</text>
+
+  <rect class="act" x="1580" y="245" width="165" height="120"/>
+  <text class="h" x="1662.5" y="305">tanh</text>
+
+  <rect class="out" x="1810" y="245" width="250" height="120"/>
+  <text class="h" x="1935" y="292">RawDec</text>
+  <text class="t" x="1935" y="326">边界候选决策 x</text>
+
+  <!-- Generator arrows -->
+  <path class="line" d="M 201 265 L 250 285"/>
+  <polygon class="arrow" points="268,292 246,295 254,276"/>
+  <path class="line" d="M 201 345 L 250 325"/>
+  <polygon class="arrow" points="268,318 254,334 246,315"/>
+  <path class="line" d="M 385 305 L 437 305"/>
+  <polygon class="arrow" points="455,305 437,295 437,315"/>
+  <path class="line" d="M 620 305 L 662 305"/>
+  <polygon class="arrow" points="680,305 662,295 662,315"/>
+  <path class="line" d="M 845 305 L 887 305"/>
+  <polygon class="arrow" points="905,305 887,295 887,315"/>
+  <path class="line" d="M 1070 305 L 1112 305"/>
+  <polygon class="arrow" points="1130,305 1112,295 1112,315"/>
+  <path class="line" d="M 1295 305 L 1337 305"/>
+  <polygon class="arrow" points="1355,305 1337,295 1337,315"/>
+  <path class="line" d="M 1520 305 L 1562 305"/>
+  <polygon class="arrow" points="1580,305 1562,295 1562,315"/>
+  <path class="line" d="M 1745 305 L 1792 305"/>
+  <polygon class="arrow" points="1810,305 1792,295 1792,315"/>
+
+  <rect class="panel" x="40" y="530" width="2120" height="390"/>
+  <text class="section" x="75" y="575">Discriminator D：判断给定区域内的决策是否来自真实边界云</text>
+
+  <!-- Discriminator inputs -->
+  <circle class="input" cx="145" cy="660" r="62"/>
+  <text class="h" x="145" y="653">x_b</text>
+  <text class="small" x="145" y="683">真实边界解 D</text>
+
+  <circle class="input" cx="145" cy="795" r="62"/>
+  <text class="h" x="145" y="786">x_fake</text>
+  <text class="small" x="145" y="816">G(z,W_ref)</text>
+
+  <circle class="input" cx="350" cy="795" r="62"/>
+  <text class="h" x="350" y="786">W_ref</text>
+  <text class="small" x="350" y="816">区域条件 M</text>
+
+  <polygon class="concat" points="545,665 625,735 545,805 465,735"/>
+  <text class="h" x="545" y="728">concat</text>
+  <text class="small" x="545" y="758">D + M</text>
+
+  <!-- Discriminator layers -->
+  <rect class="layerD" x="705" y="675" width="165" height="120"/>
+  <text class="h" x="787.5" y="725">FC</text>
+  <text class="t" x="787.5" y="758">32</text>
+
+  <rect class="act" x="930" y="675" width="165" height="120"/>
+  <text class="h" x="1012.5" y="722">Leaky</text>
+  <text class="t" x="1012.5" y="756">ReLU 0.2</text>
+
+  <rect class="layerD" x="1155" y="675" width="165" height="120"/>
+  <text class="h" x="1237.5" y="725">FC</text>
+  <text class="t" x="1237.5" y="758">32</text>
+
+  <rect class="act" x="1380" y="675" width="165" height="120"/>
+  <text class="h" x="1462.5" y="722">Leaky</text>
+  <text class="t" x="1462.5" y="756">ReLU 0.2</text>
+
+  <rect class="layerD" x="1605" y="675" width="165" height="120"/>
+  <text class="h" x="1687.5" y="725">FC</text>
+  <text class="t" x="1687.5" y="758">1</text>
+
+  <rect class="act" x="1830" y="675" width="165" height="120"/>
+  <text class="h" x="1912.5" y="735">Sigmoid</text>
+
+  <rect class="out" x="2045" y="675" width="110" height="120"/>
+  <text class="h" x="2100" y="724">score</text>
+  <text class="small" x="2100" y="756">[0,1]</text>
+
+  <!-- Discriminator arrows -->
+  <path class="line" d="M 202 685 L 475 715"/>
+  <polygon class="arrow" points="493,717 474,705 472,725"/>
+  <path class="line" d="M 202 795 L 470 755"/>
+  <polygon class="arrow" points="488,752 472,744 474,765"/>
+  <path class="line" d="M 412 795 L 475 760"/>
+  <polygon class="arrow" points="492,750 478,769 468,751"/>
+  <path class="line" d="M 625 735 L 687 735"/>
+  <polygon class="arrow" points="705,735 687,725 687,745"/>
+  <path class="line" d="M 870 735 L 912 735"/>
+  <polygon class="arrow" points="930,735 912,725 912,745"/>
+  <path class="line" d="M 1095 735 L 1137 735"/>
+  <polygon class="arrow" points="1155,735 1137,725 1137,745"/>
+  <path class="line" d="M 1320 735 L 1362 735"/>
+  <polygon class="arrow" points="1380,735 1362,725 1362,745"/>
+  <path class="line" d="M 1545 735 L 1587 735"/>
+  <polygon class="arrow" points="1605,735 1587,725 1587,745"/>
+  <path class="line" d="M 1770 735 L 1812 735"/>
+  <polygon class="arrow" points="1830,735 1812,725 1812,745"/>
+  <path class="line" d="M 1995 735 L 2027 735"/>
+  <polygon class="arrow" points="2045,735 2027,725 2027,745"/>
+
+  <!-- Fake output connection from G to D -->
+  <path class="dash" d="M 1935 365 C 1935 485 225 455 145 720"/>
+  <polygon class="arrow" points="145,738 135,720 155,720"/>
+  <text class="note" x="1660" y="430">生成样本作为 x_fake 输入 D</text>
+
+  <!-- Loss notes -->
+  <rect class="panel" x="1420" y="812" width="710" height="88"/>
+  <text class="note" x="1450" y="842">训练：D 使用 BCE，真实标签 0.9，伪造标签 0。</text>
+  <text class="note" x="1450" y="870">G 使用 BCE，让 D(G(z,W_ref), W_ref) 接近真实。</text>
+  <text class="note" x="1450" y="896">采样：RawDec = G(z, QueryC)，再评价为 OffspringG。</text>
+</svg>

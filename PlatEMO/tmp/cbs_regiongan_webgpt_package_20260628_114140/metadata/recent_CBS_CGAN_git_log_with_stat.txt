@@ -1,0 +1,27 @@
+commit b99f66b9974a0f7bdef2c4d1c1e97d5325bd26fb (HEAD -> UC-GAN-2)
+Author: BLC-bit666 <luchengbei32@gmail.com>
+Date:   Thu Jun 25 12:35:16 2026 +0800
+
+    6-25
+
+ .../CBS-CGAN/BoundaryCGAN_CBS.m                    |  369 ++++++
+ .../CBS-CGAN/BuildBoundaryDataset_CBS.m            |  376 ++++++
+ .../CBS-CGAN/CBS_CGAN.m                            | 1280 ++++++++++++++++++++
+ .../CBS-CGAN/CalFitness_CBS.m                      |   47 +
+ .../CBS-CGAN/EnvironmentalSelection_CBS.m          |   41 +
+ .../CBS-CGAN/EvaluateDecisions_CBS.m               |   22 +
+ .../CBS-CGAN/Support/TestableCBS_CGAN.m            |   20 +
+ .../run_CBS_CGAN_boundary_quality_experiments.m    |  929 ++++++++++++++
+ .../run_CBS_CGAN_endpoint_epoch50_compare_sheets.m |  206 ++++
+ .../run_CBS_CGAN_train_quality_sweep_lir_online.m  |  333 +++++
+ .../CBS-CGAN/UpdateBoundaryMemory_CBS.m            |  679 +++++++++++
+ .../CBS-CGAN/test_CBS_CGAN_network_options.m       |   40 +
+ .../CBS-CGAN/test_CBS_CGAN_sample_info.m           |   79 ++
+ .../CBS-CGAN/test_CBS_CGAN_smoke.m                 |   50 +
+ .../CBS-CGAN/test_CBS_boundary_contract_review.m   |   95 ++
+ .../CBS-CGAN/test_CBS_decision_eval_helper.m       |   22 +
+ .../CBS-CGAN/test_CBS_endpoint_runner_smoke.m      |   34 +
+ .../CBS-CGAN/test_CBS_experiment_runner_smoke.m    |   68 ++
+ .../test_CBS_train_quality_sweep_runner_smoke.m    |   98 ++
+ .../test_CBS_visual_diagnostics_runner_smoke.m     |   74 ++
+ 20 files changed, 4862 insertions(+)

@@ -1,0 +1,436 @@
+diff --git a/.DS_Store b/.DS_Store
+index ac573a52909e418639288781f5b61aec25881aeb..cdafea540ea1e039aeedab05be3f92a83e2e1a33 100644
+GIT binary patch
+delta 996
+zcmd_oT}YEr7zgm@|EjdNLwUC5_UZ-|C39*ynU>j@wi0WTwsd|Jq)qn@URpYwA6bzU
+zUS)OjLPil8eGpU<WEMqrQ&5mz)Uu#1yz0uE?Bgb~j@nfadEdD?oIi)>dHC@Rga$&l
+zTUXfGGNrzuv1#|77S6kqYONZNbZI^6wn&$n)L&X+WldUJM|+)iNNwS!9!>2HCc3na
+z_GE+FnH0Ayk1V&^SLfyzm2C3*ssq7PCO4XxnOXD+tD<|%ZZJJzcGa+OQq<rPgPbyP
+zV`f1iW8wW;dz2^Tg~V0Nl=^t2RgLqgY?%L4x`8Q;JqwL^;CEQQnd#H!QF%?Ji{_7h
+zDa+FDA|LswnG)1TgLH;2(kR`fF?vQ5G)W)mBYmP7`byvEJJOMXB{0B<95~=aJ_=BR
+zN^F4-0fbPCI)t$ot%yQJ3?1l3FAky)$8iEDaSEp~gkfC96<oy#9^tVIPw*VC@dlH4
+ziz&?DGrr&lX7N*!C6kmZIix(vDdkIU$s<)sem!Oh3wwL@_8tB}&0p+S{=;5xvuc8O
+z+`5jlwFbe)Gg3-+j?M01`clPK#ER{1S&;Lz`Ir^jH_8T%g-1E_$O50Ir)=3dinoF>
+zJ*<>2lJy0>qIWb!(}HytX#&%VRmj77l);M%0l5`b*oh!^3C=mpX6!=*ZHVK508OA1
+zhj9c)(T`&Sbx^R*p`OJ#oW})R!*$%iO*3v`4EJy!5AYCAF)n!D-*IP8FkQ|XTI8(%
+M$qJbMTmh%y7kCQ=hX4Qo
+
+delta 1015
+zcmd_oO-NKx6bJD0zoxyH*SwA|eWMSg?=Q<4O)C|Xko+1^bks=$8S@RkoW^KI4WUeu
+zqG;8twx$sTl?Yn9EQ)GVQ82YAnu1)oYSl*jpsN!^D{0-`T>gj4y_erPBMl=Blbz`f
+zo}xFmwEB3P&pO;2YO)4R`&4?Mx<iP*u-Rw^{Sm9*tnf$7aEEa8TjoIhv53_h3b&ZY
+z!*X9=?xLloPOQ!})^6OEw`*_N{>s|=XsSqaaE;s9ng`tO)?6O$4a@6=Us0nDk(RnW
+zmve8A73vaUHC}PKx!xS~cbY-br7BB@3X8bj+8=*Q)c!6OmvDPln}%wSt;rbLM0=>5
+zycD2b8m5ahO4D?oX6OaIr5Mf97n-L9`awUD0FD%-Lcoc2$b%dCC_pKyP>mWi!G|`q
+z;}A?7K@dj~!T?TU2&XZO3%G>KxPq$~#ZBD8ZQQ{<Ji${Jp5YbV;{#&&h&e3a8@{td
+zmc&-FG?vA7usr5sZkEqVSOu$NjdmczE7^_8s_Gi<`HS8C&+K-4rp0)UZD_h3%hcNV
+z21VM5#HjAf$~HFht%_6=N%5F#>{P^<BG^*oZlgez-4F@!m}~4-6@hpt=B29ai&zoO
+zc4p~i`#85fdf_tSujw6qqB;6X^GHInbk4yRxKM<096+Tsu0<VM(29dndeJ$6Zdm9+
+z1bx!_1O{;iBRGq5I4`|zDZc1^4db|u8<@Z(rZBDHE@tom5Ag_(@f>fY{O73x=gVY!
+RUK?HJkN@LTtokz*zW@?{1la%p
+
+diff --git a/PlatEMO/Algorithms/Multi-objective optimization/CBS-CGAN/BoundaryWGAN_RC.m b/PlatEMO/Algorithms/Multi-objective optimization/CBS-CGAN/BoundaryWGAN_RC.m
+index d1b8b859..9e7bd516 100644
+--- a/PlatEMO/Algorithms/Multi-objective optimization/CBS-CGAN/BoundaryWGAN_RC.m	
++++ b/PlatEMO/Algorithms/Multi-objective optimization/CBS-CGAN/BoundaryWGAN_RC.m	
+@@ -83,7 +83,8 @@
+     batchN = numel(idx);
+     dlX = dlarray(single(XScaled(idx,:)'),'CB');
+     dlC = dlarray(single(TrainC(idx,:)'),'CB');
+-    dlZ = dlarray(single(latentSamples(Options,Options.zDim,batchN)'),'CB');
++    dlZ = dlarray(single(latentSamples(Options,Options.zDim,batchN, ...
++        "train")'),'CB');
+     [gradC,lossC,gp,scoreReal,scoreFake] = dlfeval( ...
+         @criticGradients,GAN.netG,GAN.netC,dlX,dlC,dlZ,Options);
+     GAN.iterC = GAN.iterC + 1;
+@@ -101,7 +102,8 @@
+     idx = round(double(idx(:)'));
+     batchN = numel(idx);
+     dlC = dlarray(single(TrainC(idx,:)'),'CB');
+-    dlZ = dlarray(single(latentSamples(Options,Options.zDim,batchN)'),'CB');
++    dlZ = dlarray(single(latentSamples(Options,Options.zDim,batchN, ...
++        "train")'),'CB');
+     [gradG,lossG] = dlfeval(@generatorGradients, ...
+         GAN.netG,GAN.netC,dlC,dlZ);
+     GAN.iterG = GAN.iterG + 1;
+@@ -151,7 +153,7 @@
+     Info.query_index = repelem((1:size(QueryC,1))',K,1);
+     Info.condition = C;
+     dlC = dlarray(single(C'),'CB');
+-    Z = latentSamples(Options,GAN.zDim,n);
++    Z = latentSamples(Options,GAN.zDim,n,"sample");
+     Info.z = Z;
+     dlZ = dlarray(single(Z'),'CB');
+     dlX = forward(GAN.netG,[dlZ;dlC]);
+@@ -170,7 +172,11 @@
+         'z',zeros(0,0));
+ end
+ 
+-function Z = latentSamples(Options,zDim,n)
++function Z = latentSamples(Options,zDim,n,purpose)
++    if nargin < 4 || isempty(purpose)
++        purpose = "sample";
++    end
++    purpose = lower(strtrim(string(purpose)));
+     if isfield(Options,'sampleZ') && ~isempty(Options.sampleZ)
+         Z = double(Options.sampleZ);
+         if isequal(size(Z),[zDim n])
+@@ -183,7 +189,10 @@
+         return;
+     end
+     mode = "random";
+-    if isfield(Options,'sampleZMode') && ~isempty(Options.sampleZMode)
++    if purpose == "train" && isfield(Options,'trainZMode') && ...
++            ~isempty(Options.trainZMode)
++        mode = lower(strtrim(string(Options.trainZMode)));
++    elseif isfield(Options,'sampleZMode') && ~isempty(Options.sampleZMode)
+         mode = lower(strtrim(string(Options.sampleZMode)));
+     end
+     switch mode
+diff --git a/PlatEMO/Algorithms/Multi-objective optimization/CBS-CGAN/CBS_RegionGAN_Base.m b/PlatEMO/Algorithms/Multi-objective optimization/CBS-CGAN/CBS_RegionGAN_Base.m
+index b6156012..2d5150e5 100644
+--- a/PlatEMO/Algorithms/Multi-objective optimization/CBS-CGAN/CBS_RegionGAN_Base.m	
++++ b/PlatEMO/Algorithms/Multi-objective optimization/CBS-CGAN/CBS_RegionGAN_Base.m	
+@@ -60,6 +60,7 @@ function runRegionGAN(Algorithm,Problem,ganKind,Config)
+             DatasetOptions = struct();
+             GANOptions = regionGANOptions(ganKind,zDim,ganIter,ganMiniBatch, ...
+                 ganLrD,ganLrG,gpLambda,nCritic);
++            GANOptions = applyRegionGANExperimentOptions(GANOptions);
+             GANOptions.minTrainCount = minGANTrainCount;
+             ConditionDiagOptions = struct( ...
+                 'maxConditions',conditionDiagMaxConditions, ...
+@@ -239,6 +240,22 @@ function runRegionGAN(Algorithm,Problem,ganKind,Config)
+     end
+ end
+ 
++function Options = applyRegionGANExperimentOptions(Options)
++    Control = regionGANExperimentControl();
++    if isempty(Control) || ~isstruct(Control)
++        return;
++    end
++    if isfield(Control,'sampleZMode') && ~isempty(Control.sampleZMode)
++        Options.sampleZMode = lower(strtrim(string(Control.sampleZMode)));
++    end
++    if isfield(Control,'trainZMode') && ~isempty(Control.trainZMode)
++        Options.trainZMode = lower(strtrim(string(Control.trainZMode)));
++    end
++    if isfield(Control,'sigma') && ~isempty(Control.sigma)
++        Options.sigma = double(Control.sigma);
++    end
++end
++
+ function value = optionalConfig(Config,name,defaultValue)
+     if isstruct(Config) && isfield(Config,name) && ~isempty(Config.(name))
+         value = Config.(name);
+diff --git a/PlatEMO/Algorithms/Multi-objective optimization/CBS-CGAN/Support/run_CBS_RegionCGAN_training_diagnostics.m b/PlatEMO/Algorithms/Multi-objective optimization/CBS-CGAN/Support/run_CBS_RegionCGAN_training_diagnostics.m
+index 23a73e4d..acd84022 100644
+--- a/PlatEMO/Algorithms/Multi-objective optimization/CBS-CGAN/Support/run_CBS_RegionCGAN_training_diagnostics.m	
++++ b/PlatEMO/Algorithms/Multi-objective optimization/CBS-CGAN/Support/run_CBS_RegionCGAN_training_diagnostics.m	
+@@ -116,12 +116,38 @@ function reportProgress(Row)
+     if ~isfield(Options,'plotRun') || isempty(Options.plotRun)
+         Options.plotRun = 0;
+     end
++    if ~isfield(Options,'captureRun') || isempty(Options.captureRun)
++        Options.captureRun = Options.plotRun;
++    end
++    if ~isfield(Options,'drawFigures') || isempty(Options.drawFigures)
++        Options.drawFigures = Options.plotRun > 0;
++    end
+     if ~isfield(Options,'stageTargets') || isempty(Options.stageTargets)
+         Options.stageTargets = [];
+     end
++    if ~isfield(Options,'sampleZMode')
++        Options.sampleZMode = [];
++    end
++    if ~isfield(Options,'trainZMode')
++        Options.trainZMode = [];
++    end
++    if ~isfield(Options,'sigma')
++        Options.sigma = [];
++    end
+     Options.queryMode = lower(strtrim(string(Options.queryMode)));
+     Options.prevBMemMode = lower(strtrim(string(Options.prevBMemMode)));
++    if ~isempty(Options.sampleZMode)
++        Options.sampleZMode = lower(strtrim(string(Options.sampleZMode)));
++    end
++    if ~isempty(Options.trainZMode)
++        Options.trainZMode = lower(strtrim(string(Options.trainZMode)));
++    end
++    if ~isempty(Options.sigma)
++        Options.sigma = double(Options.sigma);
++    end
+     Options.plotRun = round(double(Options.plotRun));
++    Options.captureRun = round(double(Options.captureRun));
++    Options.drawFigures = logical(Options.drawFigures);
+     Options.stageTargets = double(Options.stageTargets(:)');
+ end
+ 
+@@ -192,8 +218,11 @@ function reportProgress(Row)
+         Control = struct( ...
+             'queryMode',Options.queryMode, ...
+             'prevBMemMode',Options.prevBMemMode, ...
+-            'stageTargets',[]);
+-        if Row.run == Options.plotRun
++            'stageTargets',[], ...
++            'sampleZMode',Options.sampleZMode, ...
++            'trainZMode',Options.trainZMode, ...
++            'sigma',Options.sigma);
++        if Row.run == Options.captureRun
+             Control.stageTargets = Options.stageTargets;
+         end
+         setappdata(0,'CBS_RegionGAN_ExperimentControl',Control);
+@@ -217,7 +246,11 @@ function reportProgress(Row)
+         seed = Row.seed;
+         save(Row.metric_file,'metric','problem','run','seed','N','maxFE');
+ 
+-        if isfield(Algorithm.metric,'region_cgan_history')
++        if isfield(Algorithm.metric,'region_gan_history')
++            History = Algorithm.metric.region_gan_history;
++        elseif isfield(Algorithm.metric,'region_wgan_gp_history')
++            History = Algorithm.metric.region_wgan_gp_history;
++        elseif isfield(Algorithm.metric,'region_cgan_history')
+             History = Algorithm.metric.region_cgan_history;
+         else
+             History = struct([]);
+@@ -234,7 +267,7 @@ function reportProgress(Row)
+         end
+         StageSnapshots = regionStageSnapshotTable(Snapshots,Row);
+         writetable(StageSnapshots,Row.stage_snapshot_file);
+-        if Row.run == Options.plotRun
++        if Options.drawFigures && Row.run == Options.captureRun
+             Figures = plotRegionStageFigures(Problem,Snapshots, ...
+                 Row.problem,Row.run,runFolder);
+         else
+@@ -262,9 +295,11 @@ function removeRegionGANExperimentControl()
+     eventRowTotal = 0;
+     for eventIndex = 1 : numel(History)
+         Event = History(eventIndex);
++        if isfield(Event,'generation') && ~isempty(Event.generation)
++            eventRowTotal = eventRowTotal + 1;
++        end
+         if isfield(Event,'gan_train_history') && ...
+                 ~isempty(Event.gan_train_history)
+-            eventRowTotal = eventRowTotal + 1;
+             trainRowTotal = trainRowTotal + numel(Event.gan_train_history);
+         end
+     end
+@@ -274,11 +309,15 @@ function removeRegionGANExperimentControl()
+     trainRow = 0;
+     for eventIndex = 1 : numel(History)
+         Event = History(eventIndex);
++        H = struct([]);
+         if ~isfield(Event,'gan_train_history') || ...
+                 isempty(Event.gan_train_history)
+-            continue;
++            if ~isfield(Event,'generation') || isempty(Event.generation)
++                continue;
++            end
++        else
++            H = Event.gan_train_history;
+         end
+-        H = Event.gan_train_history;
+         eventRow = eventRow + 1;
+         EventRows(eventRow,1) = summarizeTrainingEvent( ...
+             H,Event,RunRow,eventIndex);
+@@ -295,8 +334,6 @@ function removeRegionGANExperimentControl()
+ end
+ 
+ function Row = summarizeTrainingEvent(H,Event,RunRow,eventIndex)
+-    First = H(1);
+-    Last = H(end);
+     Row = emptyEventRow();
+     Row.problem = RunRow.problem;
+     Row.run = RunRow.run;
+@@ -312,21 +349,33 @@ function removeRegionGANExperimentControl()
+     Row.raw_generated_count = getNumericField(Event,'raw_generated_count');
+     Row.feasible_rate = getNumericField(Event,'feasible_rate');
+     Row.history_rows = double(numel(H));
+-    Row.start_d_bal_acc = double(First.d_bal_acc);
+-    Row.final_d_bal_acc = double(Last.d_bal_acc);
+-    Row.delta_d_bal_acc = Row.final_d_bal_acc - Row.start_d_bal_acc;
+-    Row.start_d_fake_acc = double(First.d_fake_acc);
+-    Row.final_d_fake_acc = double(Last.d_fake_acc);
+-    Row.delta_d_fake_acc = Row.final_d_fake_acc - Row.start_d_fake_acc;
+-    Row.start_g_fool_rate = double(First.g_fool_rate);
+-    Row.final_g_fool_rate = double(Last.g_fool_rate);
+-    Row.delta_g_fool_rate = Row.final_g_fool_rate - Row.start_g_fool_rate;
+-    Row.final_loss_d = double(Last.loss_d);
+-    Row.final_loss_g = double(Last.loss_g);
+-    Row.final_score_real_mean = double(Last.score_real_mean);
+-    Row.final_score_fake_mean = double(Last.score_fake_mean);
+-    Row.final_score_random_mean = getHistoryField(Last, ...
+-        'score_random_mean');
++    if isempty(H)
++        Row.final_loss_d = firstFiniteField(Event, ...
++            {'last_discriminator_loss','last_critic_loss'});
++        Row.final_loss_g = getNumericField(Event,'last_generator_loss');
++        Row.final_score_real_mean = getNumericField(Event,'last_score_real');
++        Row.final_score_fake_mean = getNumericField(Event,'last_score_fake');
++        Row.final_score_random_mean = getNumericField(Event, ...
++            'last_score_random');
++    else
++        First = H(1);
++        Last = H(end);
++        Row.start_d_bal_acc = double(First.d_bal_acc);
++        Row.final_d_bal_acc = double(Last.d_bal_acc);
++        Row.delta_d_bal_acc = Row.final_d_bal_acc - Row.start_d_bal_acc;
++        Row.start_d_fake_acc = double(First.d_fake_acc);
++        Row.final_d_fake_acc = double(Last.d_fake_acc);
++        Row.delta_d_fake_acc = Row.final_d_fake_acc - Row.start_d_fake_acc;
++        Row.start_g_fool_rate = double(First.g_fool_rate);
++        Row.final_g_fool_rate = double(Last.g_fool_rate);
++        Row.delta_g_fool_rate = Row.final_g_fool_rate - Row.start_g_fool_rate;
++        Row.final_loss_d = double(Last.loss_d);
++        Row.final_loss_g = double(Last.loss_g);
++        Row.final_score_real_mean = double(Last.score_real_mean);
++        Row.final_score_fake_mean = double(Last.score_fake_mean);
++        Row.final_score_random_mean = getHistoryField(Last, ...
++            'score_random_mean');
++    end
+     Row.score_gap = Row.final_score_real_mean - Row.final_score_fake_mean;
+     Row.real_random_gap = Row.final_score_real_mean - ...
+         Row.final_score_random_mean;
+@@ -342,6 +391,17 @@ function removeRegionGANExperimentControl()
+     end
+ end
+ 
++function value = firstFiniteField(S,names)
++    value = NaN;
++    for i = 1 : numel(names)
++        candidate = getNumericField(S,names{i});
++        if isfinite(candidate)
++            value = candidate;
++            return;
++        end
++    end
++end
++
+ function Row = summarizeTrainingStep(H,Event,RunRow,eventIndex)
+     Row = emptyTrainRow();
+     Row.problem = RunRow.problem;
+@@ -637,7 +697,7 @@ function ensureDiagnosticParallelPool(workerCount)
+     for i = 1 : numel(Snapshots)
+         S = Snapshots(i);
+         figureFile = fullfile(figureFolder,sprintf( ...
+-            '%s_run%d_FE%06d_region_boundary.png',char(problemName), ...
++            '%s_run%d_FE%06d_domain_boundary.png',char(problemName), ...
+             round(runId),round(S.target_FE)));
+         plotSingleRegionStageFigure(Problem,S,problemName,runId, ...
+             figureFile);
+@@ -653,17 +713,16 @@ function ensureDiagnosticParallelPool(workerCount)
+ 
+ function plotSingleRegionStageFigure(Problem,S,problemName,runId,figureFile)
+     [xLimits,yLimits] = regionObjectivePlotLimits(Problem,S);
+-    fig = figure('Visible','off','Color','w','Position',[100 100 980 760]);
++    fig = figure('Visible','off','Color','w','Position',[100 100 1120 760]);
+     ax = axes(fig);
+     hold(ax,'on');
+     set(ax,'FontName','Times New Roman','FontSize',14,'Box','on', ...
+-        'Layer','top','Color','w');
+-    plotRegionFeasibleInfeasible(ax,S);
++        'Layer','top','View',[0 90],'Color',[0.98 0.94 0.88]);
++    plotRegionFeasibleInfeasibleDomain(ax,Problem);
+     plotRegionTrainingSet(ax,S.train_objs);
+     plotRegionGenerated(ax,S.generated_objs);
+     xlim(ax,xLimits);
+     ylim(ax,yLimits);
+-    grid(ax,'on');
+     xlabel(ax,'f_1');
+     ylabel(ax,'f_2');
+     title(ax,sprintf('%s run=%d targetFE=%d actualFE=%d gen=%d', ...
+@@ -676,30 +735,23 @@ function plotSingleRegionStageFigure(Problem,S,problemName,runId,figureFile)
+     close(fig);
+ end
+ 
+-function plotRegionFeasibleInfeasible(ax,S)
+-    Obj = twoColumnObj(S.sample_objs);
+-    Feasible = logicalVectorField(S,'sample_feasible');
+-    n = min(size(Obj,1),numel(Feasible));
+-    Obj = Obj(1:n,:);
+-    Feasible = Feasible(1:n);
+-    infeasible = ~Feasible;
+-    if any(infeasible)
+-        scatter(ax,Obj(infeasible,1),Obj(infeasible,2),24,'o', ...
+-            'MarkerFaceColor',[0.72 0.72 0.72], ...
+-            'MarkerEdgeColor','none','MarkerFaceAlpha',0.42, ...
+-            'DisplayName','Infeasible samples');
+-    else
+-        scatter(ax,nan,nan,24,'o','MarkerFaceColor',[0.72 0.72 0.72], ...
+-            'MarkerEdgeColor','none','DisplayName','Infeasible samples');
+-    end
+-    if any(Feasible)
+-        scatter(ax,Obj(Feasible,1),Obj(Feasible,2),28,'o', ...
+-            'MarkerFaceColor',[0.48 0.73 0.45], ...
+-            'MarkerEdgeColor','none','MarkerFaceAlpha',0.50, ...
+-            'DisplayName','Feasible samples');
++function plotRegionFeasibleInfeasibleDomain(ax,Problem)
++    plot(ax,nan,nan,'s','MarkerSize',10, ...
++        'MarkerFaceColor',[0.98 0.94 0.88], ...
++        'MarkerEdgeColor',[0.78 0.63 0.50], ...
++        'DisplayName','Infeasible domain');
++    PF = Problem.PF;
++    if iscell(PF) && numel(PF) >= 3
++        surf(ax,PF{1},PF{2},PF{3},'EdgeColor','none', ...
++            'FaceColor',[0.82 0.92 0.82],'FaceAlpha',0.72, ...
++            'DisplayName','Feasible domain');
++    elseif isnumeric(PF) && size(PF,2) >= 2
++        plot(ax,PF(:,1),PF(:,2),'-','Color',[0.20 0.55 0.20], ...
++            'LineWidth',1.5,'DisplayName','Feasible domain');
+     else
+-        scatter(ax,nan,nan,28,'o','MarkerFaceColor',[0.48 0.73 0.45], ...
+-            'MarkerEdgeColor','none','DisplayName','Feasible samples');
++        plot(ax,nan,nan,'s','MarkerSize',10, ...
++            'MarkerFaceColor',[0.82 0.92 0.82], ...
++            'MarkerEdgeColor','none','DisplayName','Feasible domain');
+     end
+ end
+ 
+@@ -722,17 +774,17 @@ function plotRegionGenerated(ax,GeneratedObj)
+     Obj = twoColumnObj(GeneratedObj);
+     if isempty(Obj)
+         scatter(ax,nan,nan,50,'o','MarkerFaceColor',[0.88 0.16 0.18], ...
+-            'MarkerEdgeColor','k','DisplayName','CGAN generated');
++            'MarkerEdgeColor','none','DisplayName','GAN generated');
+         return;
+     end
+     scatter(ax,Obj(:,1),Obj(:,2),54,'o', ...
+         'MarkerFaceColor',[0.88 0.16 0.18], ...
+-        'MarkerEdgeColor','k','LineWidth',0.5, ...
+-        'MarkerFaceAlpha',0.86,'DisplayName','CGAN generated');
++        'MarkerEdgeColor','none','LineWidth',0.5, ...
++        'MarkerFaceAlpha',0.78,'DisplayName','GAN generated');
+ end
+ 
+ function [xLimits,yLimits] = regionObjectivePlotLimits(Problem,S)
+-    Obj = [twoColumnObj(S.sample_objs);twoColumnObj(S.train_objs); ...
++    Obj = [regionDomainPFPoints(Problem);twoColumnObj(S.train_objs); ...
+         twoColumnObj(S.generated_objs)];
+     if isempty(Obj)
+         PF = Problem.PF;
+@@ -748,12 +800,24 @@ function plotRegionGenerated(ax,GeneratedObj)
+     end
+     xLimits = [min(Obj(:,1)),max(Obj(:,1))];
+     yLimits = [min(Obj(:,2)),max(Obj(:,2))];
+-    xPad = max(0.05,0.06*max(diff(xLimits),eps));
+-    yPad = max(0.05,0.06*max(diff(yLimits),eps));
++    xPad = max(0.05,0.04*max(diff(xLimits),eps));
++    yPad = max(0.05,0.04*max(diff(yLimits),eps));
+     xLimits = xLimits + [-xPad xPad];
+     yLimits = yLimits + [-yPad yPad];
+ end
+ 
++function Obj = regionDomainPFPoints(Problem)
++    PF = Problem.PF;
++    if iscell(PF) && numel(PF) >= 2
++        Obj = [PF{1}(:),PF{2}(:)];
++    elseif isnumeric(PF) && size(PF,2) >= 2
++        Obj = PF(:,1:2);
++    else
++        Obj = zeros(0,2);
++    end
++    Obj = Obj(all(isfinite(Obj),2),:);
++end
++
+ function Obj = twoColumnObj(Obj)
+     if isempty(Obj) || size(Obj,2) < 2
+         Obj = zeros(0,2);

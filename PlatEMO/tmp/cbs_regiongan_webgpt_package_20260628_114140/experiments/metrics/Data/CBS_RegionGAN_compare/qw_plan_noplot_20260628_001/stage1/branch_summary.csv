@@ -1,0 +1,5 @@
+branch,status,out_dir,query_mode,gan_iter,n_critic,run_count,ok_run_count,stage_snapshot_count,figure_count,error_message
+baseline_random_iter50,ok,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_RegionGAN_compare/qw_plan_noplot_20260628_001/stage1/baseline_random_iter50,random_all_w,50,5,18,18,30,0,
+query_boundary_iter50,ok,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_RegionGAN_compare/qw_plan_noplot_20260628_001/stage1/query_boundary_iter50,boundary_populated,50,5,18,18,30,0,
+random_iter100,ok,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_RegionGAN_compare/qw_plan_noplot_20260628_001/stage1/random_iter100,random_all_w,100,5,18,18,30,0,
+query_boundary_iter100,ok,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_RegionGAN_compare/qw_plan_noplot_20260628_001/stage1/query_boundary_iter100,boundary_populated,100,5,18,18,30,0,

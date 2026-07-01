@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2300" height="520" viewBox="0 0 2300 520">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#d8d8d8"/>
+    </marker>
+    <style>
+      .bg { fill: #171717; }
+      .node { fill: #333333; stroke: #666666; stroke-width: 2.4; rx: 8; ry: 8; }
+      .diamond { fill: #333333; stroke: #666666; stroke-width: 2.4; }
+      .line { fill: none; stroke: #d8d8d8; stroke-width: 2.6; }
+      .arrowhead { fill: #d8d8d8; }
+      .title { fill: #ffffff; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; font-size: 34px; font-weight: 600; text-anchor: middle; }
+      .main { fill: #ffffff; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; font-size: 28px; font-weight: 600; text-anchor: middle; }
+      .sub { fill: #ffffff; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; font-size: 21px; text-anchor: middle; }
+      .edge-label { fill: #d8d8d8; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; font-size: 22px; text-anchor: middle; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="2300" height="520"/>
+  <text class="title" x="1150" y="48">CBS_RegionWGAN_GP 核心流程</text>
+
+  <!-- Nodes -->
+  <rect class="node" x="55" y="120" width="235" height="120"/>
+  <text class="main" x="172.5" y="165">初始化</text>
+  <text class="sub" x="172.5" y="204">W + 双种群 P1/P2</text>
+
+  <rect class="node" x="350" y="120" width="240" height="120"/>
+  <text class="main" x="470" y="165">常规进化</text>
+  <text class="sub" x="470" y="204">选择 + DE 子代</text>
+
+  <rect class="node" x="650" y="120" width="285" height="120"/>
+  <text class="main" x="792.5" y="165">边界云 BMem</text>
+  <text class="sub" x="792.5" y="204">可行锚点 + 邻近不可行点</text>
+
+  <rect class="node" x="995" y="120" width="340" height="120"/>
+  <text class="main" x="1165" y="162">区域条件 WGAN-GP</text>
+  <text class="sub" x="1165" y="202">G(z, W_ref) -&gt; 边界候选解</text>
+
+  <rect class="node" x="1395" y="120" width="310" height="120"/>
+  <text class="main" x="1550" y="162">区域生成</text>
+  <text class="sub" x="1550" y="202">random_all_w 覆盖参考方向</text>
+
+  <rect class="node" x="1765" y="120" width="285" height="120"/>
+  <text class="main" x="1907.5" y="162">合并与选择</text>
+  <text class="sub" x="1907.5" y="202">更新 P1/P2</text>
+
+  <polygon class="diamond" points="2160,100 2240,180 2160,260 2080,180"/>
+  <text class="main" x="2160" y="172">maxFE?</text>
+
+  <rect class="node" x="2065" y="350" width="190" height="90"/>
+  <text class="main" x="2160" y="405">输出解集</text>
+
+  <!-- Forward arrows -->
+  <path class="line" d="M 290 180 L 322 180"/>
+  <polygon class="arrowhead" points="340,180 322,170 322,190"/>
+  <path class="line" d="M 590 180 L 622 180"/>
+  <polygon class="arrowhead" points="640,180 622,170 622,190"/>
+  <path class="line" d="M 935 180 L 967 180"/>
+  <polygon class="arrowhead" points="985,180 967,170 967,190"/>
+  <path class="line" d="M 1335 180 L 1367 180"/>
+  <polygon class="arrowhead" points="1385,180 1367,170 1367,190"/>
+  <path class="line" d="M 1705 180 L 1737 180"/>
+  <polygon class="arrowhead" points="1755,180 1737,170 1737,190"/>
+  <path class="line" d="M 2050 180 L 2062 180"/>
+  <polygon class="arrowhead" points="2080,180 2062,170 2062,190"/>
+
+  <!-- Yes branch -->
+  <path class="line" d="M 2160 260 L 2160 322"/>
+  <polygon class="arrowhead" points="2160,340 2150,322 2170,322"/>
+  <text class="edge-label" x="2192" y="310">是</text>
+
+  <!-- No loop back -->
+  <path class="line" d="M 2125 250 C 2030 315 1800 300 1620 300 L 470 300 L 470 265"/>
+  <polygon class="arrowhead" points="470,245 458,265 482,265"/>
+  <text class="edge-label" x="2078" y="295">否</text>
+</svg>

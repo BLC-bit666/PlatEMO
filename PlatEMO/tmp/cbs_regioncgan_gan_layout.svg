@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1700" height="650" viewBox="0 0 1700 650">
+  <defs>
+    <style>
+      .bg { fill: #ffffff; }
+      .frame { fill: #ffffff; stroke: #111111; stroke-width: 3; }
+      .box { fill: #ffffff; stroke: #333333; stroke-width: 2.5; rx: 14; ry: 14; }
+      .gate { fill: #e9e9e9; stroke: #333333; stroke-width: 2.5; }
+      .net { fill: #8f8f8f; stroke: #111111; stroke-width: 3; }
+      .wire { stroke: #111111; stroke-width: 3; fill: none; }
+      .dash { stroke: #333333; stroke-width: 2.2; fill: none; stroke-dasharray: 7 7; }
+      .arrow { fill: #111111; }
+      .title { fill: #111111; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; font-size: 32px; font-weight: 700; text-anchor: middle; }
+      .math { fill: #111111; font-family: Georgia, "Times New Roman", serif; font-size: 38px; font-style: italic; text-anchor: middle; }
+      .h { fill: #111111; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; font-size: 28px; font-weight: 700; text-anchor: middle; }
+      .t { fill: #111111; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; font-size: 21px; text-anchor: middle; }
+      .small { fill: #111111; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; font-size: 18px; text-anchor: middle; }
+      .netText { fill: #000000; font-family: "Times New Roman", serif; font-size: 28px; font-weight: 700; text-anchor: middle; dominant-baseline: middle; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1700" height="650"/>
+  <rect class="frame" x="35" y="45" width="1630" height="560"/>
+  <text class="title" x="850" y="95">Region-CGAN 组织结构</text>
+
+  <!-- Noise and condition input -->
+  <rect class="box" x="75" y="255" width="230" height="140"/>
+  <text class="math" x="190" y="310">z ~ p_z</text>
+  <text class="t" x="190" y="348">随机噪声</text>
+  <text class="small" x="190" y="376">+ 区域条件 W_ref</text>
+
+  <!-- Generator net -->
+  <polygon class="net" points="395,235 545,275 545,375 395,415"/>
+  <text class="netText" x="465" y="325">G</text>
+  <text class="small" x="470" y="445">32 - 32</text>
+
+  <!-- Generated data -->
+  <rect class="box" x="625" y="255" width="250" height="140"/>
+  <text class="math" x="750" y="312">G(z,W_ref)</text>
+  <text class="t" x="750" y="350">生成边界候选解</text>
+  <text class="small" x="750" y="378">x_fake</text>
+
+  <!-- Real data -->
+  <rect class="box" x="625" y="115" width="250" height="120"/>
+  <text class="math" x="750" y="165">x_b ~ BMem</text>
+  <text class="t" x="750" y="205">真实边界解</text>
+
+  <!-- OR gate -->
+  <circle class="gate" cx="1010" cy="270" r="42"/>
+  <text class="h" x="1010" y="279">or</text>
+
+  <!-- Discriminator net -->
+  <polygon class="net" points="1135,200 1305,230 1305,370 1135,400"/>
+  <text class="netText" x="1218" y="305">D</text>
+  <text class="small" x="1220" y="430">32 - 32</text>
+  <text class="small" x="1220" y="455">输入附加 W_ref</text>
+
+  <!-- Output -->
+  <rect class="box" x="1430" y="245" width="165" height="95"/>
+  <text class="h" x="1512.5" y="287">真 / 假</text>
+  <text class="small" x="1512.5" y="320">score</text>
+
+  <!-- Arrows -->
+  <path class="wire" d="M 305 325 L 372 325"/>
+  <polygon class="arrow" points="395,325 372,312 372,338"/>
+
+  <path class="wire" d="M 545 325 L 602 325"/>
+  <polygon class="arrow" points="625,325 602,312 602,338"/>
+
+  <path class="wire" d="M 875 325 L 964 292"/>
+  <polygon class="arrow" points="986,284 961,280 970,304"/>
+
+  <path class="wire" d="M 875 175 L 965 247"/>
+  <polygon class="arrow" points="984,262 959,257 974,238"/>
+
+  <path class="wire" d="M 1052 270 L 1112 293"/>
+  <polygon class="arrow" points="1135,302 1109,280 1102,306"/>
+
+  <path class="wire" d="M 1305 305 L 1407 292"/>
+  <polygon class="arrow" points="1430,289 1405,279 1409,305"/>
+
+  <!-- Condition annotation to D -->
+  <path class="dash" d="M 190 395 C 260 520 1060 520 1170 430"/>
+  <polygon class="arrow" points="1185,416 1176,440 1161,421"/>
+  <text class="small" x="760" y="535">W_ref 作为条件同时输入 G 和 D</text>
+</svg>

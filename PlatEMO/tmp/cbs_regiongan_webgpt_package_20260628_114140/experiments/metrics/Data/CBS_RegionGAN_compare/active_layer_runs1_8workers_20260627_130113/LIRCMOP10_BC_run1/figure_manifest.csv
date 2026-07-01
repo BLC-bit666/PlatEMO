@@ -1,0 +1,6 @@
+problem,run,target_FE,actual_FE,generation,figure_file
+LIRCMOP10_BC,1,10000,10000,49,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_RegionGAN_compare/active_layer_runs1_8workers_20260627_130113/LIRCMOP10_BC_run1/figures/LIRCMOP10_BC_run1_FE010000_region_boundary.png
+LIRCMOP10_BC,1,30000,30000,149,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_RegionGAN_compare/active_layer_runs1_8workers_20260627_130113/LIRCMOP10_BC_run1/figures/LIRCMOP10_BC_run1_FE030000_region_boundary.png
+LIRCMOP10_BC,1,50000,50000,249,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_RegionGAN_compare/active_layer_runs1_8workers_20260627_130113/LIRCMOP10_BC_run1/figures/LIRCMOP10_BC_run1_FE050000_region_boundary.png
+LIRCMOP10_BC,1,70000,70000,349,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_RegionGAN_compare/active_layer_runs1_8workers_20260627_130113/LIRCMOP10_BC_run1/figures/LIRCMOP10_BC_run1_FE070000_region_boundary.png
+LIRCMOP10_BC,1,100000,100030,499,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_RegionGAN_compare/active_layer_runs1_8workers_20260627_130113/LIRCMOP10_BC_run1/figures/LIRCMOP10_BC_run1_FE100000_region_boundary.png

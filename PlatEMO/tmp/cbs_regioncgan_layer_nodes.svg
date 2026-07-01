@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1700" height="920" viewBox="0 0 1700 920">
+  <defs>
+    <style>
+      .bg { fill: #ffffff; }
+      .panel { fill: #ffffff; stroke: #d9e2ff; stroke-width: 2; rx: 14; ry: 14; }
+      .layer { fill: #ffffff; stroke: #2f5cff; stroke-width: 3; rx: 18; ry: 18; }
+      .neuron { fill: #0f62d8; }
+      .line { stroke: #1f1f1f; stroke-width: 2.2; fill: none; }
+      .thin { stroke: #5a5a5a; stroke-width: 1.5; fill: none; opacity: 0.55; }
+      .title { fill: #111111; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; font-size: 36px; font-weight: 700; text-anchor: middle; }
+      .section { fill: #111111; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; font-size: 29px; font-weight: 700; text-anchor: start; }
+      .label { fill: #111111; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; font-size: 22px; font-weight: 600; text-anchor: middle; }
+      .small { fill: #333333; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; font-size: 18px; text-anchor: middle; }
+      .dots { fill: #111111; font-family: Arial, sans-serif; font-size: 30px; font-weight: 700; text-anchor: middle; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1700" height="920"/>
+  <text class="title" x="850" y="54">Region-CGAN 网络结构</text>
+
+  <!-- Generator panel -->
+  <rect class="panel" x="55" y="95" width="1590" height="365"/>
+  <text class="section" x="95" y="142">Generator G：G(z, W_ref) -> RawDec</text>
+
+  <!-- Generator layers -->
+  <rect class="layer" x="120" y="185" width="96" height="190"/>
+  <circle class="neuron" cx="168" cy="220" r="13"/>
+  <circle class="neuron" cx="168" cy="260" r="13"/>
+  <text class="dots" x="168" y="309">⋮</text>
+  <circle class="neuron" cx="168" cy="345" r="13"/>
+  <text class="label" x="168" y="410">输入层</text>
+  <text class="small" x="168" y="435">z + W_ref</text>
+
+  <rect class="layer" x="500" y="185" width="96" height="190"/>
+  <circle class="neuron" cx="548" cy="220" r="13"/>
+  <circle class="neuron" cx="548" cy="260" r="13"/>
+  <text class="dots" x="548" y="309">⋮</text>
+  <circle class="neuron" cx="548" cy="345" r="13"/>
+  <text class="label" x="548" y="410">隐藏层 1</text>
+  <text class="small" x="548" y="435">32 neurons</text>
+
+  <rect class="layer" x="880" y="185" width="96" height="190"/>
+  <circle class="neuron" cx="928" cy="220" r="13"/>
+  <circle class="neuron" cx="928" cy="260" r="13"/>
+  <text class="dots" x="928" y="309">⋮</text>
+  <circle class="neuron" cx="928" cy="345" r="13"/>
+  <text class="label" x="928" y="410">隐藏层 2</text>
+  <text class="small" x="928" y="435">32 neurons</text>
+
+  <rect class="layer" x="1260" y="185" width="96" height="190"/>
+  <circle class="neuron" cx="1308" cy="220" r="13"/>
+  <circle class="neuron" cx="1308" cy="260" r="13"/>
+  <text class="dots" x="1308" y="309">⋮</text>
+  <circle class="neuron" cx="1308" cy="345" r="13"/>
+  <text class="label" x="1308" y="410">输出层</text>
+  <text class="small" x="1308" y="435">RawDec / x</text>
+
+  <!-- Generator connections -->
+  <path class="line" d="M 216 280 L 500 280"/>
+  <path class="line" d="M 596 280 L 880 280"/>
+  <path class="line" d="M 976 280 L 1260 280"/>
+  <path class="thin" d="M 181 220 C 300 185 405 185 535 220"/>
+  <path class="thin" d="M 181 345 C 300 375 405 375 535 345"/>
+  <path class="thin" d="M 561 220 C 680 185 785 185 915 220"/>
+  <path class="thin" d="M 561 345 C 680 375 785 375 915 345"/>
+  <path class="thin" d="M 941 220 C 1060 185 1165 185 1295 220"/>
+  <path class="thin" d="M 941 345 C 1060 375 1165 375 1295 345"/>
+
+  <!-- Discriminator panel -->
+  <rect class="panel" x="55" y="505" width="1590" height="350"/>
+  <text class="section" x="95" y="552">Discriminator D：D(x, W_ref) -> score</text>
+
+  <!-- Discriminator layers -->
+  <rect class="layer" x="120" y="595" width="96" height="165"/>
+  <circle class="neuron" cx="168" cy="625" r="13"/>
+  <circle class="neuron" cx="168" cy="663" r="13"/>
+  <text class="dots" x="168" y="708">⋮</text>
+  <circle class="neuron" cx="168" cy="735" r="13"/>
+  <text class="label" x="168" y="795">输入层</text>
+  <text class="small" x="168" y="820">x + W_ref</text>
+
+  <rect class="layer" x="500" y="595" width="96" height="165"/>
+  <circle class="neuron" cx="548" cy="625" r="13"/>
+  <circle class="neuron" cx="548" cy="663" r="13"/>
+  <text class="dots" x="548" y="708">⋮</text>
+  <circle class="neuron" cx="548" cy="735" r="13"/>
+  <text class="label" x="548" y="795">隐藏层 1</text>
+  <text class="small" x="548" y="820">32 neurons</text>
+
+  <rect class="layer" x="880" y="595" width="96" height="165"/>
+  <circle class="neuron" cx="928" cy="625" r="13"/>
+  <circle class="neuron" cx="928" cy="663" r="13"/>
+  <text class="dots" x="928" y="708">⋮</text>
+  <circle class="neuron" cx="928" cy="735" r="13"/>
+  <text class="label" x="928" y="795">隐藏层 2</text>
+  <text class="small" x="928" y="820">32 neurons</text>
+
+  <rect class="layer" x="1260" y="595" width="96" height="165"/>
+  <circle class="neuron" cx="1308" cy="625" r="13"/>
+  <text class="dots" x="1308" y="686">⋮</text>
+  <circle class="neuron" cx="1308" cy="735" r="13"/>
+  <text class="label" x="1308" y="795">输出层</text>
+  <text class="small" x="1308" y="820">score</text>
+
+  <!-- Discriminator connections -->
+  <path class="line" d="M 216 678 L 500 678"/>
+  <path class="line" d="M 596 678 L 880 678"/>
+  <path class="line" d="M 976 678 L 1260 678"/>
+  <path class="thin" d="M 181 625 C 300 595 405 595 535 625"/>
+  <path class="thin" d="M 181 735 C 300 760 405 760 535 735"/>
+  <path class="thin" d="M 561 625 C 680 595 785 595 915 625"/>
+  <path class="thin" d="M 561 735 C 680 760 785 760 915 735"/>
+  <path class="thin" d="M 941 625 C 1060 595 1165 595 1295 625"/>
+  <path class="thin" d="M 941 735 C 1060 760 1165 760 1295 735"/>
+</svg>

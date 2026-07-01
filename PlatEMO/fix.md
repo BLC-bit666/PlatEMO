@@ -1,352 +1,237 @@
-下面按你要求，把内容严格分成三类：
-
-- `[事实]`：能被 zip 内源码、CSV、PNG、README 直接确认。
-- `[推断]`：我基于这些事实做出的解释。
-- `[待验证]`：还需要补实验才能定论。
-
-## 1. 附件中可直接确认的事实
-
-- `[事实]` 我核查了 `notes/selected_images.txt:1-43` 列出的全部 43 张 PNG；其中包含 20 张最新 `visual_z_diagnostic` 图、15 张最新标准图、2 张 K3/K5 contact sheet、6 张旧主线参考图。`README.md:19-20,47-50`
-- `[事实]` `README.md` 把 `source/fix.md` 定义为“Original repair proposal that guided the current CBS-CGAN implementation”，即历史修补提案，不是当前源码规范。`README.md:11-12`
-- `[事实]` `README.md` 自身还带有一段 `Key Local Conclusion To Re-check`。这只是 bundle 作者的说明文字，不是独立实验结果。`README.md:26-35`
-- `[事实]` 最新重点视觉实验比较的是 `B_ref_y_tau` 和 `C_ref_y`，并且问题集正是 `DASCMOP1/2/4/5` 与 `LIRCMOP5/6/7/8/9/10`。`README.md:13-16`，`source/new_CBS_CGAN/Support/run_CBS_CGAN_query_condition_ablation.m:138-149`
-- `[事实]` `visual_z_diagnostic` 一共 6 个 panel，顺序固定为：`QueryC random z`、`QueryC z=0`、`QueryC fixed z`、`TrainC z=0`、`TrainC fixed z`、`Targets only`。`source/new_CBS_CGAN/Support/run_CBS_CGAN_boundary_quality_experiments.m:612-632`
-- `[事实]` 图例颜色在代码里固定：训练集是橙色方块，Query target 是蓝色菱形，CGAN generated 是红色圆点。`source/new_CBS_CGAN/Support/run_CBS_CGAN_boundary_quality_experiments.m:704-742`
-- `[事实]` 当前源码已经不是旧的“direction-only / ref-only / no pair-margin / no reconstruction”版本。
-  1. `UpdateBoundaryMemory_CBS.m` 顶部注释已明确写成 `Build pair-supported thin boundary memory`，且上一轮回灌的是 `x_f/y_f` 与 `x_i/y_i`，只接受 finite-gap 的旧 pair。`source/new_CBS_CGAN/UpdateBoundaryMemory_CBS.m:1-3,64-88`
-  2. `BuildBoundaryDataset_CBS.m` 现在显式构造 `QueryY`、`QueryMeta`，并支持 `ref_tau`、`ref_y_tau`、`ref_y` 三种条件模式。`source/new_CBS_CGAN/BuildBoundaryDataset_CBS.m:26-56,76-82,123-165`
-  3. `BoundaryCGAN_CBS.m` 当前 generator loss 已包含 adversarial、Huber reconstruction、pair margin。`source/new_CBS_CGAN/BoundaryCGAN_CBS.m:238-255,272-286`
-- `[事实]` 当前 `BMem` 的边界 pair 是这样采的：
-  先在当前 feasible 中只保留第一前沿，按 ref 找 feasible 端，再从邻域 ref 找 infeasible 端；若 feasible 端支配 infeasible 端，则跳过；对保留 pair，再从当前 feasible 样本中挑与该 `y_f-y_i` 目标段最近的 `x_b/y_b`，并记录 `tau`。`source/new_CBS_CGAN/UpdateBoundaryMemory_CBS.m:100-159,162-183`
-- `[事实]` 当前 `TrainC` 和 `QueryC` 已经走同一套条件构造函数 `referenceConditionsFromRefsTau`；`ref_y_tau` 和 `ref_y` 都把 `Y` 归一化后拼进条件。`source/new_CBS_CGAN/BuildBoundaryDataset_CBS.m:33-36,54-56,61-116`
-- `[事实]` 当前 query 不是盲目乱造，而是两类：`missing_ref` 和 `large_gap`。`buildExternalQueries` 会在边界相邻段之间插值构造 `QueryY`，同时保留 `source_interval/source_type/tau`。`source/new_CBS_CGAN/BuildBoundaryDataset_CBS.m:167-208`
-- `[事实]` `TrainC z=0` / `TrainC fixed z` 这两个 panel 不是“训练集重画”，而是把 `TrainC` 真正喂给生成器，再用 `Problem.CalObj` 投影到目标空间画出来。`source/new_CBS_CGAN/CBS_CGAN.m:520-561`
-- `[事实]` `QueryC z=0` / `QueryC fixed z` / `QueryC random z` 也都是同一个生成器，只是 latent `z` 被强制成全零、固定行、或随机行。`source/new_CBS_CGAN/CBS_CGAN.m:526-549`
-- `[事实]` GAN 训练时没有把 `Problem.CalObj` 或 `Problem.Evaluation` 放进训练图里。训练时只用到了 `TrainX`、`TrainC`、`trainXf/trainXi` 与上下界；真正的 `Problem.Evaluation` 发生在采样之后。`source/new_CBS_CGAN/BoundaryCGAN_CBS.m:29-95,238-255`，`source/new_CBS_CGAN/CBS_CGAN.m:188-223`
-- `[事实]` 当前算法已经记录了你关心的几类指标：`boundary_dist50/90`、`query_obj_dist50/90`、`segment_width90`、`segment_width90_ratio`、`side_rate`、`pair_margin50`、`ref_cover`。`source/new_CBS_CGAN/CBS_CGAN.m:194-232`
-- `[事实]` 旧主线 `CCMO_GAN_BDG` 的默认设置仍是：`archivePairDirectionMode="af_not_dominates_ai"`、`archivePairRefMode="neighbor4"`、`conditionMode="yt_dt_t_ref"`、`targetMode="near_segment_feasible"`、`decisionInterpCount=5`、`trainFilterMode="condition_knn"`。`source/old_CCMO_GAN_BDG/CCMO_GAN_BDG.m:1177-1211`
-- `[事实]` 旧主线 archive 的核心确实更强调 AF/AI 配对过滤：先 Pareto 过滤，再做 `af_not_dominates_ai` 方向过滤，再做 `neighbor4` ref 邻域过滤，再按分数每个 ref 留少量 pair。`source/old_CCMO_GAN_BDG/UpdateBoundaryArchive_BDG.m:473-575,697-733`
-- `[事实]` 旧主线 target 构造默认就是 `near_segment_feasible`，并且允许 `decisionInterpCount=5` 的扩带式 target；后面还可以做 condition-kNN 的决策空间散度筛除。`source/old_CCMO_GAN_BDG/BuildBoundaryTargetTriples_BDG.m:64-99`，`source/old_CCMO_GAN_BDG/BoundaryConditionKNNKeepMask_BDG.m:1-31`
+### D. 解决路线
 
-## 2. 逐图观察摘要
+先修正一条我上一版里不够准确的建议：
 
-图像记号约定：
+我**不再建议**把 `UpdateBoundaryMemory_RC.m` 的 per-ref 保留直接改成“纯按 gap 选”。
+更合理的是：
 
-- `B诊断图`：`results/latest_visual_z/images/B_ref_y_tau/<problem>_run1/figures/..._visual_z_diagnostic.png`
-- `C诊断图`：`results/latest_visual_z/images/C_ref_y/<problem>_run1/figures/..._visual_z_diagnostic.png`
-- `标准图`：同目录下 `...targetFE100000.png`
+**先把同一 `c` 下的训练云压成单一局部边界带，再在这个局部带内用 PF 更好的可行 anchor 做种子保留邻域。**
 
-### DASCMOP1
+原因是当前代码里，`UpdateBoundaryMemory_RC.m` 同时做了这几件事：
+`frontDepth=2` 的 feasible front 保留、`maxAnchorsPerRef` 截断、`prev1_fair_union` 并入上一代 feasible anchors、以及“每个 anchor 自身都作为 cloud member 保留”。这会让**同一 ref 下出现多段/多层 boundary cloud 混合**。在这种混合状态下：
 
-- `[事实]` `Targets only` 中，蓝色 Query target 基本沿着橙色训练边界分布，几何上看是合理的。
-- `[事实]` B 与 C 的 `QueryC random z / z=0 / fixed z` 都没有贴到蓝点链上；红点形成明显脱离目标区域的弧线/蛇形支路。
-- `[事实]` 更关键的是，B 与 C 的 `TrainC z=0` 和 `TrainC fixed z` 也都不能重现橙色训练边界；红点仍落在另一条弯曲支路上。
-- `[推断]` 这不是单纯的 query 外推失败，因为连训练条件下都没能回到训练边界。
+- **PF 更好**，不等于它一定来自“当前想学的那一条边界带”；
+- **gap 更小**，也不等于它一定比 PF 更好地代表“当前边界”；
+- 真正先要修的是：**同一 coarse condition `c` 下，训练分布是否尽量单值、单带、局部连续。**
 
-### DASCMOP2
+所以我现在更倾向于：
+**不是“PF vs gap 二选一”，而是“先单带化，再在单带内用 PF 做种子，gap 只做 proximity gate”。**
 
-- `[事实]` `Targets only` 仍然合理，蓝点与橙点关系清楚。
-- `[事实]` B 的 Query 面板红点分成多个脱离目标的簇；C 略接近一些，但仍有明显偏离。
-- `[事实]` B 和 C 的 `TrainC z=0 / fixed z` 都出现明显的三角形/回环状红点结构，不是橙色训练边界的重现。
-- `[推断]` 条件里加入 `y` 有帮助，但没有解决“训练条件下仍失真”的根问题。
+| 改什么                                                       | 为什么改                                                     | 对应证据                                                     | 预期视觉变化                                                 | 预期 CSV 指标变化                                            | 最小实验 |
+| ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ | -------- |
+| **主线 1：把 BMem 改成“PF-seeded local band”，而不是当前的 mixed cloud** | 当前最根本的问题不是 GAN 目标本身，而是同一 `c` 下训练云混了多段边界。`BuildBoundaryDataset_RC.m` 直接把 `BMem.x_b` 全送进 `TrainX`，而 `TrainC` 只保留 `W(ref,:)`，所以只要同一 ref 内混了多段，`c` 就天然不够分辨。这里先不加新 condition，而是先把同一 ref 的训练云压成一条局部带。 | 代码：`UpdateBoundaryMemory_RC.m` 里 `frontDepth=2`、`capFeasibleAnchorsPerRef` 用 `CalFitness_CBS` 截断、`prev1_fair_union` 并入旧 feasible anchors；`BuildBoundaryDataset_RC.m` 明确 `Condition = W(region,:) only`，并把所有 `BMem.x_b` 作为 `TrainX`。图片：`experiments/selected_images/mainline_prev_anchor_repair/mainline_prev_anchor_repair_LIRCMOP5_BC_FE050000.png`、`...LIRCMOP7_BC_FE050000.png`、`...LIRCMOP8_BC_FE050000.png` 都能看到橙色训练点不是单一窄带。 | 橙色训练点会先从“多段/多层云”变成“每个 ref 一条更短、更连续的局部带”；红点会跟着减少远离橙带的竖散点和跨层点。 | `train_count` 可能小幅下降；但 `gap_ratio50`、`gap_ratio90` 应下降，`near_boundary_rate_gap1` 应上升；`generated_problems` 不应明显下降。 | 实验 1   |
+| **主线 2：把 query 从“all W 随机”改成“有支撑的邻接 continuation”，不是退回纯 populated-only** | 你的创新点需要“由部分边界解继续生成尚未探索但仍属当前边界的解”。这意味着 query 不能回退成纯 replay。当前两个极端都不理想：`random_all_w` 太粗，`boundary_populated` 太保守。更合理的是：**以已支撑 ref 为中心，向一跳相邻 ref 做局部外推**。这样既保留“生成未探索边界”的能力，又避免全局无支撑喷散。 | `analysis_branch_summary.csv`：`query_boundary_populated` 相比 baseline 有明显更好的贴边（`near_gap1_mean 0.474 > 0.265`，`gap50_median 1.024 < 2.761`，`gap90_median 6.866 < 18.985`），但 coverage 没明显扩大；`random_iter100` 最终生成问题数 6，高于 `query_boundary_iter100` 的 4，但本地贴边更差。`analysis_final_fe_by_problem.csv` 里，在共同生成的问题上，`query_boundary_iter100` 对 `LIRCMOP7/8/9` 的 `near_gap1/gap50` 多数优于 `random_iter100`，说明 query 更贴边，但过于保守。另有事件统计显示 `query_boundary_populated` 的平均 `query_count≈22`，而 `random_all_w` 为 50；配合 `train_mean≈90`，前者每个 query 区域平均大约只有 4 行训练，后者摊到所有 ref 只有约 1.8 行/区，支撑太薄。 | 红点不应再在完全空白的 ref 上到处喷散；而应主要沿已有橙带的邻接方向延伸，形成“边界 continuation”，尤其在 `LIRCMOP7/8` 上应比 `random_all_w` 更像沿曲线外推。 | 相比 `query_boundary_populated`，`generated_problems` 应回升；相比 `random_iter100`，`gap50/gap90` 应更低、`near_gap1` 不下降。`query_unique_ref_count` 应介于 populated-only 和 all-W 之间。 | 实验 2   |
+| **主线 3：在主线 1+2 固定后，只做小幅训练步数定标，优先测 75，不先动 z 和网络容量** | 当前证据不支持先改大网络，也不支持先把 z 当主因。对 30 维问题，当前 WGAN 结构其实很小：`cDim=2`、`zDim=6`、hidden `[32 32]` 时，生成器约 **2334** 个参数，critic 约 **2145** 个参数，总共约 **4479**。结合包内 `train_mean≈80~90`、`miniBatch=32`，`ganIter=50/75/100` 对生成器大致对应 **18/27/36** 次“有效样本遍历”，critic 还是它的 5 倍量级。也就是说，当前训练轮次更像**次因**，不是首因。 | 代码：`BoundaryWGAN_RC.m` 显示 `zDim=6`、`miniBatch=32`、`nCritic=5`、hidden `[32 32]`；`BoundaryCGAN_CBS.m` 的 BCE 版本也是同级小网络。CSV：`query_boundary_iter75` 的 `gap90_median=4.759` 已明显优于 baseline/random100；`query_boundary_iter150` 只有很小收益甚至 `gap90_median=4.950` 还略差，但 `runtime_mean_min` 从约 21.5 增到约 42.3。`refcap5_min32_CGAN_vs_WGAN` 上，WGAN 最终 `gap50≈1.782`、`gap90≈8.268`、`near_gap1≈0.533`，明显优于 CGAN 的 `2.976/12.796/0.258`。 | 50→75 应表现为同一条红色边界带更密、更稳；75→100 如果还有提升，更多应体现在尾部离群点再减少，而不是边界形状换掉。 | 预期 `75` 相比 `50` 会降 `gap90`；`100` 相比 `75` 只会有小幅收益。若 `100` 才能显著改善，则说明训练步数仍是次级瓶颈；若 `75≈100`，则说明该阶段已接近饱和。 | 实验 3   |
 
-### DASCMOP4
+补充两点，我现在明确不把它们放进主线：
 
-- `[事实]` B 与 C 的 `Targets only` 都是短而合理的橙蓝边界链。
-- `[事实]` B 的三张 QueryC 面板都出现一条远离目标区的上升红线；C 也一样，只是尺度略小。`z=0` 和 `fixed z` 都没有把这条线拉回目标边界。
-- `[事实]` B 与 C 的 `TrainC z=0 / fixed z` 同样是一条脱离训练集的上升红线，而不是橙色训练边界。
-- `[事实]` `C_ref_y_stage_metrics_all.csv` 在 `DASCMOP4_BC, target_FE=100000` 上给出 `boundary_dist90=0.2177089`、`query_obj_dist90=0.2194150`、`feasible_rate=0.05`；B 同行是 `0.7648838 / 0.7673746 / 0`。`results/latest_visual_z/csv/C_ref_y_stage_metrics_all.csv:16`，`results/latest_visual_z/csv/B_ref_y_tau_stage_metrics_all.csv:16`
-- `[推断]` 数字上 C 比 B 好很多，但图上红线仍然明显脱靶；这正是“CSV 改善但视觉目标仍未达成”的反例。
+- **不把 z 当成主线旋钮。** 包内已有 `z_zero_sample`、`z_sigma_025`。它们影响很大，但高度问题依赖：例如 `z_zero_sample` 在某些问题上能收紧，但在 `LIRCMOP9_BC` 最终 `gap90` 仍极大；`z_sigma_025` 还会让 `LIRCMOP6_BC` 在 FE100000 时 `train_count=26 < minGANTrainCount=32`，直接无生成。
+- **不把网络扩容列为主线。** 当前网络总参数量并不大，且证据不足以说明它是首因；先动它，风险是把“数据几何问题”误判成“容量问题”。
 
-### DASCMOP5
+------
 
-- `[事实]` `Targets only` 里蓝点本身仍是合理的小范围边界链。
-- `[事实]` B 与 C 的三张 QueryC 面板都出现远离目标区、且量级明显异常的对角红线；C 比 B 更夸张。
-- `[事实]` `TrainC z=0 / fixed z` 也同样离得很远，说明不是 random z 单独造成的。
-- `[事实]` `C_ref_y_stage_metrics_all.csv` 在 `DASCMOP5_BC, target_FE=100000` 上 `train_count=114`、`query_count=20`、`feasible_rate=0`、`boundary_dist90=2.1891479`；B 同行是 `train_count=66`、`feasible_rate=0`、`boundary_dist90=1.4073620`。`results/latest_visual_z/csv/C_ref_y_stage_metrics_all.csv:21`，`results/latest_visual_z/csv/B_ref_y_tau_stage_metrics_all.csv:21`
-- `[推断]` 到 `FE100000` 时并不是“没有训练数据”，而是“有训练数据但生成仍整体跑飞”。
+### E. 最小实验计划
 
-### LIRCMOP5
+#### 实验 1：`bmem_single_band_pfseed`
 
-- `[事实]` B 与 C 的 `Targets only` 都合理。
-- `[事实]` `TrainC z=0 / fixed z` 在两种 condition 下都基本能贴着橙色训练边界。
-- `[事实]` `QueryC z=0 / fixed z` 也大体贴边；主要问题出在 `QueryC random z`，会出现小钩子或偏侧支路。
-- `[推断]` 这个问题更像“latent z 把已经学会的边界吹散”，而不是训练集/条件本身完全错误。
+**验证什么假设**
+主假设是：当前“生成不够贴边”的首因是 **BMem 在同一 ref 内混了多段/多层训练云**；只要把训练云压成单一局部带，哪怕 `c` 和 WGAN 都不变，红点也会明显变窄。
 
-### LIRCMOP6
+**改哪些源码文件**
+只改：
 
-- `[事实]` B 与 C 的 `TrainC z=0 / fixed z` 基本都能重现训练边界。
-- `[事实]` `QueryC z=0 / fixed z` 也贴近蓝色 target；但 `QueryC random z` 会产生上方额外分支，且 C 比 B 更明显。
-- `[推断]` 这里主问题也是 random z 的扩散，而不是 condition 本身不足。
+- `source/current_CBS_CGAN/Algorithms/Multi-objective optimization/CBS-CGAN/UpdateBoundaryMemory_RC.m`
 
-### LIRCMOP7
+具体改法我建议是：
 
-- `[事实]` B 与 C 的 `TrainC z=0 / fixed z` 几乎都能和橙色训练边界重合。
-- `[事实]` `QueryC z=0 / fixed z` 也基本贴蓝点；但 `QueryC random z` 会出现短弧/离群支路。
-- `[事实]` `C_ref_y_stage_metrics_all.csv` 在 `LIRCMOP7_BC, target_FE=100000` 上 `boundary_dist90=0.0189397`，但 `feasible_rate=0`。`results/latest_visual_z/csv/C_ref_y_stage_metrics_all.csv:36`
-- `[推断]` 这个问题说明“离边界近”不等于“落在正确且可行的一侧”。
+- 保留现有 pairing 与 `adaptiveGapCap`；
+- 但把每个 ref 的 feasible anchors 改成：
+  1. 先用当前 `CalFitness_CBS` 选出一个 **PF-seed anchor**；
+  2. 再按 objective-space 邻近性，只保留 seed 周围最近的若干 paired anchors；
+  3. `prev1_fair_union` 并入的旧 feasible anchors，只在“同 ref 且落在当前 local band 邻域”时保留。
+     这比“纯按 gap 排序”更稳，也更符合你对 PF 的理解。
 
-### LIRCMOP8
+**不改哪些东西**
 
-- `[事实]` B 与 C 的 `TrainC z=0 / fixed z` 都能很好地重现橙色训练边界。
-- `[事实]` `QueryC z=0 / fixed z` 也基本贴蓝点。
-- `[事实]` 但 `QueryC random z` 会产生最明显的远离点，尤其 B 版本最严重。
-- `[事实]` 在 `FE100000`，C 的 `boundary_dist90=0.0360476`，明显小于 B 的 `0.3422332`。`results/latest_visual_z/csv/C_ref_y_stage_metrics_all.csv:41`，`results/latest_visual_z/csv/B_ref_y_tau_stage_metrics_all.csv:41`
-- `[推断]` 这里 `ref_y` 明显比 `ref_y_tau` 更稳，但仍需要管住 random z。
+- 不改 `BuildBoundaryDataset_RC.m`
+- 不改 `RunRegionGAN_RC.m`
+- 不改 `BoundaryWGAN_RC.m`
+- 不改 `zDim=6`
+- 不改 `sampleZMode/trainZMode`
+- 不改 hidden `[32 32]`
+- 不改 `nGen=30`
+- 不改 `ganIter=50`
 
-### LIRCMOP9
+**运行规格**
 
-- `[事实]` B 与 C 的 `TrainC z=0 / fixed z` 都能重构训练边界。
-- `[事实]` `QueryC z=0 / fixed z` 大体贴近蓝点；`random z` 仍有小偏移钩子。
-- `[推断]` 这是“基本学到边界，但 production sampling 还不够收敛”的类型。
+- 问题：`LIRCMOP5_BC`–`LIRCMOP10_BC`
+- `runs=1:3`
+- `N=100`
+- `maxFE=100000`
+- stage 仍按主线已有快照设置
 
-### LIRCMOP10
+**观察哪些图片**
+重点看：
 
-- `[事实]` 这是当前 bundle 里最接近目标的一类图。B 与 C 的 `TrainC z=0 / fixed z` 和 `QueryC z=0 / fixed z` 都很贴边。
-- `[事实]` `QueryC random z` 仍有轻微漂移，但幅度远小于前面几类。
-- `[推断]` 当前方案在一部分 LIRCMOP 上已经具备“可学会边界”的能力，所以问题不是“CGAN 完全不能做这件事”，而是“在 harder DASCMOP 上闭环还断着”。
+- `LIRCMOP5_BC` FE50000 / FE100000
+- `LIRCMOP7_BC` FE50000 / FE100000
+- `LIRCMOP8_BC` FE50000 / FE100000
+- `LIRCMOP9_BC` FE100000
 
-### 旧主线 CCMO-GAN-BDG 对照
+**观察哪些 CSV 指标**
 
-- `[事实]` 我核查了 `results/old_CCMO_GAN_BDG/images/DASCMOP2_BC_run1_FE100000_domain_gan_train.png`、`DASCMOP4_BC_run1_FE100000_domain_gan_train.png`、`DASCMOP5_BC_run1_FE100000_domain_gan_train.png`、`LIRCMOP5_BC_run1_FE070000_domain_gan_train.png`、`...FE100000...png` 以及 `old_ccmo_contact_sheet.png`。
-- `[事实]` 旧主线在 `DASCMOP4/5` 上有明显长斜射线和厚带；在 `DASCMOP2`、`LIRCMOP5` 上也更像厚点云而不是窄边界。
-- `[推断]` 旧主线能提供某些“边界趋势”启发，但它本身也没有达到你要的“薄边界生成”。
+- `stage_snapshots_all.csv` 的
+  `train_count`, `raw_generated_count`, `feasible_rate`,
+  `gap_ratio50`, `gap_ratio90`, `near_boundary_rate_gap1`
+- `analysis_final_fe_by_problem.csv`
 
-## 3. 当前问题链条
+**什么结果支持假设**
 
-### 3.1 训练数据链条
+- 橙色训练点先明显从多层混合变成单一局部带；
+- 红点随之收缩；
+- `gap50/gap90` 下降，`near_gap1` 上升；
+- `generated_problems` 不比当前主线更差。
 
-- `[事实]` 当前 `UpdateBoundaryMemory_CBS.m` 已经是 pair-supported、thin-boundary 版本，不再是旧的“单侧 feasible 链 + inf gap 回填”逻辑。`source/new_CBS_CGAN/UpdateBoundaryMemory_CBS.m:3,64-88,100-183`
-- `[事实]` 当前 `BuildBoundaryDataset_CBS.m` 训练 target 直接取 `TrainX = BMem.x_b`，并把 `trainXf/trainXi/trainYf/trainYi/trainTau` 一起打包到 `Info`。`source/new_CBS_CGAN/BuildBoundaryDataset_CBS.m:28-49`
-- `[推断]` 所以，**训练集构造不是现在最先坏掉的环节**。它已经比旧版更接近“当前一条薄边界”的目标。
+**什么结果推翻假设**
 
-### 3.2 条件链条
+- 橙点已经变薄，但红点仍然厚、仍然跨空区域；
+- 或者 `train_count` 大幅跌破 32，导致大量 stage 直接无生成。
 
-- `[事实]` 当前 TrainC 和 QueryC 都走 `referenceConditionsFromRefsTau(...)`；`ref_y_tau` 与 `ref_y` 都没有丢弃 `QueryY`。`source/new_CBS_CGAN/BuildBoundaryDataset_CBS.m:33-36,54-56,76-82`
-- `[事实]` Query 也不是瞎采，而是基于 `missing_ref` 与 `large_gap` 的边界插值。`source/new_CBS_CGAN/BuildBoundaryDataset_CBS.m:167-208`
-- `[推断]` 因此，**当前 bundle 的根因已经不是旧 `fix.md` 中那种“direction-only conditioning”**。
+------
 
-### 3.3 CGAN 学习链条
+#### 实验 2：`bmem_single_band_pfseed + query_support_expand1 + ganIter75`
 
-- `[事实]` 当前 G/D 结构都很小：G 是 `64-64-64` 三层隐藏层，D 是 `64-64-32`。`source/new_CBS_CGAN/BoundaryCGAN_CBS.m:191-216`
-- `[事实]` 训练时 generator loss 是
-  `L_adv + reconstructionWeight * Huber(X_gen - X_b) + pairMarginWeight * margin(X_f,X_i)`。`source/new_CBS_CGAN/BoundaryCGAN_CBS.m:238-255`
-- `[事实]` 这些损失都发生在**决策空间**；训练过程中没有直接约束 `Problem.CalObj(G(z,C))` 去等于条件里的 `y`。`source/new_CBS_CGAN/BoundaryCGAN_CBS.m:29-95,238-255`
-- `[推断]` 当前模型学到的是“给定条件后输出某个决策向量 `X`”，但**最终验收目标**却是“该 `X` 投影后必须落在目标空间的薄边界上”。这个闭环在训练里没有被直接关上。
+**验证什么假设**
+主假设是：在训练云已单带化后，最合适的 query 不是 `random_all_w`，也不是纯 `boundary_populated`，而是
+**“有支撑 ref + 一跳邻接 ref”的 boundary continuation query**。
+这能同时保留“生成未探索当前边界”的能力和本地贴边性。
 
-### 3.4 投影到目标空间后的结果链条
+**改哪些源码文件**
 
-- `[事实]` `TrainC z=0` / `TrainC fixed z` 是直接把训练条件送入当前 generator，再用 `Problem.CalObj` 投影出的结果。`source/new_CBS_CGAN/CBS_CGAN.m:520-561`
-- `[事实]` 在 DASCMOP1/2/4/5 上，这两个 TrainC panel 已经失败；而在 LIRCMOP5–10 上，这两个 panel 大多成功。
-- `[推断]` 这说明当前问题分成两类：
-  1. DASCMOP1/2/4/5：**训练条件下都不能重现训练边界**，根问题发生在“学什么 / 怎么学”这一级；
-  2. LIRCMOP5–10：训练条件下能重现，但 random z 把 Query 结果吹散，根问题更偏向“怎么采样”。
+- `UpdateBoundaryMemory_RC.m`（沿用实验 1）
+- `RunRegionGAN_RC.m`
+- 如果需要注册新模式，再改 `CBS_RegionGAN_Base.m` 或对应 branch runner
 
-### 3.5 对核心目标的直接回答
+我建议的新 query 规则非常克制，不新增新参数：
 
-- `[推断]` 基于当前源码、CSV 和 43 张图，我的结论是：**当前 CBS-CGAN 并没有在这批问题上稳定实现“目标空间可行/不可行薄边界生成”**。
-  它在一部分 LIRCMOP 问题上已经能在 `TrainC z=0/fixed z` 下复现薄边界，但在 DASCMOP1/2/4/5 上仍然没有把“训练边界 → 生成边界 → 目标空间薄边界”这个链条闭合。
+1. 先给每个 populated ref 分 1 个 sample；
+2. 预算有剩余时，再给其一跳邻接且未 populated 的 ref 分 1 个 sample；
+3. 还有剩余，再回到 populated ref 做第二轮分配。
 
-## 4. 候选原因排序
+这样仍沿用现有 `nGen=30` 和 `queryPerCondition`，不引入新超参。
 
-### 1) 目标空间监督缺位，是当前最主要原因
+**不改哪些东西**
 
-- `[事实]` 训练损失只约束了决策空间 `X` 与 pair-side 的决策距离；没有直接约束 `CalObj(G(z,C))` 贴近条件中的 `y`。`source/new_CBS_CGAN/BoundaryCGAN_CBS.m:238-255`
-- `[事实]` DASCMOP1/2/4/5 的 `TrainC z=0 / fixed z` 已经失败；这一步根本还没进入 query 外推。
-- `[事实]` `DASCMOP4` 的 C 版本在 CSV 上比 B 版本好很多，但图上仍是一条脱离边界的红线。`results/latest_visual_z/csv/C_ref_y_stage_metrics_all.csv:16`，`results/latest_visual_z/csv/B_ref_y_tau_stage_metrics_all.csv:16`
-- `[推断]` 这说明当前核心矛盾不是“没 pair / 没 QueryY / 没 tau”，而是：**训练目标主要在决策空间闭合，验收目标却在目标空间闭合。**
-- `[待验证]` 需要通过加入 objective-space consistency 的可微代理损失来证伪或证实。
+- 不改 `BuildBoundaryDataset_RC.m`
+- 不改 `BoundaryWGAN_RC.m`
+- 不改 `c` 的定义，仍然是 `W(ref,:)`
+- 不改 `zDim=6`
+- 不改 hidden `[32 32]`
+- 不改 `sampleZMode=random`、`trainZMode=random`
+- 不改 `nGen=30`
 
-### 2) random z 会显著放大误差，但它不是 DASCMOP 失败的根因
+**运行规格**
 
-- `[事实]` 在 LIRCMOP5/6/7/8/9/10 上，`QueryC z=0` 和 `QueryC fixed z` 往往明显好于 `QueryC random z`。
-- `[事实]` 在 DASCMOP4/5 上，连 `z=0` 和 `fixed z` 都同样失败。
-- `[推断]` 所以 random z 是**二级放大器**：它解释了多数 LIRCMOP 的钩子/离群点，但解释不了 DASCMOP 的训练条件重构失败。
-- `[待验证]` 将 production sampling 固定为 `z=0` 或低方差固定 latent 后，LIR 问题应明显收敛；若 DASCMOP 仍失败，则更能证明主因不在 z。
+- 问题：`LIRCMOP5_BC`–`LIRCMOP10_BC`
+- `runs=1:3`
+- `N=100`
+- `maxFE=100000`
+- `ganIter=75`
+- 其他都和主线一致
 
-### 3) `ref_y` 通常比 `ref_y_tau` 更稳，但 tau 不是稳定收益项
+我这里把 `ganIter` 直接放 75，是因为包内现有证据里，75 已经比 50 更贴边，而 150 没显示出足够大的额外收益来支撑更高代价。
 
-- `[事实]` 当前 A/B/C 条件分支是 `A_ref_tau / B_ref_y_tau / C_ref_y`。`source/new_CBS_CGAN/Support/run_CBS_CGAN_query_condition_ablation.m:138-141`
-- `[事实]` 在 `ABC_K3_paired_variant_deltas.csv` 中，`C_ref_y` 相比 `B_ref_y_tau` 的 `delta_query_obj_dist90` 中位数为负，且 150 个配对 stage 里有 98 个是改善；`delta_boundary_dist90` 也有 90 个 stage 改善。`results/ablations/csv/ABC_K3_paired_variant_deltas.csv`
-- `[事实]` 但这种改善不是全局稳定的；例如 `LIRCMOP8` 的 median `boundary_dist90` 是 B 优于 C。`results/ablations/csv/ABC_K3_comparison_stage_metrics_by_problem.csv:22-31`
-- `[推断]` 现阶段最稳的事实不是“tau 有用”，而是“**加入 y 往往比加入 tau 更能定位目标**”。tau 至少在当前实现里，没有呈现稳定的正收益。
-- `[待验证]` 需要把 `ref_y` 作为新的单主线，再单独检验 tau 是否还能带来增益。
+**观察哪些图片**
+重点看：
 
-### 4) 训练样本数 / pair 数量不是主因，只是次要调节项
+- `LIRCMOP5_BC` FE100000
+- `LIRCMOP6_BC` FE100000
+- `LIRCMOP7_BC` FE70000 / FE100000
+- `LIRCMOP8_BC` FE70000 / FE100000
+- `LIRCMOP9_BC` FE100000
 
-- `[事实]` `K3_K5_comparison_analysis_summary.csv` 里，`pair5` 显著提高了很多问题的 `train_count_med`，例如 DASCMOP4 是 `54 -> 105`，LIRCMOP7 是 `132 -> 230`。`results/ablations/csv/K3_K5_comparison_analysis_summary.csv:2-21`
-- `[事实]` 但这些增长并没有稳定换来视觉修复：
-  DASCMOP4 的 `feasible_rate_med` 仍为 0；LIRCMOP7 的 `boundary_dist90_med` 反而变差。`results/ablations/csv/K3_K5_comparison_analysis_summary.csv:4,8,14,18`
-- `[推断]` “多 pair / 多训练点”不是当前最核心的堵点。否则 K5 应该更稳定地修复红点形态，但实际没有。
-- `[待验证]` 如果后续加了 objective-space bridge 后，pair-count 的收益可能才会变得更可解释。
+**观察哪些 CSV 指标**
 
-### 5) QueryY 构造不是当前主因
+- `stage_snapshots_all.csv`
+- `event_summary_all.csv` 的
+  `query_count`, `query_sample_count`, `query_unique_ref_count`
+- `analysis_branch_summary.csv`
+- `analysis_final_fe_by_problem.csv`
 
-- `[事实]` 当前代码会显式构造 `QueryY`、`source_interval`、`source_type`，而不是只靠 ref。`source/new_CBS_CGAN/BuildBoundaryDataset_CBS.m:167-208`
-- `[事实]` 从 20 张 `visual_z_diagnostic` 观察，`Targets only` 面板在多数问题上都几何合理，蓝点大多沿着橙色训练边界或其缺口插值位置分布。
-- `[推断]` 当前主要异常不在蓝点 target 本身，而在红点没有学会去追这些 target。
-- `[待验证]` 只有在加入 objective-space bridge 后，如果仍然大量脱靶，才应回头质疑 QueryY 构造。
+**什么结果支持假设**
 
-### 6) 旧主线不是答案；不能回退到旧厚带逻辑
+- 相比 `query_boundary_populated`，`LIRCMOP5/6` 不再长期无生成；
+- 相比 `random_iter100`，共同生成的问题上 `gap50/gap90` 更低、`near_gap1` 不低；
+- `query_unique_ref_count` 介于 populated-only 与 all-W 之间；
+- 图上红点表现为“沿已有橙带继续延伸”，而不是“跳到完全空白 ref”。
 
-- `[事实]` 旧主线确实更强调 AF/AI 成对筛选。`source/old_CCMO_GAN_BDG/UpdateBoundaryArchive_BDG.m:473-575,697-733`
-- `[事实]` 但旧主线默认 target 是 `near_segment_feasible`，还带 `decisionInterpCount=5`。`source/old_CCMO_GAN_BDG/CCMO_GAN_BDG.m:1189-1193`
-- `[事实]` 旧图在 `DASCMOP4/5` 上有明显厚带和斜射线。
-- `[推断]` 旧主线可借鉴的是“严格 pair 证据”，不是“厚带 target”或“回到旧图形态”。
+**什么结果推翻假设**
 
-### 7) 网络宽度、epoch、mismatch condition、D/G 强弱目前都不是前排证据
+- coverage 仍然只有 4 个问题左右；
+- 或者本地贴边性退化到接近 `random_all_w`；
+- 或者 `LIRCMOP9_BC` 仍然出现明显全局喷散，说明 query 还太粗。
 
-- `[事实]` 当前 zip 里没有任何一项实验能把“网络容量不足”与“目标空间闭环缺失”明确分离出来。
-- `[推断]` 它们当然可能有影响，但在现有证据下不应排在前四，更不应优先用“加网络/加 epoch/调 lr”去解释全部问题。
+------
 
-## 5. 最小改造方案
+#### 实验 3：`clean_pipeline_iter_sweep`（50 / 75 / 100）
 
-我建议只走一条主线，不分叉：
+**验证什么假设**
+主假设是：在实验 1+2 修好训练几何和 query 之后，当前网络大小已经够小，`ganIter` 只需要做**轻量定标**；
+也就是 **75 应该已接近够用，100 最多是次级修补，不会是决定性变化**。
 
-**主线：保留当前 paired thin BMem，默认条件改为 `ref_y`，在现有 CGAN 上补一条 objective-space consistency 闭环，并把 production z 收紧到固定/低方差。**
+**改哪些源码文件**
+只改实验运行配置：
 
-### 5.1 新的训练数据如何构造
+- branch runner / defaults（例如 `run_CBS_RegionWGAN_GP_ablation_branches.m` 或主配置入口里 `ganIter`）
 
-- `[方案]` **保留当前 `UpdateBoundaryMemory_CBS.m` 的 paired thin boundary memory 逻辑**，不要回退到旧 `near_segment_feasible` 厚带 target。
-- `[方案]` 训练行继续使用当前 `(x_b, x_f, x_i, y_b, y_f, y_i, ref)`；不额外扩增 decision-interp 样本。
+**不改哪些东西**
 
-### 5.2 条件 C 应该包含什么，不应包含什么
+- 不改 `UpdateBoundaryMemory_RC.m` 的新 local-band 逻辑
+- 不改新的 query mode
+- 不改 `BuildBoundaryDataset_RC.m`
+- 不改 `BoundaryWGAN_RC.m`
+- 不改 hidden `[32 32]`
+- 不改 `zDim=6`
+- 不改 z 采样方式
+- 不改 `nGen=30`
 
-- `[方案]` 主条件统一为 `C = [ref, y]`，即直接采用当前已经实现的 `ref_y`。
-- `[方案]` `tau` 继续保留在 metadata 里，继续用于 `missing_ref / large_gap` query 的构造与分析，但**不再作为主条件默认输入**。
-- `[推断]` 这样最符合当前证据：`y` 已经在多数问题上比 `tau` 更稳定地提供了几何定位。
+**运行规格**
 
-### 5.3 z 应该如何使用
+- 只跑代表性问题：`LIRCMOP7_BC`, `LIRCMOP8_BC`, `LIRCMOP9_BC`
+- `runs=1:3`
+- `maxFE=100000`
+- 比较 `ganIter = 50 / 75 / 100`
 
-- `[方案]` 训练阶段保留小方差 latent；生产阶段默认不用 broad random z，而是固定 `z=0` 或固定低方差 latent。
-- `[方案]` `random z` 只保留给 `visual_z_diagnostic` 和 ablation，不作为正式边界生成模式。
-- `[推断]` 这与 LIRCMOP5–10 的视觉证据一致。
+**观察哪些图片**
 
-### 5.4 Generator 应该输出什么
+- `LIRCMOP7_BC` FE70000 / FE100000
+- `LIRCMOP8_BC` FE70000 / FE100000
+- `LIRCMOP9_BC` FE100000
 
-- `[方案]` 不改核心创新点：`G(C,z) -> 完整决策变量 X`。
+**观察哪些 CSV 指标**
 
-### 5.5 Discriminator 应该判别什么
+- `stage_snapshots_all.csv`
+- `run_summary.csv`
+- branch summary 里的
+  `gap_ratio50`, `gap_ratio90`, `near_boundary_rate_gap1`,
+  `generated_problems`, `runtime_mean_min`
 
-- `[方案]` 保留当前 `D(X,C)` 的 conditional 判别器和 mismatch condition 机制。`source/new_CBS_CGAN/BoundaryCGAN_CBS.m:219-235`
+**什么结果支持假设**
 
-### 5.6 损失函数应该包含什么
+- `75` 相比 `50` 有明显更低的 `gap90`；
+- `100` 相比 `75` 只有小幅改进，或者几乎持平；
+- 视觉上 75→100 主要是尾部离群点再少一点，而不是边界形状发生本质变化。
 
-- `[方案]` 保留当前三项中的两项：
-  1. `L_adv`
-  2. `L_pair`（pair margin）
-- `[方案]` 保留当前 `X` 空间 Huber，但把它从“唯一监督主项”降成“分支选择锚点”。
-- `[方案]` **新增唯一一个必要桥梁**：objective proxy consistency。
-  做法是在 `BoundaryCGAN_CBS.m` 内部增加一个轻量 `R: X -> Y` 代理回归器，只用当前已经评估过的 `(X,Y)` 样本训练。然后用
-  `L_obj = Huber(R(X_gen), y_target)`
-  约束生成结果在目标空间上追条件里的 `y_target`。
-- `[推断]` 这是当前最小、最统一的补丁，因为现在真正缺的是“从 `X` 到目标空间边界”的训练闭环。
+**什么结果推翻假设**
 
-### 5.7 哪些旧损失应该删除或降权
+- 只有 `100` 才明显把红点拉回窄边界；
+- 或者 `50`、`75` 仍然很厚，说明训练优化本身还没有到位。
+  若出现这种情况，默认 `ganIter` 才值得上调到 100；但这也仍然是在**几何和 query 已修好之后**再做，而不是先做。
 
-- `[方案]` 不删除当前 `L_adv`、`L_pair`、`L_x`，但要让 `L_obj` 成为主监督；`L_adv` 退到分布正则器角色，`L_x` 退到单逆分支锚点角色。
-- `[方案]` 不要引回旧主线那套 thick target / decision interpolation / near-segment 扩带监督。
+------
 
-### 5.8 如何保证生成的是目标空间边界而不是厚点云
+这版路线的核心变化只有一句话：
 
-- `[方案]` 四个动作一起做：
-  1. 训练数据仍是一条 pair-supported thin boundary；
-  2. 条件用 `ref_y` 固定几何位置；
-  3. `L_obj + L_pair` 同时约束“目标空间贴边”和“站在 feasible 一侧”；
-  4. production 用 fixed/low-variance z，避免把一条线吹成一团云。
+**先修正“同一 coarse condition 下训练分布被混成多条边界”的问题，再用“邻接 continuation query”去实现你要的“由部分边界继续生成未探索边界”，最后才轻量定标训练步数。**
 
-### 5.9 如何处理 missing ref / large gap query
-
-- `[方案]` 保留当前 `buildExternalQueries` 的 `missing_ref` 与 `large_gap`，因为当前图里蓝色 target 大多数是合理的。
-- `[方案]` 改的是：这些 query 不再交给 broad random z，而是交给 fixed/low-variance z，并由 `L_obj` 让生成结果主动追向 query `y`。
-
-### 5.10 如何把生成解用于优化流程
-
-- `[方案]` 仍沿用当前主流程：`G -> RawDec -> Problem.Evaluation -> EnvironmentalSelection_CBS`。`source/new_CBS_CGAN/CBS_CGAN.m:188-223`
-- `[方案]` 但把 `side_rate / pair_margin50 / query_obj_dist90` 作为正式保留前诊断门槛；如果 fixed-z 生成仍严重偏离，则不让它进入主优化流程。
-
-## 6. 修改文件清单
-
-- `source/new_CBS_CGAN/BuildBoundaryDataset_CBS.m`
-  目的：把 `ref_y` 设为新的主线条件；保留 `tau` 作为 query metadata，不再把 `tau` 当默认主条件。
-- `source/new_CBS_CGAN/BoundaryCGAN_CBS.m`
-  目的：在现有 `L_adv + L_x + L_pair` 基础上加入 `L_obj`；同时提供正式的 fixed/low-variance production sampling 入口。
-  这是最核心的改动位点。
-- `source/new_CBS_CGAN/CBS_CGAN.m`
-  目的：
-  1. 把 `trainObjs/queryObjs` 显式传给 `BoundaryCGAN_CBS`；
-  2. 默认生产采样改为 fixed/low-variance z；
-  3. 记录新的 objective reconstruction 指标。
-- `source/new_CBS_CGAN/Support/run_CBS_CGAN_boundary_quality_experiments.m`
-  目的：保留现有 `visual_z_diagnostic`，并补 `TrainC objective reconstruction error`、`QueryC target error`、`z sensitivity` 的 CSV。
-- `source/new_CBS_CGAN/Support/run_CBS_CGAN_query_condition_ablation.m`
-  目的：在同一 runner 下，复核 `ref_y` 主线在 fixed-z 与 objective-consistency 加入后的变化。
-- `[不建议大改] source/new_CBS_CGAN/UpdateBoundaryMemory_CBS.m`
-  `[事实]` 当前它已经比旧版更接近你的目标。
-  `[推断]` 它不是第一修改位点。只有在补上 `L_obj` 后仍出现明显历史拖尾，才再考虑是否削弱 `appendPreviousPairedCandidates`。
-
-## 7. 最小验证实验
-
-### 7.1 实验设置
-
-- `[方案]` 线程数：`1`，先保证可复现实验图。
-- `[方案]` 两步最小实验：
-  1. **视觉验证**：`runs=1`，开 `visualDiagnostics=1`，问题只跑 4 个；
-  2. **确认统计**：`runs=3`，不开大图，只记 CSV。
-- `[方案]` 问题集最少保留 4 个：
-  - `DASCMOP4_BC`：当前最明显失败；
-  - `DASCMOP2_BC`：当前是“有些改善但仍失真”的中间态；
-  - `LIRCMOP8_BC`：当前最典型的 random-z 敏感；
-  - `LIRCMOP10_BC`：当前相对最好，用来防回归。
-
-### 7.2 必须画的图
-
-- `[方案]` 每个问题都画：
-  - 标准最终图 `...targetFE100000.png`
-  - `visual_z_diagnostic`
-  - 边界区域放大图
-  - 可行/不可行区域背景图
-- `[方案]` 同时保留当前 bundle 的 old-mainline 对照图，至少对 `DASCMOP4_BC` 做新旧对比。
-
-### 7.3 必须记录的指标
-
-- `[方案]` 保留现有：
-  `feasible_rate`、`boundary_dist50/90`、`query_obj_dist50/90`、`segment_width90`、`segment_width90_ratio`、`side_rate`、`pair_margin50`、`ref_cover`
-- `[方案]` 新增三类：
-  1. `TrainC objective reconstruction error`：`CalObj(G(TrainC,z_fixed))` 到 `trainObjs` 的误差；
-  2. `QueryC objective target error`：`CalObj(G(QueryC,z_fixed))` 到 `queryObjs` 的误差；
-  3. `z sensitivity`：同一 `QueryC` 下 `random z` 与 `fixed z` 的目标空间差异。
-
-### 7.4 成功判定
-
-- `[方案]` 视觉判定必须先过：
-  1. `DASCMOP4_BC` 的 `TrainC fixed z` 不再出现那条脱离目标区的上升红线；
-  2. `DASCMOP2_BC` 的 `TrainC fixed z` 不再是三角回环；
-  3. `LIRCMOP8_BC` 的 `QueryC fixed z` 贴住蓝点，且 `random z` 不再产生大范围离群点；
-  4. `LIRCMOP10_BC` 不得明显退化。
-- `[方案]` 数值判定至少满足：
-  - `DASCMOP4_BC`、`DASCMOP2_BC` 在 `FE100000` 的 `boundary_dist90` 和 `query_obj_dist90` 相比当前 `C_ref_y` 至少下降 50%；
-  - `side_rate >= 0.8`；
-  - `segment_width90_ratio` 不高于当前最好版本；
-  - `LIRCMOP10_BC` 的 `query_obj_dist90` 不劣化超过 20%。
-
-### 7.5 能证伪方案的条件
-
-- `[待验证]` 如果加入 `L_obj` 后，`TrainC fixed z` 在 DASCMOP4/5 仍明显不能重构橙色训练边界，那么根因就不只是 objective-space 闭环缺失，BMem target 本身还要重查。
-- `[待验证]` 如果 `Targets only` 仍合理，但 `QueryC fixed z` 继续大偏离，则说明 `ref_y` 条件本身仍不足以确定逆映射。
-- `[待验证]` 如果 CSV 指标改善，但图上仍存在脱离边界的弧线/对角线/蛇形支路，则该方案应判失败。
-- `[待验证]` 如果 hard DASCMOP 改善，但原本表现较好的 LIRCMOP10 明显退化，则说明方案过拟合困难问题，不应收为主线。
-
-## 8. 风险和反例
-
-- `[待验证]` 轻量 `X -> Y` proxy 本身可能在边界附近不准；如果 proxy 学歪了，`L_obj` 会把 generator 往错误目标空间推。
-- `[待验证]` 如果最后只有 fixed z 有效，而 random z 仍然一吹就散，那就说明 latent 在这条任务线上更像“扰动源”而不是“有益多样性源”；这未必违背你的目标，但意味着 production 不应再指望 random z。
-- `[待验证]` 当前 `UpdateBoundaryMemory_CBS.m` 还会回灌上一轮 pair 端点；如果在补 `L_obj` 后仍出现明显历史拖尾，再考虑对历史 pair 加时效衰减。
-- `[事实]` 旧主线已经证明“更厚的数据、更多插值、更多扩带”并不自动等于更好的边界生成。
-  `[推断]` 所以后续不应靠回退旧 thick-target 思路来赌运气。
-
-一句话总结：
-
-- `[事实]` 当前源码已经修掉了不少旧问题：pair-supported BMem、`ref_y/ref_y_tau`、Huber、pair margin 都已在代码里。
-- `[推断]` 但当前最关键的断点已经变成：**CGAN 训练仍主要在决策空间闭合，而你要的成功标准是在目标空间的可行/不可行薄边界闭合。**
-- `[方案]` 最小且统一的修补，不是继续堆 pair 数、tau、epoch，而是：**保留当前 thin paired BMem，默认切到 `ref_y`，补一条 objective-space consistency 闭环，并把 production z 固定/收紧。**
+这样更贴合你的主线，也比我上一版里“直接按 gap 选”更稳。
