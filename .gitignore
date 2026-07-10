@@ -4,3 +4,5 @@
 # 忽略的文件夹
 Data/*
 .ace-tool/
+.DS_Store
+PlatEMO/tmp/

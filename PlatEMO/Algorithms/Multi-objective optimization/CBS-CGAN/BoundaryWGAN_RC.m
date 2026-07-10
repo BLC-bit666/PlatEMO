@@ -57,12 +57,14 @@ function GAN = trainBoundaryWGAN(GAN,TrainX,TrainC,Problem,Options)
             Options.generatorHidden,Options.criticHidden);
     end
 
-    miniBatch = min(Options.miniBatch,N);
+    [TrainIdx,HoldoutIdx] = splitWGANTrainHoldout(N);
+    trainPoolN = numel(TrainIdx);
+    miniBatch = min(Options.miniBatch,trainPoolN);
     beta1 = 0.0;
     beta2 = 0.9;
     for iter = 1 : Options.iter
         for cStep = 1 : Options.nCritic
-            idx = randi(N,1,miniBatch);
+            idx = TrainIdx(randi(trainPoolN,1,miniBatch));
             [GAN,lossInfo] = updateCriticBatch(GAN,XScaled,TrainC, ...
                 idx,Options,beta1,beta2);
             GAN.last_critic_loss = lossInfo.lossC;
@@ -70,11 +72,83 @@ function GAN = trainBoundaryWGAN(GAN,TrainX,TrainC,Problem,Options)
             GAN.last_score_real = lossInfo.scoreReal;
             GAN.last_score_fake = lossInfo.scoreFake;
         end
-        idx = randi(N,1,miniBatch);
+        idx = TrainIdx(randi(trainPoolN,1,miniBatch));
         [GAN,lossG] = updateGeneratorBatch(GAN,TrainC,idx, ...
             Options,beta1,beta2);
         GAN.last_generator_loss = lossG;
     end
+    GAN = appendWGANTrainingDiagnostics(GAN,XScaled,TrainC,Options, ...
+        TrainIdx,HoldoutIdx);
+end
+
+function [TrainIdx,HoldoutIdx] = splitWGANTrainHoldout(N)
+    N = max(0,round(double(N)));
+    if N <= 1
+        TrainIdx = 1:N;
+        HoldoutIdx = zeros(1,0);
+        return;
+    end
+    holdoutN = max(1,round(0.2*N));
+    holdoutN = min(N - 1,holdoutN);
+    perm = randperm(N);
+    HoldoutIdx = perm(1:holdoutN);
+    TrainIdx = perm(holdoutN+1:end);
+end
+
+function GAN = appendWGANTrainingDiagnostics(GAN,XScaled,TrainC,Options, ...
+        TrainIdx,HoldoutIdx)
+    N = size(XScaled,1);
+    if N <= 0 || isempty(TrainIdx)
+        return;
+    end
+    TrainIdx = round(double(TrainIdx(:)'));
+    HoldoutIdx = round(double(HoldoutIdx(:)'));
+    diagN = min(numel(TrainIdx),128);
+    trainIdx = TrainIdx(randperm(numel(TrainIdx),diagN));
+    [scoreReal,scoreFake] = scoreRealAndFake(GAN,XScaled,TrainC, ...
+        trainIdx,Options);
+    GAN.critic_train_real_score_mean = finiteSummary(scoreReal,@mean);
+    GAN.critic_train_fake_score_mean = finiteSummary(scoreFake,@mean);
+    GAN.critic_train_gap = GAN.critic_train_real_score_mean - ...
+        GAN.critic_train_fake_score_mean;
+    GAN.critic_train_diag_count = double(numel(trainIdx));
+
+    if isempty(HoldoutIdx)
+        GAN.critic_holdout_real_score_mean = NaN;
+        GAN.critic_holdout_fake_score_mean = NaN;
+        GAN.critic_holdout_gap = NaN;
+        GAN.critic_holdout_count = 0;
+    else
+        [scoreReal,scoreFake] = scoreRealAndFake(GAN,XScaled,TrainC, ...
+            HoldoutIdx,Options);
+        GAN.critic_holdout_real_score_mean = finiteSummary(scoreReal,@mean);
+        GAN.critic_holdout_fake_score_mean = finiteSummary(scoreFake,@mean);
+        GAN.critic_holdout_gap = GAN.critic_holdout_real_score_mean - ...
+            GAN.critic_holdout_fake_score_mean;
+        GAN.critic_holdout_count = double(numel(HoldoutIdx));
+    end
+end
+
+function [scoreReal,scoreFake] = scoreRealAndFake(GAN,XScaled,TrainC, ...
+        idx,Options)
+    idx = round(double(idx(:)'));
+    if isempty(idx)
+        scoreReal = zeros(0,1);
+        scoreFake = zeros(0,1);
+        return;
+    end
+    batchN = numel(idx);
+    dlX = dlarray(single(XScaled(idx,:)'),'CB');
+    dlC = dlarray(single(TrainC(idx,:)'),'CB');
+    dlZ = dlarray(single(latentSamples(Options,GAN.zDim,batchN, ...
+        "train")'),'CB');
+    dlFake = forward(GAN.netG,[dlZ;dlC]);
+    scoreReal = forward(GAN.netC,[dlX;dlC]);
+    scoreFake = forward(GAN.netC,[dlFake;dlC]);
+    scoreReal = double(gather(extractdata(scoreReal)))';
+    scoreFake = double(gather(extractdata(scoreFake)))';
+    scoreReal = scoreReal(:);
+    scoreFake = scoreFake(:);
 end
 
 function [GAN,Info] = updateCriticBatch(GAN,XScaled,TrainC,idx,Options, ...
@@ -157,9 +231,18 @@ function [Dec,Info] = sampleByCondition(GAN,QueryC,queryPerCondition,Options)
     if screenK <= 1
         Z = latentSamples(Options,GAN.zDim,n,"sample");
         Dec = generateDecisions(GAN,C,Z);
+        Scores = criticScores(GAN,Dec,C);
         Info.z = Z;
         Info.prescreen_candidate_count = double(n);
         Info.prescreen_selected_count = double(n);
+        Info.generated_critic_score = Scores;
+        Info.prescreen_selected_score = Scores;
+        Info.prescreen_raw_score = Scores;
+        Info.prescreen_raw_selected = true(size(Scores));
+        Info.prescreen_raw_condition_index = (1:n)';
+        Info.prescreen_score_min = finiteSummary(Scores,@min);
+        Info.prescreen_score_max = finiteSummary(Scores,@max);
+        Info.prescreen_score_mean = finiteSummary(Scores,@mean);
         return;
     end
 
@@ -179,6 +262,11 @@ function [Dec,Info] = sampleByCondition(GAN,QueryC,queryPerCondition,Options)
     Info.prescreen_candidate_count = double(size(CandidateDec,1));
     Info.prescreen_selected_count = double(size(Dec,1));
     Info.prescreen_selected_score = Scores(selected);
+    Info.generated_critic_score = Scores(selected);
+    Info.prescreen_raw_score = Scores;
+    Info.prescreen_raw_selected = false(size(Scores));
+    Info.prescreen_raw_selected(selected) = true;
+    Info.prescreen_raw_condition_index = repelem((1:n)',screenK,1);
     Info.prescreen_score_min = finiteSummary(Scores,@min);
     Info.prescreen_score_max = finiteSummary(Scores,@max);
     Info.prescreen_score_mean = finiteSummary(Scores,@mean);
@@ -193,6 +281,10 @@ function Info = emptySampleInfo(M)
         'prescreen_candidate_count',0, ...
         'prescreen_selected_count',0, ...
         'prescreen_selected_score',zeros(0,1), ...
+        'generated_critic_score',zeros(0,1), ...
+        'prescreen_raw_score',zeros(0,1), ...
+        'prescreen_raw_selected',false(0,1), ...
+        'prescreen_raw_condition_index',zeros(0,1), ...
         'prescreen_score_min',NaN, ...
         'prescreen_score_max',NaN, ...
         'prescreen_score_mean',NaN);

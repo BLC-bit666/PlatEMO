@@ -1,4 +1,4 @@
-# CBS-RegionGAN 当前主线状态（2026-06-30）
+# CBS-RegionGAN 当前主线状态（2026-07-08）
 
 ## 当前主线决策
 
@@ -10,26 +10,32 @@ Region-conditioned GAN 分支当前主线确定为：
 - `prevBMemMode`：`prev1_fair_union`，上一代 `BMem` 的可行 anchor 在配对前并入当前可行候选池，与当前 `[Population1, Offspring1, Population2, Offspring2]` 的可行解一起竞争
 - `nGen`：30，每代 GAN 最多注入 30 个生成解
 - `zDim`：6
-- `ganIter`：50
+- `ganIter`：100
 - 训练 Z：随机，默认标准正态
 - 采样 Z：随机，`sampleSigma=0.3`
 - `prescreenMultiplier`：1，不做 critic prescreen
 - `ganMiniBatch`：32
 - `minGANTrainCount`：32，训练集少于 32 行时跳过本代 GAN 训练与生成
 - `maxAnchorsPerRef`：5，在配对不可行解之前，每个 ref 最多保留 5 个按 `CalFitness_CBS` 排序最优的可行边界 anchor
-- WGAN-GP 参数：`gpLambda=10`，`nCritic=5`
+- WGAN-GP 参数：`gpLambda=10`，`nCritic=2`
 
-这条主线对应两步实验结论和一次机制修正：先由 `mb32 + CBS_RegionWGAN_GP` 确定 WGAN-GP 主分支，再由 6 问题、`runs=3` 的 `current_only` vs 旧版 `prev1_fair_union` 实验证明上一代 `BMem` 短记忆能提高训练覆盖；随后图像诊断暴露“整条 BMem row 晚合并”会沿用旧配对结构，因此当前主线已改为“上一代可行 anchor 配对前合并，且只与当前不可行解重新配对”。普通 `CBS_RegionCGAN` 保留为 BCE/sigmoid CGAN 对照分支，不再作为当前主线。
+这条主线对应三步实验结论和一次机制修正：先由 `mb32 + CBS_RegionWGAN_GP` 确定 WGAN-GP 主分支，再由 6 问题、`runs=3` 的 `current_only` vs 旧版 `prev1_fair_union` 实验证明上一代 `BMem` 短记忆能提高训练覆盖；随后图像诊断暴露“整条 BMem row 晚合并”会沿用旧配对结构，因此当前主线已改为“上一代可行 anchor 配对前合并，且只与当前不可行解重新配对”；最后在 2026-07-08 的真实边界指标复核后，操作主线按本轮决策切到 `C_iter100_ncritic2`，即 `ganIter=100,nCritic=2`。普通 `CBS_RegionCGAN` 保留为 BCE/sigmoid CGAN 对照分支，不再作为当前主线。
 
-2026-06-29 到 2026-06-30 的新增现实：
+2026-07-08 的新增现实：
 
+- 真实边界指标已经成为当前主判据：先看 `bdist50_true`，再看 `bwidth90_10_true`；`bcover_eps_true` 只作为旁证，不能覆盖距离和宽度上的失败。
+- A/B/C/D 已用真实边界指标重算。有效目录为 `Data/CBS_RegionGAN_compare/ncritic_true_boundary_20260708_105015`，四支均为 18/18 ok，且均有 true-boundary columns。当前操作主线已改为 `C_iter100_ncritic2`，但文档必须保留一个事实：A 和 C 在不同聚合口径下各有优势，不能写成 C 在所有统计上绝对最优。
+- `region_slocal` 与 `region_rho` 两个条件分支已完成正式对照。有效目录为 `Data/CBS_RegionGAN_compare/condition_slocal_rho_20260708_153442`；`condition_slocal_rho_20260708_153359` 和 `condition_true_boundary_20260708_153234` 不是有效结论目录。
+- `s_local/rho` 的实现是生效的，不是接线失败：`BuildBoundaryDataset_RC` 会把 `TrainC/QueryC` 扩成 `[W(ref,:),scalar]`，`random_all_w` 也会从扩展后的 all-ref condition pool 采样。但实验没有证明它们能替代 C 基线。
+- 新增 scalar 没有稳定收益的主因是训练目标仍是 `BMem.x_b/y_b` 的可行侧 boundary cloud，而不是 pair-supported thin boundary。`s_local/rho` 只是在解释当前 cloud 内部位置；当 cloud 本身偏厚、偏移或多层时，条件更细并不会自动生成真实窄边界带。
+- 下一步训练集方向应从“继续加 scalar”转为“利用 `BMem.x_f/y_f` 与 `BMem.x_i/y_i` 的可行/不可行 pair 构造 thin TrainX”。直接把 `x_f` 和 `x_i` 无 side 条件混入同一 real distribution 不建议作为主线，因为它会让生成器学习可行/不可行两侧混合带。
 - `ganIter` 动态线性调度、采样 Z 控制和 WGAN critic prescreen 已经实现为实验控制项，但不是当前主线默认。
 - 已完成的 `linear_iter` 正式分支只验证了 `ganIter=150->30`，未启用 prescreen；结果显示早期生成边界贴合明显改善，但最终 18-run 汇总没有稳定优于固定 `ganIter=75`。
 - 已完成的可视化分支 `linear150->75 + prescreen8` 同时改变了训练强度和 critic 筛选；run=1 五阶段图和指标均显示中后期生成点比固定 `ganIter=75` 更偏移、更离散，因此该组合不能进入主线。
 - `trainSigma/sampleSigma` 已拆分。训练仍用随机标准 Z，采样端单独缩小 Z 方差后，`sampleSigma=0.3` 是当前最均衡的默认值；`0.15` 无收益，`0.25/0.5/zero` 只在局部指标或局部阶段有优势。
 - `zDim=2/3/4/8` 都没有足够证据替代 `zDim=6`。`zDim=4` 有若干最终中位贴边信号，但 tail 与全阶段稳定性较弱；`zDim=8` 不稳；`zDim=2/3` 明显不作为主线候选。
-- 2026-06-30 已补跑 `sampleSigma=0.3,zDim=6` 的 run=1 五阶段图，分别覆盖 `ganIter=50` 和 `ganIter=75`。两者都只是视觉诊断产物，尚未把 `ganIter=75` 重新提升为主线默认。
-- 因此当前主线保持 `CBS_RegionWGAN_GP.mainlineDefaults()` 的固定参数语义：`ganIter=50,zDim=6,sampleSigma=0.3,prescreenMultiplier=1`。动态 `ganIter` 和 critic prescreen 只能作为拆因子诊断，不能作为主线堆叠。
+- 2026-06-30 已补跑 `sampleSigma=0.3,zDim=6` 的 run=1 五阶段图，分别覆盖 `ganIter=50` 和 `ganIter=75`。两者都只是视觉诊断产物，后续已由 2026-07-08 的 A/B/C/D true-boundary 复核取代为更高优先级证据。
+- 因此当前主线保持 `CBS_RegionWGAN_GP.mainlineDefaults()` 的固定参数语义：`ganIter=100,nCritic=2,zDim=6,sampleSigma=0.3,prescreenMultiplier=1`。动态 `ganIter`、critic prescreen、`s_local/rho` 条件只能作为拆因子诊断，不能作为主线堆叠。
 
 ## 为什么形成这条主线
 
@@ -46,19 +52,19 @@ Region-conditioned GAN 分支当前主线确定为：
 1. `z` 不再固定为主线用法。固定 z 只能诊断生成器是否能重建/回放条件，不能代表生成分布；主线训练使用随机标准 Z，采样使用随机 Z 但缩小到 `sampleSigma=0.3`，以减少后期厚带和离群点。
 2. 条件 `c` 不再承担精确目标坐标的逆映射职责，而是表示粗目标区域。当前主线用 `queryMode=random_all_w` 在所有 ref 上随机抽 QueryC，避免只在已有训练条件附近回放。
 3. 不做无限跨代累计训练集。边界会随进化过程移动，长期历史会污染当前分布；当前只把上一代 `BMem` 的可行 anchor 作为短记忆，在配对前与当前可行候选公平竞争，过旧边界和旧不可行配对不进入主线。
-4. 训练集也不能是每个 ref 一个点的薄骨架。当前用前二可行 PF + 每 ref 最多 5 个质量门控 anchor，目的是在不引入远端长尾污染的情况下保留区域内可学习的边界云。
+4. 训练集不能退回成每个 ref 一个点的薄骨架，但 2026-07-08 的真实边界指标和条件分支实验已经说明：当前前二可行 PF + 每 ref 最多 5 个 anchor 的 boundary cloud 也不是最终答案。它保留了区域内分布，但会把厚带、多层边界和偏移片段一起交给 WGAN。下一步应把 `x_f/y_f` 与 `x_i/y_i` 的 pair 结构显式用于 thin boundary target。
 5. 网络必须小。单次刷新样本量受当前种群窗口限制，不能靠跨代累计扩样；因此采用 `[32 32]` 小网络。
 6. `zDim=6` 来自之前对密集边界云的 SVD 诊断和 2026-06-30 的 zDim 拆因子实验：区域内决策云内在维大约 3-5，`zDim=2/3` 偏小，`zDim=4` 有局部最终收益但 tail 较差，`zDim=8` 不稳，6 仍是最稳的折中。
 7. WGAN-GP 优先于 BCE CGAN。BCE 诊断能看到 D/G 对抗过程，但在小样本、窄边界、易模式坍缩的设置下不够稳；WGAN-GP 的线性 critic 和梯度惩罚更适合作为主线。
 
-因此，当前主线可以概括为：**用传统条件生成分布的思想学习 `p(x | coarse objective region)`，但用 WGAN-GP 训练而不是 BCE CGAN；避免确定性逆映射，避免长期历史累计污染，用上一代 BMem 可行 anchor 的短记忆缓解 ref 覆盖不足，并用当前不可行解重新定义边界配对。**
+因此，当前主线可以概括为：**用传统条件生成分布的思想学习 `p(x | coarse objective region)`，但用 WGAN-GP 训练而不是 BCE CGAN；避免确定性逆映射，避免长期历史累计污染，用上一代 BMem 可行 anchor 的短记忆缓解 ref 覆盖不足，并用当前不可行解重新定义边界配对。** 但截至 2026-07-08，新的主矛盾已经从 query/采样尺度转到训练集定义：仅学习可行侧 cloud 不足以稳定得到真实窄边界带。
 
 ## 已落地代码
 
 - `Algorithms/Multi-objective optimization/CBS-CGAN/CBS_RegionWGAN_GP.m`
   - 角色从 comparison branch 明确改为 mainline branch。
   - 新增 `CBS_RegionWGAN_GP.mainlineDefaults()`，集中固定当前主线默认参数。
-  - `main()` 通过 `mainlineDefaults()` 注入默认参数，当前锁定 `queryMode=random_all_w`、`prevBMemMode=prev1_fair_union`、`ganIter=50`、`zDim=6`、`sampleSigma=0.3`，避免后续手改 `ParameterSet` 时不小心偏离主线。
+  - `main()` 通过 `mainlineDefaults()` 注入默认参数，当前锁定 `queryMode=random_all_w`、`prevBMemMode=prev1_fair_union`、`ganIter=100`、`nCritic=2`、`zDim=6`、`sampleSigma=0.3`，避免后续手改 `ParameterSet` 时不小心偏离主线。
 - `Algorithms/Multi-objective optimization/CBS-CGAN/CBS_RegionGAN_Base.m`
   - `QueryMode` 默认值改为可从 `Config.queryMode` 读取。
   - `prevBMemMode` 可从 `Config.prevBMemMode` 或实验控制读取；若分支未提供，仍保持旧默认 `current_only`，因此 `CBS_RegionCGAN` 的对照语义不被强行改变。
@@ -69,6 +75,7 @@ Region-conditioned GAN 分支当前主线确定为：
   - 新增 `resolveganoptions` helper，用 `currentFE/maxFE` 解析动态 `ganIter`。
   - `linear_fe` 公式：`round(ganIterStart + (ganIterEnd - ganIterStart) * currentFE / maxFE)`，并夹在 start/end 区间内。
   - `trainandsample` 现在保留 `last_sample_info`，供主循环写入 prescreen 诊断。
+  - 已实现真实边界诊断 `trueboundarydiagnostics`，输出 `bdist50_true`、`bwidth90_10_true`、`bcover_eps_true`。当前主排序只使用前两个：先 `bdist50_true`，再 `bwidth90_10_true`。
 - `Algorithms/Multi-objective optimization/CBS-CGAN/BoundaryWGAN_RC.m`
   - `latentSamples(..., purpose)` 已区分训练和采样：`purpose="train"` 使用 `trainSigma`，`purpose="sample"` 使用 `sampleSigma`；未显式设置时回退到旧 `sigma`。
   - 支持 `prescreenMultiplier>1`：每个最终生成槽位先生成 `prescreenMultiplier` 个候选，用 WGAN critic 分数选最高者，只有选中的最终 `nGen` 个解进入 `Problem.Evaluation`。
@@ -76,19 +83,28 @@ Region-conditioned GAN 分支当前主线确定为：
 - `Algorithms/Multi-objective optimization/CBS-CGAN/UpdateBoundaryMemory_RC.m`
   - `prev1_fair_union` 将上一代 `BMem` 的可行 anchor 在配对前注入可行候选池，与当前可行解一起做前 `frontDepth=2` 层筛选和每 ref 最多 5 个 anchor 的 cap。
   - 配对阶段只使用当前 `[Population1, Offspring1, Population2, Offspring2]` 中的不可行解；上一代 `BMem` 的旧 `x_i/y_i/gap` 不再整条沿用。
+  - `BMem` 当前确实保存 `x_f/y_f` 与 `x_i/y_i` pair，但 region 版训练集尚未真正利用 `x_i/y_i` 作为训练监督。
+- `Algorithms/Multi-objective optimization/CBS-CGAN/BuildBoundaryDataset_RC.m`
+  - 已支持 `conditionMode=region/region_slocal/region_rho`。
+  - `region_slocal` 和 `region_rho` 会把条件从 `W(ref,:)` 扩成 `[W(ref,:),scalar]`；`random_all_w` 会从扩展后的 all-ref condition pool 采样。
+  - 当前 `TrainX` 仍是 `BMem.x_b`，在 region 版里等价于可行侧 `x_f`。这意味着新增 scalar 只是解释可行侧 cloud，没有把可行/不可行 pair 变成 thin boundary target。
 - `Algorithms/Multi-objective optimization/CBS-CGAN/Support/run_CBS_RegionCGAN_training_diagnostics.m`
   - 诊断 runner 在 `algorithmClass=CBS_RegionWGAN_GP` 且未显式覆盖时，默认跟随 `CBS_RegionWGAN_GP.mainlineDefaults()`。
   - WGAN 的 `event_summary_all.csv` 和 `stage_snapshots_all.csv` 已能正常汇总；`train_history_all.csv` 对 WGAN 仍为空，因为当前 WGAN-GP 不记录逐 iter 内部训练历史。
+- `Algorithms/Multi-objective optimization/CBS-CGAN/Support/run_CBS_RegionWGAN_GP_ncritic_true_boundary_branches.m`
+  - 已用于 A/B/C/D 的真实边界指标复核，输出目录 `Data/CBS_RegionGAN_compare/ncritic_true_boundary_20260708_105015`。
+- `Algorithms/Multi-objective optimization/CBS-CGAN/Support/run_CBS_RegionWGAN_GP_condition_true_boundary_branches.m`
+  - 已用于 `C_region_slocal` 与 `C_region_rho` 的条件分支复核，输出目录 `Data/CBS_RegionGAN_compare/condition_slocal_rho_20260708_153442`。
 - `Algorithms/Multi-objective optimization/CBS-CGAN/Support/run_CBS_RegionWGAN_GP_qw_plan_branches.m`
   - 新增并实际使用拆因子分支：`query_boundary_iter50_z_zero`、`query_boundary_iter50_z_sigma025`、`query_boundary_iter50_z_sigma03`、`query_boundary_iter50_z_sigma015`、`query_boundary_iter50_z_sigma05`、`query_boundary_iter50_zdim2`、`query_boundary_iter50_zdim3`、`query_boundary_iter50_sigma03_zdim4`、`query_boundary_iter50_sigma03_zdim8`。
   - 旧 `linear_iter_*` 和 `*_prescreen*` 分支保留为诊断候选，但当前不作为主线。
 - `Algorithms/Multi-objective optimization/CBS-CGAN/test_CBS_region_gan_branches.m`
-  - 主线默认参数回归测试锁定 `wgan-gp + random_all_w + prev1_fair_union + ganIter=50 + zDim=6 + sampleSigma=0.3 + ganMiniBatch=32 + minGANTrainCount=32 + nGen=30 + maxAnchorsPerRef=5 + gpLambda=10 + nCritic=5`。
+  - 主线默认参数回归测试应锁定 `wgan-gp + random_all_w + prev1_fair_union + ganIter=100 + zDim=6 + sampleSigma=0.3 + ganMiniBatch=32 + minGANTrainCount=32 + nGen=30 + maxAnchorsPerRef=5 + gpLambda=10 + nCritic=2`。
   - 增加动态 `ganIter` 公式、WGAN sampling Z、`trainSigma/sampleSigma` 拆分和 critic prescreen 的回归测试。
 
 ## 训练集与生成流程现状
 
-边界训练集仍按当前简化门控构造：
+截至 2026-07-08，region 版边界训练集仍按当前简化门控构造：
 
 1. 从 `[Population1, Offspring1, Population2, Offspring2]` 中收集当前候选。
 2. 先筛选可行解。
@@ -101,6 +117,15 @@ Region-conditioned GAN 分支当前主线确定为：
 9. 若训练样本充足，则用 WGAN-GP 训练，并在所有 ref 上完全随机抽取 `QueryC=random_all_w`，总生成数受 `nGen=30` 限制。训练 Z 默认标准随机；采样 Z 当前默认 `sampleSigma=0.3`。
 
 注意：当前只保留上一代 `BMem` 这一层短记忆，不做多代历史累计，也不做需要额外真实评估的后验边界筛选或局部修复。
+
+2026-07-08 的训练集结论：
+
+1. 当前 `BMem` 已经保存 pair 信息：`x_f/y_f` 是可行侧点，`x_i/y_i` 是最近不可行侧点，`gap` 是两端在归一化目标空间的距离。
+2. 但 `BuildBoundaryDataset_RC` 当前训练时只取 `TrainX=BMem.x_b`、`TrainY=BMem.y_b`；在 region 版 `UpdateBoundaryMemory_RC` 中，`x_b/y_b` 等价于可行侧 `x_f/y_f`。
+3. 因此当前 WGAN 学到的是 `p(x_f | condition)`，不是 `p(boundary pair | condition)`，也不是 `p(feasible-side thin boundary point | condition)`。
+4. 直接把 `[x_f;x_i]` 作为同一 condition 下的普通 `TrainX` 不建议进入主线。没有 `side/tau` 条件时，这会让模型学习可行/不可行两侧混合带，可能提高不可行生成并增大 `bwidth90_10_true`。
+5. 下一步应优先做 `pair-supported thin feasible-side TrainX`：从每个可行/不可行 pair 中选择或构造更靠近边界的可行侧 target，例如迁移旧 `UpdateBoundaryMemory_CBS` 的 `selectThinBoundaryTarget` 思路，或先保守保留 gap 最小、非支配、每 ref 少量 pair 的 `x_f`。
+6. 如果要显式使用 `x_i` 训练两侧分布，必须新增 `side/tau/gap_norm` 条件，并且生成时只 query 可行侧 `side=feasible` 或接近可行侧的 `tau`；不能让生成器无条件采样不可行侧。
 
 ## 最近实验依据
 
@@ -435,49 +460,173 @@ run=3 stage snapshot 早期结果：
 当前判定：
 
 - 这两批图是视觉诊断，不替代 `runs=3` 指标结论。
-- `ganIter=75` 已完成复跑，可用于和 `ganIter=50` 直接视觉对照；是否把 `ganIter` 从 50 改回 75，需要在这些图和必要的定量指标上再做一次明确判定。
-- 在未完成该判定前，主线默认保持 `ganIter=50`，原因是它已有完整拆因子指标支撑且成本更低。
+- `ganIter=75` 已完成复跑，可用于和 `ganIter=50` 直接视觉对照。该段是 2026-06-30 的阶段性判定；2026-07-08 后，主线已由 true-boundary A/B/C/D 复核和本轮决策更新为 `ganIter=100,nCritic=2`。
+
+## 2026-07-08 真实边界指标、C 主线与条件分支实验
+
+### A. A/B/C/D 用新指标重算
+
+实验目录：
+
+- `Data/CBS_RegionGAN_compare/ncritic_true_boundary_20260708_105015`
+
+共同设置：
+
+- `LIRCMOP5_BC` 到 `LIRCMOP10_BC`
+- `runs=1:3`
+- `N=100`
+- `maxFE=100000`
+- `queryMode=random_all_w`
+- `prevBMemMode=prev1_fair_union`
+- `sampleSigma=0.3`
+- `prescreenMultiplier=1`
+- 主判据：先 `bdist50_true`，再 `bwidth90_10_true`
+
+完成状态：
+
+| 分支 | `ganIter` | `nCritic` | run_summary | stage_snapshots | event_count |
+|---|---:|---:|---:|---:|---:|
+| `A_current_50x5` | 50 | 5 | 18/18 ok | 30 | 8004 |
+| `B_iter50_ncritic2` | 50 | 2 | 18/18 ok | 30 | 7991 |
+| `C_iter100_ncritic2` | 100 | 2 | 18/18 ok | 30 | 8012 |
+| `D_iter150_ncritic1` | 150 | 1 | 18/18 ok | 30 | 7996 |
+
+18 个 problem/run 的事件内中位数汇总：
+
+| 分支 | `bdist50_true` 中位数 | `bwidth90_10_true` 中位数 | `bcover_eps_true` 中位数 | `feasible_rate` 中位数 |
+|---|---:|---:|---:|---:|
+| `A_current_50x5` | 0.04084 | 0.30333 | 0.10000 | 0.41667 |
+| `B_iter50_ncritic2` | 0.06791 | 0.43938 | 0.10000 | 0.41667 |
+| `C_iter100_ncritic2` | 0.05025 | 0.30341 | 0.10000 | 0.39167 |
+| `D_iter150_ncritic1` | 0.06315 | 0.29479 | 0.10000 | 0.40000 |
+
+latest-valid 事件汇总：
+
+| 分支 | `bdist50_true` 中位数 | `bwidth90_10_true` 中位数 | `bcover_eps_true` 中位数 | `feasible_rate` 中位数 |
+|---|---:|---:|---:|---:|
+| `A_current_50x5` | 0.02426 | 0.08335 | 0.12500 | 0.23333 |
+| `B_iter50_ncritic2` | 0.03328 | 0.10559 | 0.10000 | 0.15000 |
+| `C_iter100_ncritic2` | 0.02707 | 0.09112 | 0.15000 | 0.18333 |
+| `D_iter150_ncritic1` | 0.03883 | 0.10687 | 0.15000 | 0.16667 |
+
+判定：
+
+- A 与 C 在不同聚合口径下各有优势，不能写成 C 在所有统计上绝对胜出。
+- B 明显不是主线候选。
+- D 的宽度局部有信号，但主距离和末段表现不足以替代 C。
+- 本轮操作主线按决策更新为 `C_iter100_ncritic2`，并已反映到 `CBS_RegionWGAN_GP.mainlineDefaults()`：`ganIter=100,nCritic=2`。
+
+### B. `s_local/rho` 条件分支对 C 基线
+
+有效实验目录：
+
+- 基线 C：`Data/CBS_RegionGAN_compare/ncritic_true_boundary_20260708_105015/C_iter100_ncritic2`
+- 条件分支：`Data/CBS_RegionGAN_compare/condition_slocal_rho_20260708_153442`
+
+无效或失败目录：
+
+- `Data/CBS_RegionGAN_compare/condition_slocal_rho_20260708_153359`
+- `Data/CBS_RegionGAN_compare/condition_true_boundary_20260708_153234`
+
+完成状态：
+
+| 分支 | condition mode | run_summary | stage_snapshots | event rows |
+|---|---|---:|---:|---:|
+| `C_baseline` | `region` | 18/18 ok | 30 | 8012 |
+| `C_region_slocal` | `region_slocal` | 18/18 ok | 30 | 8004 |
+| `C_region_rho` | `region_rho` | 18/18 ok | 30 | 7999 |
+
+注意：`branch_summary.csv` 中 `ok_run_count=0` 是汇总字段 bug，不能作为实验失败证据；`run_summary.csv` 和 `run.log` 已确认 18/18 ok。
+
+18 个 problem/run 的事件内中位数：
+
+| 分支 | `bdist50_true` 中位数 | `bwidth90_10_true` 中位数 | 距离配对胜率 | 宽度配对胜率 |
+|---|---:|---:|---:|---:|
+| `C_baseline` | 0.05025 | 0.30341 | - | - |
+| `C_region_slocal` | 0.05108 | 0.21276 | 9/18 | 8/18 |
+| `C_region_rho` | 0.05120 | 0.31914 | 6/18 | 11/18 |
+
+latest-valid 事件：
+
+| 分支 | `bdist50_true` 中位数 | `bwidth90_10_true` 中位数 |
+|---|---:|---:|
+| `C_baseline` | 0.02707 | 0.09112 |
+| `C_region_slocal` | 0.02746 | 0.09897 |
+| `C_region_rho` | 0.03615 | 0.09879 |
+
+固定 FE stage 结果仅含 `run=3`，只能作补充视角。该口径下基线更清楚领先：
+
+| 分支 | `bdist50_true` 中位数 | `bwidth90_10_true` 中位数 |
+|---|---:|---:|
+| `C_baseline` | 0.05407 | 0.23531 |
+| `C_region_slocal` | 0.06750 | 0.41632 |
+| `C_region_rho` | 0.06101 | 0.25004 |
+
+判定：
+
+- `region_slocal` 有局部宽度信号，但主距离没有稳定改善；不能升主线。
+- `region_rho` 有时能让宽度变窄，但主距离输得更多；应降低优先级。
+- 两个分支都没有在 `bdist50_true -> bwidth90_10_true` 的主判定链上稳定击败 C。
+- 条件实现是生效的，但条件描述的是 `BMem.y_b` cloud 内部坐标，不是真实边界法向距离或 pair-side 信息。
+- `s_local/rho` 后续只应作为 pair-supported thin boundary 的辅助条件，不应再单独作为主线修复。
+
+### C. 训练集方向的更新
+
+本轮讨论后的训练集结论：
+
+1. 使用 `Problem.GetPF()` 或真实 feasible-region grid 直接训练当前 CGAN 不成立，因为这些是真实 objective-space 边界，不含 decision-space `TrainX`。
+2. 用户提出的实际方向是可行的：直接使用当前 `BMem` 已有的 `x_f/y_f` 与 `x_i/y_i` pair 及其对应决策变量，不需要外部 oracle。
+3. 不建议把 `TrainX=[x_f;x_i]` 在无 `side/tau` 条件下直接混成一个 real distribution。这样会让生成器学习可行/不可行两侧混合带，可能增加不可行生成和带宽。
+4. 推荐第一分支是 `C_pair_thin_slocal`：只改训练集构造，把 `TrainX` 从可行侧 cloud 改成 pair-supported thin feasible-side target，条件先用 `[W(ref,:),s_local]`。
+5. 推荐第二分支才考虑 `C_pair_thin_slocal_gap` 或 two-side pair condition：在 `[W,s_local]` 基础上追加 `gap_norm`、`side` 或 `tau`，并且生成时只 query 可行侧。
+6. 如果 pair-thin 分支仍不能降低 `bdist50_true` 和 `bwidth90_10_true`，再判断主要瓶颈是 generator/selection 闭环，而不是训练云厚度。
 
 ## 当前存在的问题
 
-1. 生成目标仍没有收敛到“窄边界带”。当前 WGAN-GP 生成的仍是目标空间边界附近点云，很多阶段表现为厚带或离散簇，而不是稳定的一条窄边界。`linear150->75 + prescreen8` 在中后期更明显偏离训练集，说明增加训练强度和 critic 筛选不能自动解决这个核心问题。
+1. 生成目标仍没有收敛到“窄边界带”。当前 WGAN-GP 生成的仍是目标空间边界附近点云，很多阶段表现为厚带或离散簇，而不是稳定的一条窄边界。`linear150->75 + prescreen8` 在中后期更明显偏离训练集，`s_local/rho` 条件分支也没有稳定改善真实边界距离，说明增加训练强度、critic 筛选或单纯加 scalar 都不能自动解决这个核心问题。
 2. critic 分数与目标空间边界质量脱钩。`prescreenMultiplier=8` 的设计会选 critic 分数最高的候选，但当前图像和指标表明 critic 高分样本不一定更贴近可行/不可行边界。`8选1` 还可能放大 critic 对某些离散模式或偏移区域的偏好。
 3. 动态训练强度只解决早期问题，没有解决最终问题。`150->30` 在 `FE=10000` 明显改善，但最终 18-run 汇总不优于固定 75；`150->75 + prescreen8` 早期改善但中后期退化。训练步数不是可以单独加大的万能旋钮。
-4. 训练集本身可能同时包含不同质量的边界片段。部分边界存档贴近当前更好边界，部分仍停在较差边界；生成器用这些样本学习时容易学成厚带或混合分布。这个问题必须先用训练集宽度、训练集到可行/不可行界面的距离来量化，不能只看生成点。
+4. 训练集本身可能同时包含不同质量的边界片段。部分边界存档贴近当前更好边界，部分仍停在较差边界；生成器用这些样本学习时容易学成厚带或混合分布。2026-07-08 的结论更进一步：region 版当前只训练 `x_f` cloud，没有利用 `x_i/y_i` 作为 pair-side 监督。
 5. `QueryC=random_all_w` 的 query 覆盖数没有变。短记忆收益主要来自训练 BMem 支撑变厚，而不是 QueryC 本身更聪明。对完全未见或极弱训练 region 的泛化能力仍未被单独证明。
 6. 上一代 `BMem` 存活率很高，短期是优点，长期可能变成惯性。当前只验证了一代短记忆优于 current-only，尚未量化旧边界相对当前边界移动时是否会污染。
-7. Z 采样方差已验证是有效因素，但不是根因闭环。`sampleSigma=0.3` 能缓解厚带和离群，但并不能保证生成“一条窄边界”；如果训练集本身是多层边界或厚带，缩小 Z 只能收缩采样，不会纠正训练目标。
+7. Z 采样方差已验证是有效因素，但不是根因闭环。`sampleSigma=0.3` 能缓解厚带和离群，但并不能保证生成“一条窄边界”；如果训练集本身是多层边界或厚带，缩小 Z 或加 `s_local/rho` 只能改变采样和条件划分，不会纠正训练目标。
 8. `zDim=6` 当前最稳，但 latent 维度不是主要矛盾。`zDim=4` 的局部最终收益提示低维 latent 可能有助于收缩中位偏移，但 tail 风险仍在。
 9. WGAN 事件/阶段汇总已修复，`event_summary_all.csv` 和 `stage_snapshots_all.csv` 已可直接用于分析。`train_history_all.csv` 对 WGAN 为空是当前实现没有记录逐 iter 训练历史，不再视为汇总 bug。
 
 ## 下一步需要验证的问题
 
-优先级 1：训练集是不是已经偏离“当前最优窄边界”。
+优先级 1：实现并验证 pair-supported thin feasible-side 训练集。
 
-- 对每个 stage 输出训练集目标空间宽度：train-to-segment 距离 50/90 分位数、每 ref 的训练点 spread、训练点到可行/不可行界面的近似距离。
-- 标记并统计“较差边界片段”和“更好边界片段”的占比，尤其是用户图中红框位置这类训练集远离当前边界的样本。
-- 若训练集已经是厚带或多层边界，优先修训练集构造；若训练集很窄而生成仍厚，再修 WGAN 采样/训练。
+- 新分支建议命名：`C_pair_thin_slocal`。
+- 只改训练集构造，保持 C 主线其余设置：`CBS_RegionWGAN_GP + random_all_w + prev1_fair_union + ganIter=100 + nCritic=2 + zDim=6 + sampleSigma=0.3 + prescreen=1`。
+- 训练目标从 `TrainX=BMem.x_b` 改成 pair-supported thin feasible-side target。优先复用旧 `UpdateBoundaryMemory_CBS` 的 `selectThinBoundaryTarget` 思路；若先做保守版本，则保留 gap 小、非支配、每 ref 少量 pair 的 `x_f`。
+- `TrainC` 第一版用 `[W(ref,:),s_local]`，其中 `s_local` 应基于 pair thin target 或 pair representative objective 计算，不要分别按 `y_f/y_i` 混用。
+- 不把 `x_i` 直接混入无 side 条件的 `TrainX`。
 
-优先级 2：用同一套 `sampleSigma=0.3,zDim=6` 图像严格比较 `ganIter=50` 与 `ganIter=75`。
+优先级 2：pair-thin 分支的正式实验设计。
 
-- 对照目录：
-  - `Data/CBS_RegionGAN_compare/visual_run1_query_boundary_sigma03_zdim6_20260630_155715/domain_figures_all`
-  - `Data/CBS_RegionGAN_compare/visual_run1_query_boundary_sigma03_zdim6_iter75_20260630_162136/domain_figures_all`
-- 判断标准不是“红点数量多”或“局部可行率高”，而是生成点是否贴近训练边界、是否收缩成窄带、是否少离群、是否在 6 问题五阶段上稳定。
-- 若 `iter75` 视觉明显更优，再跑 `runs=3` 指标确认；否则保留 `ganIter=50`。
+- 对照：当前 C 基线 `C_iter100_ncritic2`。
+- 新分支：`C_pair_thin_slocal`。
+- 暂不同时叠加 `rho`、`gap_norm`、`side/tau`、dynamic `ganIter` 或 prescreen。
+- 问题：`LIRCMOP5_BC` 到 `LIRCMOP10_BC`。
+- `runs=1:3`，`N=100`，`maxFE=100000`。
+- 主判据仍是 `bdist50_true`，其次 `bwidth90_10_true`；`bcover_eps_true` 只作旁证。
+- 需要保留 event 级和 stage 级 true-boundary columns。当前 stage snapshot 只捕获单个 `captureRun`，如果要做固定 FE 的全 run 统计，需要扩展 runner 或主要依赖 event-level per-run median。
 
-优先级 3：把“生成一条边界而非厚带点云”定义成可重复指标。
+优先级 3：补充训练集和 condition 诊断。
 
-- 需要同时看 `gap_ratio50/90`、`near_boundary_rate_gap1`、生成点到训练集边界的目标空间距离、生成点沿边界方向的覆盖度、生成点垂直边界方向的宽度。
-- 不能只依赖某个单一问题或单一指标；至少保持 6 问题、五阶段、run 配对比较。
-- 目标是窄而连续的边界带，不是用高可行率或 critic 高分替代边界质量。
+- 对每个生成事件记录 pair-thin 前后的 `train_count`、每 ref pair 数、pair `gap` 分布、`x_f-x_i` 决策距离分布、thin target 到 `y_f->y_i` segment 的距离。
+- 启用或补跑 `conditionDiagGap`，量化同一 `z` 下改变 condition 是否真的改变 decision/objective 输出。
+- 保留 `query_count/query_sample_count/query_unique_ref_count`，确认新增条件没有只是在固定 `nGen=30` 下稀释采样。
+- 继续记录 `offspringG_survival_rate` 和 `offspringG_feasible_survival_rate`。如果生成点真实边界指标变好但存活率仍为 0，中断点在 selection 闭环。
 
-优先级 4：最终种群是否真的受益。
+优先级 4：如果 pair-thin 有收益，再拆第二层条件。
 
-- 下一次正式实验需要保存或导出环境选择前后的 `OffspringG` 存活标记、最终 Population 可行率、IGD/HV 或现有 PlatEMO metric。
-- 目的不是做后验筛选，而是验证“生成边界解”是否真正进入并改善后续进化。
+- `C_pair_thin_slocal_gap`：在 `[W,s_local]` 基础上追加 `gap_norm`。
+- `C_pair_twoside_slocal`：使用 `[x_f;x_i]` 训练时必须追加 `side` 或 `tau`，并且生成只 query 可行侧。
+- `rho` 只作为第三优先级附加条件；上一轮 `region_rho` 已显示单独使用时主距离不稳。
 
-优先级 5：只有在前四项稳定后，才回头拆 `dynamic ganIter` 和 `critic prescreen`。
+优先级 5：只有在训练集目标对齐后，才回头拆 `dynamic ganIter` 和 `critic prescreen`。
 
 - `150->30` 只证明早期训练强度不足，不证明最终主线要动态调度。
 - `linear150->75 + prescreen8` 已证明组合退化；若要继续，必须单独验证固定 `ganIter` + prescreen，以及动态 `ganIter` + no prescreen。
@@ -490,6 +639,9 @@ run=3 stage snapshot 早期结果：
 - 不做多代历史累计 BMem。
 - 不把 `nGen` 从 30 放大为主线。
 - 不把普通 BCE `CBS_RegionCGAN` 作为主线。
+- 不把 `Problem.GetPF()` 的真实 objective-space 边界作为正式训练 oracle。
+- 不把 `[x_f;x_i]` 在无 `side/tau` 条件下直接混成同一 `TrainX`。
+- 不把 `s_local/rho` 单独作为主线修复；它们只能作为 pair-thin 训练集的辅助条件。
 - 不把 `150->30`、`150->75 + prescreen8`、`critic prescreen8`、`zDim=4/8`、`sampleSigma=0.15/0.25/0.5/zero` 作为主线，除非后续配对实验能证明它们稳定改善最终窄边界质量。
 
 ## 验证与产物核对记录
@@ -517,8 +669,10 @@ matlab -batch "addpath(genpath('/Users/lanai/Code/Matlab/PlatEMO/PlatEMO')); che
 - `iter50_sigma03_zdim_range`：`zDim=4` 与 `zDim=8` 两个分支均为 18/18 ok，阶段快照均为 30 行。
 - `visual_run1_query_boundary_sigma03_zdim6_20260630_155715`：`run_summary.csv` 为 6/6 ok；`stage_snapshots_all.csv` 为 30 行；`domain_figure_manifest.csv` 为 30 行。
 - `visual_run1_query_boundary_sigma03_zdim6_iter75_20260630_162136`：`run_summary.csv` 为 6/6 ok；`stage_snapshots_all.csv` 为 30 行；`domain_figure_manifest.csv` 为 30 行。
-- 源码默认值已核对：`CBS_RegionWGAN_GP.mainlineDefaults()` 当前为 `queryMode=random_all_w, prevBMemMode=prev1_fair_union, bmemBandMode=current, ganIter=50, zDim=6, sampleSigma=0.3, prescreenMultiplier` 未启用。
-- 当前没有后台 MATLAB/parallel 实验进程继续运行。
+- `ncritic_true_boundary_20260708_105015`：A/B/C/D 四支均为 18/18 ok，阶段快照均为 30 行，均有 true-boundary metrics。
+- `condition_slocal_rho_20260708_153442`：`C_region_slocal` 与 `C_region_rho` 均为 18/18 ok；`branch_summary.csv` 的 `ok_run_count=0` 是汇总字段 bug，不能覆盖 `run_summary.csv` 与 `run.log` 的完成事实。
+- 源码默认值已核对：`CBS_RegionWGAN_GP.mainlineDefaults()` 当前为 `queryMode=random_all_w, prevBMemMode=prev1_fair_union, bmemBandMode=current, ganIter=100, nCritic=2, zDim=6, sampleSigma=0.3, prescreenMultiplier` 未启用。
+- 当前没有后台 MATLAB/parallel 实验进程继续运行；只看到 `fast-context-mcp` 辅助进程。
 
 # CCMO-GAN-BDG fix.md C4-C7 实验记录
 
