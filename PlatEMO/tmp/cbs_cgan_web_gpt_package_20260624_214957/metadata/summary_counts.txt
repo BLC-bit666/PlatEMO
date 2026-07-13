@@ -1,6 +1,0 @@
-png_count=3136
-csv_count=2554
-mat_count=31
-source_file_count=42
-data_size=809M
-source_size=492K

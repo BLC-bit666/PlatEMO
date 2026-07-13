@@ -1,3 +1,0 @@
-branch,status,out_dir,query_mode,gan_iter,n_critic,run_count,ok_run_count,stage_snapshot_count,figure_count,error_message
-query_boundary_iter75,ok,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_RegionGAN_compare/qw_plan_noplot_20260628_001/stage2/query_boundary_iter75,boundary_populated,75,5,18,18,30,0,
-query_boundary_iter150,ok,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_RegionGAN_compare/qw_plan_noplot_20260628_001/stage2/query_boundary_iter150,boundary_populated,150,5,18,18,30,0,

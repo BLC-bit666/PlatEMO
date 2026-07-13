@@ -1,5 +1,0 @@
-problem,run,target_FE,actual_FE,gen,figure_file
-DASCMOP4_BC,3,10000,10080,48,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/skeleton_backbone_smoke_20260620/DASCMOP4_BC_run3/figures/DASCMOP4_BC_run3_targetFE010000.png
-DASCMOP4_BC,3,30000,30100,139,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/skeleton_backbone_smoke_20260620/DASCMOP4_BC_run3/figures/DASCMOP4_BC_run3_targetFE030000.png
-LIRCMOP9_BC,3,10000,10132,47,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/skeleton_backbone_smoke_20260620/LIRCMOP9_BC_run3/figures/LIRCMOP9_BC_run3_targetFE010000.png
-LIRCMOP9_BC,3,30000,30152,138,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/skeleton_backbone_smoke_20260620/LIRCMOP9_BC_run3/figures/LIRCMOP9_BC_run3_targetFE030000.png

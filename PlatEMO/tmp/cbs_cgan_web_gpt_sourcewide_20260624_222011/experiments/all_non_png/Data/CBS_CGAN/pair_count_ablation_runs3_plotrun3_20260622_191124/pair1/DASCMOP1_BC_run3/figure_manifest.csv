@@ -1,7 +1,0 @@
-problem,run,target_FE,actual_FE,gen,figure_file
-DASCMOP1_BC,3,10000,10120,47,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/pair_count_ablation_runs3_plotrun3_20260622_191124/pair1/DASCMOP1_BC_run3/figures/DASCMOP1_BC_run3_targetFE010000.png
-DASCMOP1_BC,3,30000,30047,139,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/pair_count_ablation_runs3_plotrun3_20260622_191124/pair1/DASCMOP1_BC_run3/figures/DASCMOP1_BC_run3_targetFE030000.png
-DASCMOP1_BC,3,50000,50067,230,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/pair_count_ablation_runs3_plotrun3_20260622_191124/pair1/DASCMOP1_BC_run3/figures/DASCMOP1_BC_run3_targetFE050000.png
-DASCMOP1_BC,3,70000,70087,321,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/pair_count_ablation_runs3_plotrun3_20260622_191124/pair1/DASCMOP1_BC_run3/figures/DASCMOP1_BC_run3_targetFE070000.png
-DASCMOP1_BC,3,100000,100007,457,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/pair_count_ablation_runs3_plotrun3_20260622_191124/pair1/DASCMOP1_BC_run3/figures/DASCMOP1_BC_run3_targetFE100000.png
-DASCMOP1_BC,3,NaN,NaN,457,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/pair_count_ablation_runs3_plotrun3_20260622_191124/pair1/DASCMOP1_BC_run3/figures/DASCMOP1_BC_run3_diagnostic_trends.png

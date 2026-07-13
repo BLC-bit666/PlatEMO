@@ -1,2 +1,0 @@
-variant,condition_mode,advWeight,reconstructionWeight,variant_folder,run_count,ok_count,failed_count,stage_count,history_count,figure_count
-A_ref_only_adv,ref_only,1,0,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/A_ref_only_adv_LIR6_run1_nGen30_20260623_220259/A_ref_only_adv,6,6,0,30,2629,120

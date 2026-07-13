@@ -1,23 +1,14 @@
 function [BMem,Diag] = UpdateBoundaryMemory_RC(PrevBMem, ...
     Population1,Offspring1,Population2,Offspring2,W,Options)
-%UPDATEBOUNDARYMEMORY_RC Boundary CLOUD memory for region-conditioned CGAN.
-%   Variant of UpdateBoundaryMemory_CBS for the traditional-CGAN refactor.
-%   Goal: keep, per COARSE objective-space region, a CLOUD of near-boundary
-%   feasible decisions whose distribution z can later fit -- instead of a thin
-%   one-point-per-reference skeleton. Differences vs the CBS mainline:
-%     * feasible anchors come from the first K objective-space fronts of the
-%       FEASIBLE subset (frontDepth, default 2), not front 1 only;
-%     * every near-boundary feasible anchor is kept with its OWN decision as a
-%       cloud member -- no per-pair target selection (thin/endpoint), no
-%       per-reference dedup, no maxCandidatePairsPerRef cap;
-%     * the post-pairing non-dominated filter (filterParetoMainLayer) is
-%       removed: it is redundant with the front-K anchor selection and would
-%       collapse the cloud back to a front;
-%     * the adaptive gap cap is retained as a boundary-proximity quality gate.
-%   With prevBMemMode=prev1_fair_union, previous feasible anchors join the
-%   feasible candidate pool before front sorting and per-ref capping. Previous
-%   infeasible endpoints are not reused as pair endpoints; retained anchors are
-%   re-paired against the current window's infeasible samples.
+%UPDATEBOUNDARYMEMORY_RC Boundary cloud for the region-conditioned WGAN.
+%   Feasible anchors come from the first K feasible objective fronts and are
+%   capped per reference. Each anchor is paired with its nearest current
+%   infeasible neighbor, then filtered by the adaptive gap cap. Feasible
+%   anchors from the previous BMem compete in the same current pool and are
+%   re-paired; previous infeasible endpoints are never reused.
+%   Options.bmemMode="coherent" switches to current-window normalization,
+%   strict one-refresh TTL, pair-before-cap selection, and no objective-
+%   dominance pair rejection. The default "legacy" path is unchanged.
 
     Samples = [Population1,Offspring1,Population2,Offspring2];
     [D,M] = inferMemoryDimensions(Samples,PrevBMem);
@@ -44,10 +35,24 @@ function [BMem,Diag] = UpdateBoundaryMemory_RC(PrevBMem, ...
         return;
     end
 
+    if boundaryMemoryMode(Options) == "coherent"
+        [BMem,Diag] = updateCoherentBoundaryMemory( ...
+            X,Y,C,PrevBMem,W,Options,D,M);
+        return;
+    end
+
     Stats = emptyPrevBMemStats();
     currentCount = size(Y,1);
     [X,Y,C,PrevRows,Stats.prev_bmem_candidate_count] = ...
-        appendPreviousFeasibleAnchors(X,Y,C,PrevBMem,D,M,Options);
+        appendPreviousFeasibleAnchors(X,Y,C,PrevBMem,D,M);
+    AnchorSource = [zeros(currentCount,1); ...
+        ones(size(Y,1) - currentCount,1)];
+    AnchorAge = zeros(size(Y,1),1);
+    if size(Y,1) > currentCount
+        PrevAge = double(PrevRows.age_f(:));
+        PrevAge(~isfinite(PrevAge) | PrevAge < 0) = 0;
+        AnchorAge(currentCount+1:end) = PrevAge + 1;
+    end
     PairableInfeasible = false(size(Y,1),1);
     PairableInfeasible(1:currentCount) = true;
 
@@ -58,15 +63,47 @@ function [BMem,Diag] = UpdateBoundaryMemory_RC(PrevBMem, ...
     Ref = assignReferences(Yn,W);
 
     Cloud = harvestBoundaryCloud(X,Y,Yn,Feasible,Ref,W,Options, ...
-        PairableInfeasible);
+        PairableInfeasible,AnchorSource,AnchorAge);
     Cloud = filterGapCap(Cloud,Options);
     Stats.prev_bmem_survivor_count = countPreviousSurvivors(Cloud,PrevRows);
     BMem = Cloud;
     Diag = makeDiag(BMem,Stats);
 end
 
+function [BMem,Diag] = updateCoherentBoundaryMemory( ...
+        CurrentX,CurrentY,CurrentC,PrevBMem,W,Options,D,M)
+    Stats = emptyPrevBMemStats();
+    currentCount = size(CurrentY,1);
+    [X,Y,C,PrevRows,Stats.prev_bmem_candidate_count] = ...
+        appendPreviousFeasibleAnchorsStrictTTL( ...
+        CurrentX,CurrentY,CurrentC,PrevBMem,D,M);
+
+    AnchorSource = [zeros(currentCount,1); ...
+        ones(size(Y,1) - currentCount,1)];
+    AnchorAge = zeros(size(Y,1),1);
+    if size(Y,1) > currentCount
+        AnchorAge(currentCount+1:end) = 1;
+    end
+    PairableInfeasible = false(size(Y,1),1);
+    PairableInfeasible(1:currentCount) = true;
+
+    CV = sum(max(0,C),2);
+    Feasible = CV <= 0;
+    [~,MinV,SpanV] = normalizeRows(CurrentY);
+    Yn = normalizeRowsUsingScale(Y,MinV,SpanV);
+    Ref = assignReferences(Yn,W);
+
+    Cloud = harvestBoundaryCloud(X,Y,Yn,Feasible,Ref,W,Options, ...
+        PairableInfeasible,AnchorSource,AnchorAge);
+    Cloud = filterGapCap(Cloud,Options);
+    Cloud = capPairedCloudPerRef(Cloud,Options);
+    Stats.prev_bmem_survivor_count = countPreviousSurvivors(Cloud,PrevRows);
+    BMem = Cloud;
+    Diag = makeDiag(BMem,Stats);
+end
+
 function Cloud = harvestBoundaryCloud(X,Y,Yn,Feasible,Ref,W,Options, ...
-        PairableInfeasible)
+        PairableInfeasible,AnchorSource,AnchorAge)
     D = size(X,2);
     M = size(Y,2);
     Cloud = emptyBMem(0,D,M);
@@ -79,6 +116,18 @@ function Cloud = harvestBoundaryCloud(X,Y,Yn,Feasible,Ref,W,Options, ...
     else
         PairableInfeasible = logical(PairableInfeasible(:));
     end
+    if nargin < 9 || isempty(AnchorSource) || ...
+            numel(AnchorSource) ~= numel(Feasible)
+        AnchorSource = zeros(size(Feasible));
+    else
+        AnchorSource = double(AnchorSource(:));
+    end
+    if nargin < 10 || isempty(AnchorAge) || ...
+            numel(AnchorAge) ~= numel(Feasible)
+        AnchorAge = zeros(size(Feasible));
+    else
+        AnchorAge = double(AnchorAge(:));
+    end
     frontDepth = boundaryFrontDepth(Options);
     radius = boundaryNeighborRadius(Options);
 
@@ -87,15 +136,18 @@ function Cloud = harvestBoundaryCloud(X,Y,Yn,Feasible,Ref,W,Options, ...
     % infeasible points usually have better objectives and would otherwise
     % dominate and evict the feasible boundary front.
     mainFeasible = false(size(Feasible));
+    frontRank = nan(size(Feasible));
     fAll = find(Feasible);
     if ~isempty(fAll)
         rank = paretoRankLimited(Y(fAll,:),frontDepth);
+        frontRank(fAll) = rank;
         mainFeasible(fAll(rank <= frontDepth)) = true;
     end
-    candidateFeasible = mainFeasible;
-    mainFeasible = capFeasibleAnchorsPerRef(mainFeasible,Y,Ref,Options);
-    mainFeasible = applyBoundaryBandMode(mainFeasible,candidateFeasible, ...
-        Y,Yn,Ref,Options);
+    coherent = boundaryMemoryMode(Options) == "coherent";
+    if ~coherent
+        mainFeasible = capFeasibleAnchorsPerRef( ...
+            mainFeasible,Y,Ref,Options);
+    end
 
     nRef = size(W,1);
     for r = 1 : nRef
@@ -107,14 +159,16 @@ function Cloud = harvestBoundaryCloud(X,Y,Yn,Feasible,Ref,W,Options, ...
         end
         % Normalized-objective distance from each feasible anchor to every
         % neighbourhood infeasible point; nearest infeasible defines the gap
-        % (boundary proximity). An anchor that already dominates its nearest
-        % infeasible point is not really at a boundary and is skipped.
+        % (boundary proximity). The legacy path skips an anchor that already
+        % dominates its nearest infeasible point; coherent mode retains every
+        % current feasible/infeasible neighborhood pair and lets gap quality
+        % decide after pairing.
         Dfi = pairDistance(Yn(fidx,:),Yn(iidx,:));
         [minGap,nnI] = min(Dfi,[],2);
         for a = 1 : numel(fidx)
             f = fidx(a);
             i = iidx(nnI(a));
-            if feasibleDominatesInfeasible(Y(f,:),Y(i,:))
+            if ~coherent && feasibleDominatesInfeasible(Y(f,:),Y(i,:))
                 continue;
             end
             Cloud.ref(end+1,1) = r;
@@ -125,8 +179,50 @@ function Cloud = harvestBoundaryCloud(X,Y,Yn,Feasible,Ref,W,Options, ...
             Cloud.y_f(end+1,:) = Y(f,:);
             Cloud.x_i(end+1,:) = X(i,:);
             Cloud.y_i(end+1,:) = Y(i,:);
+            Cloud.source_f(end+1,1) = AnchorSource(f);
+            Cloud.age_f(end+1,1) = AnchorAge(f);
+            Cloud.front_rank_f(end+1,1) = frontRank(f);
+            Cloud.candidate_row_f(end+1,1) = f;
+            Cloud.candidate_row_i(end+1,1) = i;
+            PairVector = Yn(i,:) - Yn(f,:);
+            PairNorm = sqrt(sum(PairVector.^2,2));
+            if isfinite(PairNorm) && PairNorm > eps
+                Cloud.pair_normal(end+1,:) = PairVector./PairNorm;
+            else
+                Cloud.pair_normal(end+1,:) = zeros(1,M);
+            end
         end
     end
+end
+
+function Cloud = capPairedCloudPerRef(Cloud,Options)
+    maxPerRef = boundaryMaxAnchorsPerRef(Options);
+    if isempty(Cloud) || isempty(Cloud.y_b) || ~isfinite(maxPerRef)
+        return;
+    end
+    refs = unique(Cloud.ref(:),'stable');
+    keep = false(size(Cloud.ref));
+    for k = 1 : numel(refs)
+        idx = find(Cloud.ref == refs(k));
+        if numel(idx) <= maxPerRef
+            keep(idx) = true;
+            continue;
+        end
+        Fitness = CalFitness_CBS(Cloud.y_f(idx,:));
+        Keys = [finiteSortColumn(Cloud.gap(idx)), ...
+            finiteSortColumn(Cloud.age_f(idx)), ...
+            finiteSortColumn(Cloud.front_rank_f(idx)), ...
+            finiteSortColumn(Fitness), ...
+            finiteSortColumn(Cloud.candidate_row_f(idx))];
+        [~,order] = sortrows(Keys,1:size(Keys,2));
+        keep(idx(order(1:maxPerRef))) = true;
+    end
+    Cloud = subsetMemory(Cloud,keep);
+end
+
+function values = finiteSortColumn(values)
+    values = double(values(:));
+    values(~isfinite(values)) = Inf;
 end
 
 function mainFeasible = capFeasibleAnchorsPerRef(mainFeasible,Y,Ref,Options)
@@ -149,109 +245,10 @@ function mainFeasible = capFeasibleAnchorsPerRef(mainFeasible,Y,Ref,Options)
     mainFeasible = keep;
 end
 
-function mainFeasible = applyBoundaryBandMode(mainFeasible, ...
-        candidateFeasible,Y,Yn,Ref,Options)
-    mode = boundaryBandMode(Options);
-    if mode == "current"
-        return;
-    end
-    candidate = mainFeasible;
-    if ~any(candidate)
-        return;
-    end
-    maxPerRef = boundaryMaxAnchorsPerRef(Options);
-    bandMax = boundaryBandMaxAnchorsPerRef(Options,maxPerRef);
-    keep = false(size(mainFeasible));
-    refs = unique(Ref(candidate),'stable');
-    for k = 1 : numel(refs)
-        idx = find(candidate & Ref == refs(k));
-        qualityFitness = boundaryQualityFitness(idx,candidateFeasible,Y,Ref, ...
-            refs(k));
-        switch mode
-            case {"pfseed_band","pfseed_band_mincover"}
-                selected = selectPFSeedBand(idx,Yn,qualityFitness,bandMax);
-            case "pfseed_multiband_safety"
-                selected = selectPFSeedMultiBand(idx,Yn,qualityFitness,bandMax);
-            otherwise
-                selected = idx;
-        end
-        keep(selected) = true;
-    end
-    if mode == "pfseed_band_mincover"
-        keep = supplementBoundaryMinCover(keep,candidate,Y,Options);
-    end
-    mainFeasible = keep;
-end
-
-function Fitness = boundaryQualityFitness(idx,candidateFeasible,Y,Ref,ref)
-    refCandidates = find(candidateFeasible & Ref == ref);
-    allFitness = CalFitness_CBS(Y(refCandidates,:));
-    [~,loc] = ismember(idx,refCandidates);
-    Fitness = allFitness(loc);
-end
-
-function selected = selectPFSeedBand(idx,Yn,Fitness,bandMax)
-    if numel(idx) <= bandMax
-        selected = idx;
-        return;
-    end
-    [~,seedLocal] = min(Fitness);
-    dist = sqrt(sum((Yn(idx,:) - Yn(idx(seedLocal),:)).^2,2));
-    ord = sortrows([(1:numel(idx))' dist(:) Fitness(:)],[2 3 1]);
-    selected = idx(ord(1:bandMax,1));
-end
-
-function selected = selectPFSeedMultiBand(idx,Yn,Fitness,bandMax)
-    if numel(idx) <= bandMax
-        selected = idx;
-        return;
-    end
-    [~,seed1Local] = min(Fitness);
-    distFromSeed1 = sqrt(sum((Yn(idx,:) - Yn(idx(seed1Local),:)).^2,2));
-    [~,seed2Local] = max(distFromSeed1);
-    seedLocals = unique([seed1Local;seed2Local],'stable');
-    seedIdx = idx(seedLocals);
-    remaining = setdiff(idx,seedIdx,'stable');
-    if numel(seedIdx) >= bandMax || isempty(remaining)
-        selected = seedIdx(1:min(bandMax,numel(seedIdx)));
-        return;
-    end
-    dToSeeds = pairDistance(Yn(remaining,:),Yn(seedIdx,:));
-    nearestSeedDist = min(dToSeeds,[],2);
-    [~,remainingLoc] = ismember(remaining,idx);
-    remainingFitness = Fitness(remainingLoc);
-    ord = sortrows([(1:numel(remaining))' nearestSeedDist(:) ...
-        remainingFitness(:)],[2 3 1]);
-    addCount = min(bandMax - numel(seedIdx),numel(remaining));
-    selected = [seedIdx;remaining(ord(1:addCount,1))];
-end
-
-function keep = supplementBoundaryMinCover(keep,candidate,Y,Options)
-    target = boundaryMinGANTrainCount(Options);
-    if target <= 0
-        return;
-    end
-    target = min(target,sum(candidate));
-    if sum(keep) >= target
-        return;
-    end
-    remaining = find(candidate & ~keep);
-    if isempty(remaining)
-        return;
-    end
-    Fitness = CalFitness_CBS(Y(remaining,:));
-    [~,ord] = sort(Fitness,'ascend');
-    addCount = min(target - sum(keep),numel(remaining));
-    keep(remaining(ord(1:addCount))) = true;
-end
-
 function [X,Y,C,PrevRows,prevCount] = appendPreviousFeasibleAnchors( ...
-    X,Y,C,PrevBMem,D,M,Options)
+    X,Y,C,PrevBMem,D,M)
     PrevRows = emptyBMem(0,D,M);
     prevCount = 0;
-    if previousBMemMode(Options) ~= "prev1_fair_union"
-        return;
-    end
     Prev = ensureMemoryFields(PrevBMem,D,M);
     if isempty(Prev.y_f)
         return;
@@ -267,44 +264,28 @@ function [X,Y,C,PrevRows,prevCount] = appendPreviousFeasibleAnchors( ...
     C = [C;zeros(prevCount,size(C,2))];
 end
 
-function mode = previousBMemMode(Options)
-    mode = "current_only";
-    if isstruct(Options) && isfield(Options,'prevBMemMode') && ...
-            ~isempty(Options.prevBMemMode)
-        mode = lower(strtrim(string(Options.prevBMemMode)));
+function [X,Y,C,PrevRows,prevCount] = ...
+        appendPreviousFeasibleAnchorsStrictTTL( ...
+        X,Y,C,PrevBMem,D,M)
+    PrevRows = emptyBMem(0,D,M);
+    prevCount = 0;
+    Prev = ensureMemoryFields(PrevBMem,D,M);
+    if isempty(Prev.y_f)
+        return;
     end
-    switch mode
-        case {"current","current_only","none","off"}
-            mode = "current_only";
-        case {"prev1_fair_union","fair_union","previous_fair_union"}
-            mode = "prev1_fair_union";
-        otherwise
-            error('CBSRegionGAN:BadPrevBMemMode', ...
-                'Unsupported previous BMem mode: %s.',mode);
+    age = double(Prev.age_f(:));
+    age(~isfinite(age) | age < 0) = 0;
+    valid = all(isfinite(Prev.x_f),2) & ...
+        all(isfinite(Prev.y_f),2) & age < 1;
+    if ~any(valid)
+        return;
     end
-end
-
-function mode = boundaryBandMode(Options)
-    mode = "current";
-    if isstruct(Options) && isfield(Options,'bmemBandMode') && ...
-            ~isempty(Options.bmemBandMode)
-        mode = lower(strtrim(string(Options.bmemBandMode)));
-    end
-    switch mode
-        case {"current","current_cloud","mixed_current","none","off"}
-            mode = "current";
-        case {"pfseed_band","pf_seed_band","local_pfseed","local_pf_seed"}
-            mode = "pfseed_band";
-        case {"pfseed_band_mincover","pf_seed_band_mincover", ...
-                "local_pfseed_mincover","local_pf_seed_mincover"}
-            mode = "pfseed_band_mincover";
-        case {"pfseed_multiband_safety","pf_seed_multiband_safety", ...
-                "multiband_safety","multi_band_safety"}
-            mode = "pfseed_multiband_safety";
-        otherwise
-            error('CBSRegionGAN:BadBMemBandMode', ...
-                'Unsupported BMem band mode: %s.',mode);
-    end
+    Prev.age_f = age;
+    PrevRows = subsetMemory(Prev,valid);
+    prevCount = size(PrevRows.y_f,1);
+    X = [X;PrevRows.x_f];
+    Y = [Y;PrevRows.y_f];
+    C = [C;zeros(prevCount,size(C,2))];
 end
 
 function count = countPreviousSurvivors(BMem,PrevRows)
@@ -375,24 +356,6 @@ function n = boundaryMaxAnchorsPerRef(Options)
     end
 end
 
-function n = boundaryBandMaxAnchorsPerRef(Options,maxPerRef)
-    if isfinite(maxPerRef)
-        n = min(maxPerRef,3);
-    else
-        n = 3;
-    end
-    if isstruct(Options) && isfield(Options,'bandMaxAnchorsPerRef') && ...
-            ~isempty(Options.bandMaxAnchorsPerRef)
-        value = double(Options.bandMaxAnchorsPerRef);
-        if isfinite(value) && value > 0
-            n = max(1,round(value));
-        end
-    end
-    if isfinite(maxPerRef)
-        n = min(n,maxPerRef);
-    end
-end
-
 function r = boundaryNeighborRadius(Options)
     r = 2;
     if isstruct(Options) && isfield(Options,'pairNeighborRefRadius') && ...
@@ -409,14 +372,15 @@ function minCount = boundaryMinCount(Options)
     end
 end
 
-function minCount = boundaryMinGANTrainCount(Options)
-    minCount = 0;
-    if isstruct(Options) && isfield(Options,'minGANTrainCount') && ...
-            ~isempty(Options.minGANTrainCount)
-        value = double(Options.minGANTrainCount);
-        if isfinite(value) && value > 0
-            minCount = max(1,round(value));
-        end
+function mode = boundaryMemoryMode(Options)
+    mode = "legacy";
+    if isstruct(Options) && isfield(Options,'bmemMode') && ...
+            ~isempty(Options.bmemMode)
+        mode = lower(strip(string(Options.bmemMode)));
+    end
+    if ~isscalar(mode) || ~ismember(mode,["legacy","coherent"])
+        error('CBSRegionGAN:BadBMemMode', ...
+            'bmemMode must be "legacy" or "coherent".');
     end
 end
 
@@ -508,6 +472,14 @@ function [Xn,MinV,SpanV] = normalizeRows(X)
     Xn(~isfinite(Xn)) = 0;
 end
 
+function Xn = normalizeRowsUsingScale(X,MinV,SpanV)
+    SpanV = double(SpanV(:)');
+    MinV = double(MinV(:)');
+    SpanV(~isfinite(SpanV) | SpanV <= eps) = 1;
+    Xn = (double(X) - MinV)./SpanV;
+    Xn(~isfinite(Xn)) = 0;
+end
+
 function BMem = subsetMemory(BMem,keep)
     keep = keep(:);
     BMem.ref = BMem.ref(keep,:);
@@ -518,6 +490,12 @@ function BMem = subsetMemory(BMem,keep)
     BMem.y_f = BMem.y_f(keep,:);
     BMem.x_i = BMem.x_i(keep,:);
     BMem.y_i = BMem.y_i(keep,:);
+    BMem.source_f = BMem.source_f(keep,:);
+    BMem.age_f = BMem.age_f(keep,:);
+    BMem.front_rank_f = BMem.front_rank_f(keep,:);
+    BMem.candidate_row_f = BMem.candidate_row_f(keep,:);
+    BMem.candidate_row_i = BMem.candidate_row_i(keep,:);
+    BMem.pair_normal = BMem.pair_normal(keep,:);
 end
 
 function BMem = ensureMemoryFields(BMem,D,M)
@@ -537,6 +515,12 @@ function BMem = ensureMemoryFields(BMem,D,M)
     if ~isfield(BMem,'y_f'); BMem.y_f = nan(n,M); end
     if ~isfield(BMem,'x_i'); BMem.x_i = nan(n,D); end
     if ~isfield(BMem,'y_i'); BMem.y_i = nan(n,M); end
+    if ~isfield(BMem,'source_f'); BMem.source_f = zeros(n,1); end
+    if ~isfield(BMem,'age_f'); BMem.age_f = zeros(n,1); end
+    if ~isfield(BMem,'front_rank_f'); BMem.front_rank_f = nan(n,1); end
+    if ~isfield(BMem,'candidate_row_f'); BMem.candidate_row_f = nan(n,1); end
+    if ~isfield(BMem,'candidate_row_i'); BMem.candidate_row_i = nan(n,1); end
+    if ~isfield(BMem,'pair_normal'); BMem.pair_normal = nan(n,M); end
 end
 
 function [D,M] = inferMemoryDimensions(Samples,PrevBMem)
@@ -570,7 +554,13 @@ function BMem = emptyBMem(N,D,M)
         'x_f',nan(N,D), ...
         'y_f',zeros(N,M), ...
         'x_i',nan(N,D), ...
-        'y_i',zeros(N,M));
+        'y_i',zeros(N,M), ...
+        'source_f',zeros(N,1), ...
+        'age_f',zeros(N,1), ...
+        'front_rank_f',nan(N,1), ...
+        'candidate_row_f',nan(N,1), ...
+        'candidate_row_i',nan(N,1), ...
+        'pair_normal',nan(N,M));
 end
 
 function Diag = makeDiag(BMem,Stats)

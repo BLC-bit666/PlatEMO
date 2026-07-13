@@ -5,9 +5,7 @@ function test_CBS_region_boundary_ref_cap()
     addpath(genpath(repoRoot));
 
     testBoundaryMemoryCapsFeasibleAnchorsPerRefBeforePairing();
-    testBoundaryMemoryPFSeedBandKeepsLocalAnchors();
-    testBoundaryMemoryPFSeedBandMinCoverSupplementsAnchors();
-    testPreviousBoundaryMemoryCompetesFairlyWhenEnabled();
+    testPreviousBoundaryMemoryCompetesFairly();
     testRegionRunnerSkipsSmallTrainingSet();
     fprintf('CBS RegionGAN boundary ref-cap regressions passed.\n');
 end
@@ -42,73 +40,13 @@ function testBoundaryMemoryCapsFeasibleAnchorsPerRefBeforePairing()
         'Per-ref anchor cap must keep the best feasible anchors by fitness.');
     assert(Diag.bmem_count == 5, ...
         'Boundary diagnostics must report the capped memory size.');
+    assert(all(BMem.source_f == 0) && all(BMem.age_f == 0) && ...
+            all(isfinite(BMem.front_rank_f)) && ...
+            isequal(size(BMem.pair_normal),[5 2]), ...
+        'Current BMem rows must retain behavior-neutral source/rank metadata.');
 end
 
-function testBoundaryMemoryPFSeedBandKeepsLocalAnchors()
-    Problem = DASCMOP1_BC('N',8,'D',6,'maxFE',100);
-    W = [0.5 0.5];
-    nFeasible = 10;
-    Xf = makeDecisionRows(Problem,nFeasible);
-    Yf = [(1:nFeasible)' (nFeasible:-1:1)'];
-    Cf = zeros(nFeasible,1);
-    Xi = makeDecisionRows(Problem,1);
-    Yi = [0 0];
-    Ci = 1;
-    Pop = SOLUTION([Xf;Xi],[Yf;Yi],[Cf;Ci]);
-    Empty = Pop([]);
-    Options = struct( ...
-        'frontDepth',2, ...
-        'pairNeighborRefRadius',0, ...
-        'minBoundaryLength',100, ...
-        'maxAnchorsPerRef',5, ...
-        'bmemBandMode',"pfseed_band", ...
-        'bandMaxAnchorsPerRef',3);
-
-    [BMem,Diag] = UpdateBoundaryMemory_RC([],Pop,Empty,Empty,Empty,W,Options);
-
-    expected = expectedPFSeedBand(Yf,Yi,5,3);
-    actual = sortrows(BMem.y_b);
-    assert(size(BMem.y_b,1) == 3, ...
-        'PF-seed band mode must keep only the local seed band per ref.');
-    assert(isequal(actual,expected), ...
-        'PF-seed band mode must keep the best anchor and nearest objective neighbours.');
-    assert(Diag.bmem_count == 3, ...
-        'Boundary diagnostics must report the PF-seed local-band size.');
-end
-
-function testBoundaryMemoryPFSeedBandMinCoverSupplementsAnchors()
-    Problem = DASCMOP1_BC('N',8,'D',6,'maxFE',100);
-    W = [0.5 0.5];
-    nFeasible = 10;
-    Xf = makeDecisionRows(Problem,nFeasible);
-    Yf = [(1:nFeasible)' (nFeasible:-1:1)'];
-    Cf = zeros(nFeasible,1);
-    Xi = makeDecisionRows(Problem,1);
-    Yi = [0 0];
-    Ci = 1;
-    Pop = SOLUTION([Xf;Xi],[Yf;Yi],[Cf;Ci]);
-    Empty = Pop([]);
-    Options = struct( ...
-        'frontDepth',2, ...
-        'pairNeighborRefRadius',0, ...
-        'minBoundaryLength',5, ...
-        'maxAnchorsPerRef',6, ...
-        'bmemBandMode',"pfseed_band_mincover", ...
-        'bandMaxAnchorsPerRef',2, ...
-        'minGANTrainCount',5);
-
-    [BMem,Diag] = UpdateBoundaryMemory_RC([],Pop,Empty,Empty,Empty,W,Options);
-
-    localBand = expectedPFSeedBand(Yf,Yi,6,2);
-    assert(size(BMem.y_b,1) == 5, ...
-        'PF-seed min-cover mode must supplement local bands up to the GAN train gate.');
-    assert(all(ismember(localBand,BMem.y_b,'rows')), ...
-        'PF-seed min-cover mode must retain the local seed band while supplementing.');
-    assert(Diag.bmem_count == 5, ...
-        'Boundary diagnostics must report the supplemented BMem size.');
-end
-
-function testPreviousBoundaryMemoryCompetesFairlyWhenEnabled()
+function testPreviousBoundaryMemoryCompetesFairly()
     Problem = DASCMOP1_BC('N',8,'D',6,'maxFE',100);
     W = [0.5 0.5];
     Xf = makeDecisionRows(Problem,1);
@@ -132,8 +70,7 @@ function testPreviousBoundaryMemoryCompetesFairlyWhenEnabled()
         'frontDepth',2, ...
         'pairNeighborRefRadius',0, ...
         'minBoundaryLength',100, ...
-        'maxAnchorsPerRef',1, ...
-        'prevBMemMode',"prev1_fair_union");
+        'maxAnchorsPerRef',1);
 
     [BMem,Diag] = UpdateBoundaryMemory_RC(PrevBMem,Pop,Empty,Empty,Empty, ...
         W,Options);
@@ -147,6 +84,9 @@ function testPreviousBoundaryMemoryCompetesFairlyWhenEnabled()
     assert(Diag.prev_bmem_candidate_count == 1 && ...
             Diag.prev_bmem_survivor_count == 1, ...
         'Diagnostics must report previous-memory candidates and survivors.');
+    assert(BMem.source_f == 1 && BMem.age_f == 1 && ...
+            isfinite(BMem.front_rank_f), ...
+        'Reused anchors must expose previous-source age without changing selection.');
 end
 
 function testRegionRunnerSkipsSmallTrainingSet()
@@ -164,7 +104,7 @@ function testRegionRunnerSkipsSmallTrainingSet()
         'generatorHidden',[32 32], ...
         'discriminatorHidden',[32 32]);
 
-    [GAN,RawDec] = RunRegionGAN_RC('trainandsample',"cgan",[], ...
+    [GAN,RawDec] = RunRegionGAN_RC('trainandsample',[], ...
         TrainX,TrainC,QueryC,1,Problem,Options);
 
     assert(isempty(GAN), ...
@@ -177,22 +117,4 @@ function X = makeDecisionRows(Problem,n)
     lower = double(Problem.lower);
     upper = double(Problem.upper);
     X = repmat(lower,n,1) + rand(n,Problem.D).*repmat(upper-lower,n,1);
-end
-
-function Expected = expectedPFSeedBand(Yf,Yi,maxPerRef,bandMax)
-    Fitness = CalFitness_CBS(Yf,zeros(size(Yf,1),1));
-    [~,fitOrd] = sort(Fitness,'ascend');
-    capped = fitOrd(1:maxPerRef);
-    Yall = [Yf;Yi];
-    minY = min(Yall,[],1);
-    spanY = max(Yall,[],1) - minY;
-    spanY(spanY <= eps) = 1;
-    Yn = (Yall - minY)./spanY;
-    cappedYn = Yn(capped,:);
-    cappedFitness = Fitness(capped);
-    [~,seedLocal] = min(cappedFitness);
-    seedYn = cappedYn(seedLocal,:);
-    dist = sqrt(sum((cappedYn - seedYn).^2,2));
-    order = sortrows([(1:numel(capped))' dist(:) cappedFitness(:)],[2 3 1]);
-    Expected = sortrows(Yf(capped(order(1:bandMax,1)),:));
 end

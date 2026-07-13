@@ -1,6 +1,0 @@
-problem,run,target_FE,actual_FE,gen,bmem_count,chain_count,train_count,query_count,raw_generated_count,feasible_generated_count,boundary_dist50,boundary_dist90,query_width90,train_dec_rmse,train_obj_dist50,train_obj_dist90,train_feasible_rate,query_obj_dist50,query_obj_dist90,feasible_rate
-DASCMOP5_BC,3,10000,10000,49,0,0,0,0,0,0,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN
-DASCMOP5_BC,3,30000,30000,149,0,0,0,0,0,0,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN
-DASCMOP5_BC,3,50000,50000,249,0,0,0,0,0,0,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN
-DASCMOP5_BC,3,70000,70000,349,0,0,0,0,0,0,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN
-DASCMOP5_BC,3,100000,100000,499,0,0,0,0,0,0,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN

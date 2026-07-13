@@ -1,4 +1,0 @@
-file,problem,run,train_count,holdout_count,generated_count,holdout_ref_hit_rate,holdout_obj_dist50,holdout_obj_dist90,novel_useful_rate,feasible_rate,status,error_message
-/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/fix1_cgan_failure_diag_20260621_232019/DASCMOP4_BC_run1/captured_dataset.mat,DASCMOP4_BC,1,15,15,15,0,0.913299189168544,0.962734118881395,0,0,ok,
-/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/fix1_cgan_failure_diag_20260621_232019/LIRCMOP7_BC_run1/captured_dataset.mat,LIRCMOP7_BC,1,18,21,21,1,0.284462716432768,0.2867583730127,0,1,ok,
-/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/fix1_cgan_failure_diag_20260621_232019/LIRCMOP8_BC_run1/captured_dataset.mat,LIRCMOP8_BC,1,29,25,25,0,0.260775969777459,0.28849598337914,0,1,ok,

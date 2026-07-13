@@ -1,6 +1,0 @@
-problem,run,target_FE,actual_FE,gen,bmem_count,boundary_count,train_count,query_count,raw_generated_count,feasible_generated_count,boundary_dist50,boundary_dist90,query_width90,generated_new_ref_hit_rate,holdout_ref_hit_rate,novel_useful_rate,train_dec_rmse,train_obj_dist50,train_obj_dist90,train_feasible_rate,query_obj_dist50,query_obj_dist90,feasible_rate
-DASCMOP5_BC,1,10000,10000,49,0,0,0,0,0,0,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN
-DASCMOP5_BC,1,30000,30000,149,0,0,0,0,0,0,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN
-DASCMOP5_BC,1,50000,50000,249,0,0,0,0,0,0,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN
-DASCMOP5_BC,1,70000,70200,346,26,9,26,5,20,0,0.251611089867169,0.287013811786472,0.0111103898480202,0,0,0,0.0597897427632855,0.259399823765996,0.262116919005992,0,0.257108691616268,0.292278733797214,0
-DASCMOP5_BC,1,100000,100120,482,30,11,30,5,20,0,0.42373245001475,0.508483344808427,0.0216838770737375,1,0,0,0.0238481671740303,0.308734491951699,0.492848656228273,0,0.427589507586849,0.513596015857259,0

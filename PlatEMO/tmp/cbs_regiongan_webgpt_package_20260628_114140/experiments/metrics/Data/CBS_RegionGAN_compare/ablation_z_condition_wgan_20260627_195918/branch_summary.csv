@@ -1,5 +1,0 @@
-branch,status,out_dir,query_mode,sample_z_mode,train_z_mode,sigma,gan_iter,n_critic,run_count,ok_run_count,stage_snapshot_count,figure_count,error_message
-query_boundary_populated,skipped_complete,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_RegionGAN_compare/ablation_z_condition_wgan_20260627_195918/query_boundary_populated,boundary_populated,random,random,1,50,5,18,18,30,30,
-z_zero_sample,skipped_complete,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_RegionGAN_compare/ablation_z_condition_wgan_20260627_195918/z_zero_sample,random_all_w,zero,random,1,50,5,18,18,30,30,
-z_sigma_025,skipped_complete,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_RegionGAN_compare/ablation_z_condition_wgan_20260627_195918/z_sigma_025,random_all_w,random,random,0.25,50,5,18,18,30,30,
-wgan_iter100,skipped_complete,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_RegionGAN_compare/ablation_z_condition_wgan_20260627_195918/wgan_iter100,random_all_w,random,random,1,100,5,18,18,30,30,

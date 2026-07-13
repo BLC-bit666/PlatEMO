@@ -1,4 +1,0 @@
-variant,advWeight,reconstructionWeight,pairMarginWeight,useMismatchD,variant_folder,run_count,ok_count,failed_count,stage_count,history_count,figure_count
-V0_Pure_CGAN,1,0,0,0,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/loss_ablation_lir_online_20260623_162606/V0_Pure_CGAN,18,18,0,90,8227,60
-V4_Full_current,1,1,1,1,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/loss_ablation_lir_online_20260623_162606/V4_Full_current,18,18,0,90,8227,60
-V5_Huber_Pair_no_adv,0,1,1,0,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/loss_ablation_lir_online_20260623_162606/V5_Huber_Pair_no_adv,18,18,0,90,8228,60

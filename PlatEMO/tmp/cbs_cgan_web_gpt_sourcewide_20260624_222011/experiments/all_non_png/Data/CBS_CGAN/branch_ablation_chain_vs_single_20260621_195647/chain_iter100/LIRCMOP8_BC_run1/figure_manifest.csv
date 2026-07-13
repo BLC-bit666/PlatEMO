@@ -1,6 +1,0 @@
-problem,run,target_FE,actual_FE,gen,figure_file
-LIRCMOP8_BC,1,10000,10140,48,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/branch_ablation_chain_vs_single_20260621_195647/chain_iter100/LIRCMOP8_BC_run1/figures/LIRCMOP8_BC_run1_targetFE010000.png
-LIRCMOP8_BC,1,30000,30160,139,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/branch_ablation_chain_vs_single_20260621_195647/chain_iter100/LIRCMOP8_BC_run1/figures/LIRCMOP8_BC_run1_targetFE030000.png
-LIRCMOP8_BC,1,50000,50180,230,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/branch_ablation_chain_vs_single_20260621_195647/chain_iter100/LIRCMOP8_BC_run1/figures/LIRCMOP8_BC_run1_targetFE050000.png
-LIRCMOP8_BC,1,70000,70200,321,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/branch_ablation_chain_vs_single_20260621_195647/chain_iter100/LIRCMOP8_BC_run1/figures/LIRCMOP8_BC_run1_targetFE070000.png
-LIRCMOP8_BC,1,100000,100120,457,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_CGAN/branch_ablation_chain_vs_single_20260621_195647/chain_iter100/LIRCMOP8_BC_run1/figures/LIRCMOP8_BC_run1_targetFE100000.png

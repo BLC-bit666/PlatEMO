@@ -1,3 +1,0 @@
-problem,run,target_FE,actual_FE,gen,bmem_count,chain_count,train_count,query_count,raw_generated_count,feasible_generated_count,boundary_dist50,boundary_dist90,query_width90,feasible_rate
-LIRCMOP9_BC,3,10000,10132,47,7,2,7,5,20,20,0.00697130193797356,0.0157370663301855,0.00530348811212912,1
-LIRCMOP9_BC,3,30000,30152,138,21,7,21,5,20,20,0.21956357821628,0.319351068089704,0.00813864860025688,1

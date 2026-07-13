@@ -1,7 +1,0 @@
-source_files=66
-
-selected_images=50
-
-metric_csv=221
-
-staging_size=29M

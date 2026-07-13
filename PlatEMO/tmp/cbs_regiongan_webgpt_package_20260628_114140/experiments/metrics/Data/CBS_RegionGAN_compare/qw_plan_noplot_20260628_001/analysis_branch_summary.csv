@@ -1,7 +1,0 @@
-stage,branch,query_mode,gan_iter,ok_runs,stage_rows,generated_snapshots,missing_generated_snapshots,final_generated_problems,final_missing_problems,train_mean,raw_gen_mean,feasible_mean,near_gap1_mean,gap50_median,gap50_mean,gap90_median,gap90_mean,gap90_p90,better_random_mean,sample_feas_mean,runtime_mean_min,runtime_p90_min,runtime_total_hr
-stage1,baseline_random_iter50,random_all_w,50,18,30,25,5,5,LIRCMOP5_BC,93.720,30.000,0.413,0.265,2.761,7.088,18.985,33.808,63.117,0.997,0.646,15.511,18.979,4.653
-stage1,query_boundary_iter50,boundary_populated,50,18,30,25,5,5,LIRCMOP5_BC,89.600,28.720,0.334,0.474,1.024,1.661,6.866,19.397,47.876,1.000,0.699,15.419,17.558,4.626
-stage1,random_iter100,random_all_w,100,18,30,26,4,6,,90.192,30.000,0.378,0.360,1.694,3.875,9.007,16.545,44.834,0.997,0.648,28.460,33.471,8.538
-stage1,query_boundary_iter100,boundary_populated,100,18,30,26,4,4,LIRCMOP5_BC;LIRCMOP6_BC,84.769,28.231,0.363,0.473,1.131,1.536,7.442,23.492,48.509,1.000,0.649,30.600,34.508,9.180
-stage2,query_boundary_iter75,boundary_populated,75,18,30,27,3,6,,89.333,27.481,0.394,0.476,1.104,1.986,4.759,22.604,81.730,1.000,0.691,21.511,25.091,6.453
-stage2,query_boundary_iter150,boundary_populated,150,18,30,26,4,5,LIRCMOP5_BC,91.923,28.615,0.353,0.489,0.914,1.203,4.950,7.303,14.412,1.000,0.663,42.317,49.324,12.695

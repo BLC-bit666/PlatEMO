@@ -1,4 +1,0 @@
-7cbe0144 (UC-GAN) feat(ccmo-gan-bdg): add compact pair-cell margin validation
-437531d5 (HEAD -> endpoint-yb-norm, UC-GAN-2) 6-16,目前最好的边界生成效果，但是算法运行速度慢
-4212a3d5 6-14,CGAN暂时告一段落，但是生成解仍然不是很贴边
-cf503f63 5-23：边界数据训练有效，GAN生成无效

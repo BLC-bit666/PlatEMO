@@ -8,24 +8,26 @@ function varargout = RunRegionGAN_RC(action,varargin)
     switch action
         case "metricnames"
             [varargout{1:nargout}] = metricNames(varargin{:});
-        case "allocatequery"
-            [varargout{1:nargout}] = allocateQueryConditions(varargin{:});
         case "regionquerysamples"
             [varargout{1:nargout}] = regionQuerySamples(varargin{:});
         case "regionquerypoolcount"
             varargout{1} = regionQueryPoolCount(varargin{:});
-        case "resolveganoptions"
-            [varargout{1:nargout}] = resolveGANOptions(varargin{:});
-        case "inittraintriggerstate"
-            varargout{1} = initTrainTriggerState();
-        case "traintrigger"
-            [varargout{1:nargout}] = resolveTrainTrigger(varargin{:});
-        case "updatetraintriggerstate"
-            varargout{1} = updateTrainTriggerState(varargin{:});
         case "offspringgsurvivaldiagnostics"
             varargout{1} = offspringGSurvivalDiagnostics(varargin{:});
+        case "offspringgsurvivalmasks"
+            [varargout{1:nargout}] = offspringGSurvivalMasks(varargin{:});
+        case "offspringsurvivalhandlemasks"
+            [varargout{1:nargout}] = offspringSurvivalHandleMasks(varargin{:});
+        case "querygroupdiagnostics"
+            varargout{1} = queryGroupDiagnostics(varargin{:});
+        case "assignobjectivequeryrefs"
+            varargout{1} = assignObjectiveQueryRefs(varargin{:});
+        case "matchedfrontierdiagnostics"
+            varargout{1} = matchedFrontierDiagnostics(varargin{:});
         case "trueboundarydiagnostics"
             varargout{1} = trueBoundaryDiagnostics(varargin{:});
+        case "trueboundarysubsetdiagnostics"
+            varargout{1} = trueBoundarySubsetDiagnostics(varargin{:});
         case "trainandsample"
             [varargout{1:nargout}] = trainAndSampleRegionGAN(varargin{:});
         otherwise
@@ -34,41 +36,51 @@ function varargout = RunRegionGAN_RC(action,varargin)
     end
 end
 
-function [SampleC,Counts,SampleRefs,DiagQueryC,DiagQueryRefs] = ...
-        regionQuerySamples(QueryMode,QueryC,DatasetInfo,W, ...
-        queryPerCondition,nGen)
-    QueryMode = normalizeRegionQueryMode(QueryMode);
-    switch QueryMode
-        case "random_all_w"
-            [PoolC,PoolRefs] = allRegionQueryPool(QueryC,DatasetInfo,W);
-            totalBudget = max(0,round(double(nGen)));
-            if isempty(PoolC) || totalBudget <= 0
-                SampleC = zeros(0,size(PoolC,2));
-                Counts = zeros(size(PoolC,1),1);
-                SampleRefs = zeros(0,1);
-                DiagQueryC = PoolC;
-                DiagQueryRefs = PoolRefs;
-                return;
-            end
-            idx = uniformRefConditionRows(PoolRefs,totalBudget);
-            SampleC = PoolC(idx,:);
-            Counts = accumarray(idx,1,[size(PoolC,1) 1],@sum,0);
-            SampleRefs = queryRefsAt(PoolRefs,idx);
-            DiagQueryC = PoolC;
-            DiagQueryRefs = PoolRefs;
-        case "frontier_anneal"
-            [SampleC,Counts,SampleRefs,DiagQueryC,DiagQueryRefs] = ...
-                frontierAnnealQuerySamples(QueryC,DatasetInfo,W,nGen);
-        otherwise
-            [SampleC,Counts] = allocateQueryConditions( ...
-                QueryC,queryPerCondition,nGen);
-            SampleRefs = expandRegionQueryRefs(DatasetInfo,Counts);
-            DiagQueryC = QueryC;
-            if isstruct(DatasetInfo) && isfield(DatasetInfo,'queryRegions')
-                DiagQueryRefs = DatasetInfo.queryRegions(:);
-            else
-                DiagQueryRefs = zeros(size(QueryC,1),1);
-            end
+function [SampleC,Counts,SampleRefs,DiagQueryC,DiagQueryRefs, ...
+        SampleGroups] = regionQuerySamples(QueryC,DatasetInfo,W,nGen)
+    [SampleC,Counts,SampleRefs,DiagQueryC,DiagQueryRefs] = ...
+        oneSixthFrontierQuerySamples(QueryC,DatasetInfo,W,nGen);
+    SampleGroups = queryGroupCodes(SampleRefs,DatasetInfo,W);
+end
+
+function Groups = queryGroupCodes(SampleRefs,DatasetInfo,W)
+    SampleRefs = validateRegionQueryRefs(SampleRefs,W);
+    if isempty(SampleRefs)
+        Groups = zeros(0,1);
+        return;
+    end
+    PopRefs = populatedRefsFromDatasetInfo(DatasetInfo,W);
+    FrontierRefs = oneHopFrontierRefs(W,PopRefs);
+    Groups = 3*ones(numel(SampleRefs),1);
+    Groups(ismember(SampleRefs,FrontierRefs)) = 2;
+    Groups(ismember(SampleRefs,PopRefs)) = 1;
+end
+
+function Refs = populatedRefsFromDatasetInfo(DatasetInfo,W)
+    if isstruct(DatasetInfo) && isfield(DatasetInfo,'queryRegions') && ...
+            ~isempty(DatasetInfo.queryRegions)
+        Refs = double(DatasetInfo.queryRegions(:));
+    elseif isstruct(DatasetInfo) && isfield(DatasetInfo,'trainRef') && ...
+            ~isempty(DatasetInfo.trainRef)
+        Refs = double(DatasetInfo.trainRef(:));
+    else
+        Refs = zeros(0,1);
+    end
+    Refs = validateRegionQueryRefs(Refs,W);
+    Refs = unique(Refs,'stable');
+end
+
+function Refs = validateRegionQueryRefs(Refs,W)
+    Refs = double(Refs(:));
+    if isempty(Refs)
+        return;
+    end
+    nRef = size(W,1);
+    valid = isfinite(Refs) & Refs == fix(Refs) & ...
+        Refs >= 1 & Refs <= nRef;
+    if ~all(valid)
+        error('CBSRegionGAN:BadSampleRef', ...
+            'Sample refs must be finite integers in 1:size(W,1).');
     end
 end
 
@@ -88,22 +100,14 @@ function idx = uniformRefConditionRows(PoolRefs,totalBudget)
     end
 end
 
-function count = regionQueryPoolCount(QueryMode,QueryC,DatasetInfo,W)
-    QueryMode = normalizeRegionQueryMode(QueryMode);
-    if QueryMode == "random_all_w"
-        [PoolC,~] = allRegionQueryPool(QueryC,DatasetInfo,W);
-        count = size(PoolC,1);
-    elseif QueryMode == "frontier_anneal"
-        [PoolC,~,~] = frontierAnnealQueryPool(QueryC,DatasetInfo,W);
-        count = size(PoolC,1);
-    else
-        count = size(QueryC,1);
-    end
+function count = regionQueryPoolCount(QueryC,DatasetInfo,W)
+    [PoolC,~,~] = oneSixthFrontierQueryPool(QueryC,DatasetInfo,W);
+    count = size(PoolC,1);
 end
 
 function [SampleC,Counts,SampleRefs,DiagQueryC,DiagQueryRefs] = ...
-        frontierAnnealQuerySamples(QueryC,DatasetInfo,W,nGen)
-    [PoolC,PoolRefs,PoolGroup] = frontierAnnealQueryPool( ...
+        oneSixthFrontierQuerySamples(QueryC,DatasetInfo,W,nGen)
+    [PoolC,PoolRefs,PoolGroup] = oneSixthFrontierQueryPool( ...
         QueryC,DatasetInfo,W);
     DiagQueryC = PoolC;
     DiagQueryRefs = PoolRefs;
@@ -118,7 +122,8 @@ function [SampleC,Counts,SampleRefs,DiagQueryC,DiagQueryRefs] = ...
     popRows = find(PoolGroup == 1);
     frontierRows = find(PoolGroup == 2);
     [popBudget,frontierBudget] = frontierAnnealBudgets( ...
-        totalBudget,~isempty(popRows),~isempty(frontierRows));
+        totalBudget,~isempty(popRows),~isempty(frontierRows), ...
+        1/6);
     idx = zeros(popBudget + frontierBudget,1);
     row = 0;
     if popBudget > 0
@@ -138,10 +143,10 @@ function [SampleC,Counts,SampleRefs,DiagQueryC,DiagQueryRefs] = ...
     end
     SampleC = PoolC(idx,:);
     Counts = accumarray(idx,1,[size(PoolC,1) 1],@sum,0);
-    SampleRefs = queryRefsAt(PoolRefs,idx);
+    SampleRefs = PoolRefs(idx);
 end
 
-function [PoolC,PoolRefs,PoolGroup] = frontierAnnealQueryPool( ...
+function [PoolC,PoolRefs,PoolGroup] = oneSixthFrontierQueryPool( ...
         QueryC,DatasetInfo,W)
     [PopC,PopRefs] = populatedRegionQueryPool(QueryC,DatasetInfo,W);
     [AllC,AllRefs] = allRegionQueryPool(QueryC,DatasetInfo,W);
@@ -164,7 +169,7 @@ function [PopC,PopRefs] = populatedRegionQueryPool( ...
     end
     if isstruct(DatasetInfo) && isfield(DatasetInfo,'queryRegions') && ...
             numel(DatasetInfo.queryRegions) == size(PopC,1)
-        PopRefs = round(double(DatasetInfo.queryRegions(:)));
+        PopRefs = validateRegionQueryRefs(DatasetInfo.queryRegions,W);
     else
         PopRefs = inferConditionRefs(PopC,W);
     end
@@ -256,14 +261,22 @@ function D = pairDistance(A,B)
 end
 
 function [popBudget,frontierBudget] = frontierAnnealBudgets( ...
-        totalBudget,hasPopulated,hasFrontier)
+        totalBudget,hasPopulated,hasFrontier,frontierRatio)
+    if nargin < 4 || isempty(frontierRatio)
+        frontierRatio = 0.40;
+    end
+    frontierRatio = max(0,min(1,double(frontierRatio)));
     if totalBudget <= 0 || (~hasPopulated && ~hasFrontier)
         popBudget = 0;
         frontierBudget = 0;
     elseif hasPopulated && hasFrontier
-        popBudget = round(0.60*totalBudget);
-        popBudget = max(0,min(totalBudget,popBudget));
-        frontierBudget = totalBudget - popBudget;
+        frontierBudget = round(frontierRatio*totalBudget);
+        if totalBudget >= 2 && frontierRatio > 0 && frontierRatio < 1
+            frontierBudget = max(1,min(totalBudget - 1,frontierBudget));
+        else
+            frontierBudget = max(0,min(totalBudget,frontierBudget));
+        end
+        popBudget = totalBudget - frontierBudget;
     elseif hasPopulated
         popBudget = totalBudget;
         frontierBudget = 0;
@@ -279,7 +292,8 @@ function [PoolC,PoolRefs] = allRegionQueryPool(QueryC,DatasetInfo,W)
         PoolC = double(DatasetInfo.allQueryConditions);
         if isfield(DatasetInfo,'allQueryRegions') && ...
                 numel(DatasetInfo.allQueryRegions) == size(PoolC,1)
-            PoolRefs = round(double(DatasetInfo.allQueryRegions(:)));
+            PoolRefs = validateRegionQueryRefs( ...
+                DatasetInfo.allQueryRegions,W);
         else
             PoolRefs = zeros(size(PoolC,1),1);
         end
@@ -294,100 +308,7 @@ function [PoolC,PoolRefs] = allRegionQueryPool(QueryC,DatasetInfo,W)
     end
 end
 
-function Refs = queryRefsAt(PoolRefs,idx)
-    PoolRefs = round(double(PoolRefs(:)));
-    if isempty(PoolRefs)
-        Refs = zeros(numel(idx),1);
-        return;
-    end
-    idx = max(1,min(numel(PoolRefs),round(double(idx(:)))));
-    Refs = PoolRefs(idx);
-end
-
-function Refs = expandRegionQueryRefs(DatasetInfo,QueryAllocation)
-    if ~isstruct(DatasetInfo) || ~isfield(DatasetInfo,'queryRegions') || ...
-            isempty(DatasetInfo.queryRegions) || isempty(QueryAllocation)
-        Refs = zeros(0,1);
-        return;
-    end
-    queryRefs = round(double(DatasetInfo.queryRegions(:)));
-    QueryAllocation = round(double(QueryAllocation(:)));
-    n = min(numel(queryRefs),numel(QueryAllocation));
-    Refs = zeros(sum(max(0,QueryAllocation(1:n))),1);
-    row = 0;
-    for i = 1 : n
-        c = max(0,QueryAllocation(i));
-        if c <= 0
-            continue;
-        end
-        Refs(row+1:row+c) = queryRefs(i);
-        row = row + c;
-    end
-    Refs = Refs(1:row);
-end
-
-function mode = normalizeRegionQueryMode(mode)
-    mode = lower(strtrim(string(mode)));
-    switch mode
-        case {"boundary","boundary_populated","populated"}
-            mode = "boundary_populated";
-        case {"random","random_all_w","all_w_random"}
-            mode = "random_all_w";
-        case {"frontier_anneal","query_frontier_anneal", ...
-                "support_frontier","populated_frontier"}
-            mode = "frontier_anneal";
-        otherwise
-            error('CBSRegionGAN:BadQueryMode', ...
-                'Unsupported region QueryC mode: %s.',mode);
-    end
-end
-
-function [SampleC,Counts] = allocateQueryConditions(QueryC,queryPerCondition,nGen)
-    K = size(QueryC,1);
-    Counts = zeros(K,1);
-    if isempty(QueryC) || K == 0
-        SampleC = zeros(0,size(QueryC,2));
-        return;
-    end
-    perRegionCap = max(1,round(double(queryPerCondition)));
-    totalBudget = max(0,round(double(nGen)));
-    if totalBudget <= 0
-        SampleC = zeros(0,size(QueryC,2));
-        return;
-    end
-
-    order = randperm(K);
-    while sum(Counts) < totalBudget && any(Counts < perRegionCap)
-        progressed = false;
-        for p = 1 : K
-            r = order(p);
-            if Counts(r) >= perRegionCap
-                continue;
-            end
-            Counts(r) = Counts(r) + 1;
-            progressed = true;
-            if sum(Counts) >= totalBudget
-                break;
-            end
-        end
-        if ~progressed
-            break;
-        end
-    end
-
-    SampleC = zeros(sum(Counts),size(QueryC,2));
-    row = 0;
-    for i = 1 : K
-        c = Counts(i);
-        if c <= 0
-            continue;
-        end
-        SampleC(row+1:row+c,:) = repmat(QueryC(i,:),c,1);
-        row = row + c;
-    end
-end
-
-function [GAN,RawDec] = trainAndSampleRegionGAN(ganKind,GAN,TrainX,TrainC, ...
+function [GAN,RawDec] = trainAndSampleRegionGAN(GAN,TrainX,TrainC, ...
         QueryC,queryPerCondition,Problem,GANOptions)
     minTrainCount = 1;
     if isstruct(GANOptions) && isfield(GANOptions,'minTrainCount') && ...
@@ -398,209 +319,11 @@ function [GAN,RawDec] = trainAndSampleRegionGAN(ganKind,GAN,TrainX,TrainC, ...
         RawDec = zeros(0,Problem.D);
         return;
     end
-    switch lower(strtrim(string(ganKind)))
-        case "cgan"
-            GAN = BoundaryCGAN_CBS('train',GAN,TrainX,TrainC, ...
-                Problem,GANOptions);
-            [RawDec,SampleInfo] = BoundaryCGAN_CBS('samplebycondition', ...
-                GAN,QueryC,queryPerCondition,GANOptions);
-            GAN.last_sample_info = SampleInfo;
-        case "wgan-gp"
-            GAN = BoundaryWGAN_RC('train',GAN,TrainX,TrainC, ...
-                Problem,GANOptions);
-            [RawDec,SampleInfo] = BoundaryWGAN_RC('samplebycondition', ...
-                GAN,QueryC,queryPerCondition,GANOptions);
-            GAN.last_sample_info = SampleInfo;
-        otherwise
-            error('CBSRegionGAN:BadGANKind', ...
-                'Unsupported region GAN kind: %s.',ganKind);
-    end
-end
-
-function Options = resolveGANOptions(Options,currentFE,maxFE,TriggerInfo)
-    if nargin < 2 || isempty(currentFE)
-        currentFE = 0;
-    end
-    if nargin < 3 || isempty(maxFE)
-        maxFE = NaN;
-    end
-    if nargin < 4 || isempty(TriggerInfo)
-        TriggerInfo = emptyTrainTriggerInfo();
-    end
-    if ~isstruct(Options)
-        error('CBSRegionGAN:BadGANOptions', ...
-            'GAN options must be a struct.');
-    end
-    if ~isfield(Options,'iter') || isempty(Options.iter)
-        Options.iter = 0;
-    end
-    schedule = "";
-    if isfield(Options,'ganIterSchedule') && ...
-            ~isempty(Options.ganIterSchedule)
-        schedule = lower(strtrim(string(Options.ganIterSchedule)));
-    end
-    Options.gan_iter_schedule = schedule;
-    switch schedule
-        case {"","fixed","none","off"}
-            Options.iter = max(0,round(double(Options.iter)));
-            Options.gan_iter_used = Options.iter;
-        case {"linear","linear_fe","fe_linear"}
-            startIter = optionScalar(Options,'ganIterStart',Options.iter);
-            endIter = optionScalar(Options,'ganIterEnd',Options.iter);
-            progress = finiteRatio(currentFE,maxFE);
-            iter = round(startIter + (endIter - startIter)*progress);
-            iter = min(max(iter,min(startIter,endIter)), ...
-                max(startIter,endIter));
-            Options.iter = max(0,round(double(iter)));
-            Options.gan_iter_used = Options.iter;
-        case {"two_level_data_change","data_change_two_level", ...
-                "triggered_two_level"}
-            boostIter = optionScalar(Options,'ganIterStart',Options.iter);
-            baseIter = optionScalar(Options,'ganIterEnd',Options.iter);
-            useBoost = triggerInfoFlag(TriggerInfo,'trigger_first_train') || ...
-                triggerInfoFlag(TriggerInfo,'trigger_data_changed') || ...
-                triggerInfoFlag(TriggerInfo,'trigger_ref_changed');
-            if useBoost
-                Options.iter = max(0,round(double(boostIter)));
-            else
-                Options.iter = max(0,round(double(baseIter)));
-            end
-            Options.gan_iter_used = Options.iter;
-        otherwise
-            error('CBSRegionGAN:BadGANIterSchedule', ...
-                'Unsupported ganIterSchedule: %s.',schedule);
-    end
-end
-
-function State = initTrainTriggerState()
-    State = struct( ...
-        'hasTrained',false, ...
-        'lastTrainCount',0, ...
-        'lastQueryUniqueRefCount',0);
-end
-
-function [TrainNow,Info] = resolveTrainTrigger(Options,State,gen, ...
-        trainCount,queryUniqueRefCount,periodic)
-    if nargin < 2 || isempty(State)
-        State = initTrainTriggerState();
-    end
-    if nargin < 3 || isempty(gen)
-        gen = 0;
-    end
-    if nargin < 4 || isempty(trainCount)
-        trainCount = 0;
-    end
-    if nargin < 5 || isempty(queryUniqueRefCount)
-        queryUniqueRefCount = 0;
-    end
-    if nargin < 6 || isempty(periodic)
-        periodic = false;
-    end
-    periodic = logical(periodic);
-    trainCount = max(0,round(double(trainCount)));
-    queryUniqueRefCount = max(0,round(double(queryUniqueRefCount)));
-    mode = optionString(Options,'trainTriggerMode',"off");
-    deltaThreshold = optionScalar(Options,'trainTriggerDelta',0.20);
-    deltaThreshold = max(0,double(deltaThreshold));
-
-    Info = emptyTrainTriggerInfo();
-    Info.trigger_mode = mode;
-    Info.trigger_generation = double(gen);
-    Info.trigger_periodic = double(periodic);
-    Info.trigger_current_train_count = double(trainCount);
-    Info.trigger_last_train_count = double(State.lastTrainCount);
-    Info.trigger_current_query_unique_ref_count = ...
-        double(queryUniqueRefCount);
-    Info.trigger_last_query_unique_ref_count = ...
-        double(State.lastQueryUniqueRefCount);
-
-    if State.hasTrained
-        denom = max(1,double(State.lastTrainCount));
-        Info.trigger_train_count_delta = ...
-            abs(double(trainCount) - double(State.lastTrainCount))/denom;
-        Info.trigger_data_changed = double( ...
-            Info.trigger_train_count_delta >= deltaThreshold);
-        Info.trigger_ref_changed = double( ...
-            queryUniqueRefCount ~= State.lastQueryUniqueRefCount);
-    else
-        Info.trigger_train_count_delta = NaN;
-        Info.trigger_first_train = double(trainCount > 0);
-    end
-
-    switch mode
-        case {"","off","none","periodic","fixed"}
-            TrainNow = periodic;
-        case {"deltatraincount20","delta_train_count20", ...
-                "delta_train_count","data_change"}
-            TrainNow = periodic || logical(Info.trigger_first_train) || ...
-                logical(Info.trigger_data_changed) || ...
-                logical(Info.trigger_ref_changed);
-        otherwise
-            error('CBSRegionGAN:BadTrainTriggerMode', ...
-                'Unsupported trainTriggerMode: %s.',mode);
-    end
-    Info.trigger_train_now = double(TrainNow);
-    Info.trigger_reason = trainTriggerReason(TrainNow,Info);
-end
-
-function State = updateTrainTriggerState(State,Info)
-    if nargin < 1 || isempty(State)
-        State = initTrainTriggerState();
-    end
-    if nargin < 2 || isempty(Info)
-        return;
-    end
-    State.hasTrained = true;
-    State.lastTrainCount = max(0,round(double( ...
-        Info.trigger_current_train_count)));
-    State.lastQueryUniqueRefCount = max(0,round(double( ...
-        Info.trigger_current_query_unique_ref_count)));
-end
-
-function Info = emptyTrainTriggerInfo()
-    Info = struct( ...
-        'trigger_mode',"off", ...
-        'trigger_reason',"", ...
-        'trigger_generation',0, ...
-        'trigger_train_now',0, ...
-        'trigger_periodic',0, ...
-        'trigger_first_train',0, ...
-        'trigger_data_changed',0, ...
-        'trigger_ref_changed',0, ...
-        'trigger_train_count_delta',NaN, ...
-        'trigger_last_train_count',0, ...
-        'trigger_current_train_count',0, ...
-        'trigger_last_query_unique_ref_count',0, ...
-        'trigger_current_query_unique_ref_count',0);
-end
-
-function reason = trainTriggerReason(TrainNow,Info)
-    if ~TrainNow
-        reason = "waiting_period";
-    elseif logical(Info.trigger_periodic)
-        reason = "periodic";
-    elseif logical(Info.trigger_first_train)
-        reason = "first_train";
-    elseif logical(Info.trigger_data_changed)
-        reason = "train_count_delta";
-    elseif logical(Info.trigger_ref_changed)
-        reason = "ref_change";
-    else
-        reason = "triggered";
-    end
-end
-
-function value = optionString(S,name,defaultValue)
-    value = defaultValue;
-    if isstruct(S) && isfield(S,name) && ~isempty(S.(name))
-        value = S.(name);
-    end
-    value = lower(strtrim(string(value)));
-end
-
-function flag = triggerInfoFlag(Info,name)
-    flag = isstruct(Info) && isfield(Info,name) && ...
-        ~isempty(Info.(name)) && any(double(Info.(name)) ~= 0);
+    GAN = BoundaryWGAN_RC('train',GAN,TrainX,TrainC, ...
+        Problem,GANOptions);
+    [RawDec,SampleInfo] = BoundaryWGAN_RC('samplebycondition', ...
+        GAN,QueryC,queryPerCondition,GANOptions);
+    GAN.last_sample_info = SampleInfo;
 end
 
 function Metrics = offspringGSurvivalDiagnostics(GDec,GCon,SelectedDec)
@@ -635,6 +358,341 @@ function Metrics = offspringGSurvivalDiagnostics(GDec,GCon,SelectedDec)
     if any(feasible)
         Metrics.offspringG_feasible_survival_rate = ...
             mean(double(survived(feasible)));
+    end
+end
+
+function [InP1,InP2,InUnion] = offspringGSurvivalMasks(GDec,P1Dec,P2Dec)
+    GDec = double(GDec);
+    P1Dec = double(P1Dec);
+    P2Dec = double(P2Dec);
+    InP1 = decisionRowsPresentMultiset(GDec,P1Dec);
+    InP2 = decisionRowsPresentMultiset(GDec,P2Dec);
+    InUnion = decisionRowsPresentMultiset(GDec,[P1Dec;P2Dec]);
+end
+
+function [InP1,InP2,InUnion] = offspringSurvivalHandleMasks( ...
+        Offspring,P1,P2)
+    InP1 = solutionHandlesPresent(Offspring,P1);
+    InP2 = solutionHandlesPresent(Offspring,P2);
+    InUnion = solutionHandlesPresent(Offspring,[P1,P2]);
+end
+
+function present = solutionHandlesPresent(Query,Rows)
+    present = false(numel(Query),1);
+    if isempty(Query) || isempty(Rows)
+        return;
+    end
+    try
+        for i = 1 : numel(Query)
+            present(i) = any(Query(i) == Rows);
+        end
+    catch Error
+        throwAsCaller(MException('CBSRegionGAN:BadSurvivalHandles', ...
+            'Offspring and selected rows must support handle identity: %s', ...
+            Error.message));
+    end
+end
+
+function Metrics = queryGroupDiagnostics(GeneratedObj,GeneratedCon,Groups, ...
+        InP1,InP2,InUnion,PF,Options)
+    if nargin < 7
+        PF = [];
+    end
+    if nargin < 8 || isempty(Options)
+        Options = struct();
+    end
+    GeneratedObj = double(GeneratedObj);
+    n = size(GeneratedObj,1);
+    if numel(Groups) ~= n
+        error('CBSRegionGAN:BadQueryGroupRows', ...
+            'Query group rows must match generated objective rows.');
+    end
+    Groups = double(Groups(:));
+    if any(~isfinite(Groups) | Groups ~= fix(Groups) | ...
+            Groups < 1 | Groups > 3)
+        error('CBSRegionGAN:BadQueryGroupCode', ...
+            'Query group codes must be finite integers in 1:3.');
+    end
+    if numel(InP1) ~= n || numel(InP2) ~= n || numel(InUnion) ~= n
+        error('CBSRegionGAN:BadQueryMaskRows', ...
+            'Query survival mask rows must match generated objective rows.');
+    end
+    InP1 = logical(InP1(:));
+    InP2 = logical(InP2(:));
+    InUnion = logical(InUnion(:));
+    Feasible = generatedFeasibleMask(GeneratedCon,n);
+
+    Metrics = struct();
+    GroupNames = ["populated","frontier","remote"];
+    for i = 1 : numel(GroupNames)
+        InGroup = Groups == i;
+        sampleCount = sum(InGroup);
+        feasibleCount = sum(Feasible & InGroup);
+        surviveP1Count = sum(InP1 & InGroup);
+        surviveP2Count = sum(InP2 & InGroup);
+        surviveUnionCount = sum(InUnion & InGroup);
+        if sampleCount > 0
+            feasibleRate = feasibleCount/sampleCount;
+            surviveP1Rate = surviveP1Count/sampleCount;
+            surviveP2Rate = surviveP2Count/sampleCount;
+            surviveUnionRate = surviveUnionCount/sampleCount;
+        else
+            feasibleRate = NaN;
+            surviveP1Rate = NaN;
+            surviveP2Rate = NaN;
+            surviveUnionRate = NaN;
+        end
+        if isempty(GeneratedCon)
+            GroupCon = [];
+        else
+            GroupCon = GeneratedCon(InGroup,:);
+        end
+        Geometry = trueBoundaryDiagnostics( ...
+            GeneratedObj(InGroup,:),GroupCon,PF,Options);
+        Prefix = "query_" + GroupNames(i) + "_";
+        Metrics.(char(Prefix + "sample_count")) = sampleCount;
+        Metrics.(char(Prefix + "feasible_count")) = feasibleCount;
+        Metrics.(char(Prefix + "feasible_rate")) = feasibleRate;
+        Metrics.(char(Prefix + "survive_P1_count")) = surviveP1Count;
+        Metrics.(char(Prefix + "survive_P1_rate")) = surviveP1Rate;
+        Metrics.(char(Prefix + "survive_P2_count")) = surviveP2Count;
+        Metrics.(char(Prefix + "survive_P2_rate")) = surviveP2Rate;
+        Metrics.(char(Prefix + "survive_union_count")) = ...
+            surviveUnionCount;
+        Metrics.(char(Prefix + "survive_union_rate")) = ...
+            surviveUnionRate;
+        GeometryNames = fieldnames(Geometry);
+        for j = 1 : numel(GeometryNames)
+            Metrics.(char(Prefix + string(GeometryNames{j}))) = ...
+                Geometry.(GeometryNames{j});
+        end
+    end
+end
+
+function Refs = assignObjectiveQueryRefs(Obj,W,objMin,objSpan)
+    Obj = double(Obj);
+    W = double(W);
+    if ~ismatrix(Obj) || ~ismatrix(W) || ...
+            size(Obj,2) ~= size(W,2) || isempty(W)
+        error('CBSRegionGAN:BadObjectiveRefColumns', ...
+            'Objectives and nonempty reference vectors must have equal columns.');
+    end
+    M = size(W,2);
+    objMin = double(objMin(:)');
+    objSpan = double(objSpan(:)');
+    if numel(objMin) ~= M || numel(objSpan) ~= M
+        error('CBSRegionGAN:BadObjectiveScale', ...
+            'Objective scale must match reference-vector dimension.');
+    end
+    objSpan(~isfinite(objSpan) | objSpan <= eps) = 1;
+    Yn = (Obj - objMin)./objSpan;
+    Yn(~isfinite(Yn)) = 0;
+    Wn = W./max(sqrt(sum(W.^2,2)),eps);
+    NormY = sqrt(sum(Yn.^2,2));
+    Yu = Yn./max(NormY,eps);
+    [~,Refs] = max(Yu*Wn',[],2);
+    zeroRows = NormY <= eps;
+    if any(zeroRows)
+        D = pairDistance(Yn(zeroRows,:),W);
+        [~,Refs(zeroRows)] = min(D,[],2);
+    end
+    Refs = reshape(Refs,size(Obj,1),1);
+end
+
+function Metrics = matchedFrontierDiagnostics(GANData,DEData,PF,Options)
+    if nargin < 3
+        PF = [];
+    end
+    if nargin < 4 || isempty(Options)
+        Options = struct();
+    end
+    GANData = validateMatchedData(GANData,true);
+    DEData = validateMatchedData(DEData,false);
+    frontierRefs = unique(GANData.ref(GANData.group == 2),'stable');
+    deRefs = unique(DEData.ref,'stable');
+    availableRefs = frontierRefs(ismember(frontierRefs,deRefs));
+    unavailableRefs = frontierRefs(~ismember(frontierRefs,deRefs));
+
+    Metrics = emptyMatchedFrontierMetrics();
+    Metrics.frontier_query_ref_count = numel(frontierRefs);
+    Metrics.frontier_matched_de_available = double(~isempty(availableRefs));
+    Metrics.frontier_matched_de_available_ref_count = ...
+        numel(availableRefs);
+    Metrics.frontier_matched_de_unavailable_ref_count = ...
+        numel(unavailableRefs);
+    ganMask = GANData.group == 2 & ismember(GANData.ref,availableRefs);
+    deMask = ismember(DEData.ref,availableRefs);
+    Metrics = addMatchedSubsetMetrics(Metrics,"frontier_matched_gan_", ...
+        GANData,ganMask,PF,Options);
+    Metrics = addMatchedSubsetMetrics(Metrics,"frontier_matched_de_", ...
+        DEData,deMask,PF,Options);
+    Metrics = addRefEqualMatchedMetrics(Metrics, ...
+        "frontier_matched_gan_",GANData,ganMask,availableRefs,PF,Options);
+    Metrics = addRefEqualMatchedMetrics(Metrics, ...
+        "frontier_matched_de_",DEData,deMask,availableRefs,PF,Options);
+end
+
+function Data = validateMatchedData(Data,requireGroup)
+    required = {'obj','con','ref','survive_P1','survive_P2', ...
+        'survive_union'};
+    if requireGroup
+        required{end+1} = 'group';
+    end
+    if ~isstruct(Data) || ~all(isfield(Data,required))
+        error('CBSRegionGAN:BadMatchedData', ...
+            'Matched diagnostic data is missing required fields.');
+    end
+    Data.obj = double(Data.obj);
+    Data.con = double(Data.con);
+    n = size(Data.obj,1);
+    rowFields = {'ref','survive_P1','survive_P2','survive_union'};
+    if requireGroup
+        rowFields{end+1} = 'group';
+    else
+        Data.group = zeros(n,1);
+    end
+    for i = 1 : numel(rowFields)
+        name = rowFields{i};
+        if numel(Data.(name)) ~= n
+            error('CBSRegionGAN:BadMatchedDataRows', ...
+                'Matched diagnostic fields must have equal rows.');
+        end
+        Data.(name) = double(Data.(name)(:));
+    end
+    if size(Data.con,1) ~= n
+        error('CBSRegionGAN:BadMatchedDataRows', ...
+            'Matched constraint rows must equal objective rows.');
+    end
+    if any(~isfinite(Data.ref) | Data.ref ~= fix(Data.ref) | Data.ref < 1)
+        error('CBSRegionGAN:BadMatchedRef', ...
+            'Matched refs must be positive finite integers.');
+    end
+    if requireGroup && any(~isfinite(Data.group) | ...
+            Data.group ~= fix(Data.group) | Data.group < 1 | Data.group > 3)
+        error('CBSRegionGAN:BadMatchedGroup', ...
+            'Matched query groups must be finite integers in 1:3.');
+    end
+    maskValues = [Data.survive_P1;Data.survive_P2;Data.survive_union];
+    if any(~isfinite(maskValues) | ...
+            (maskValues ~= 0 & maskValues ~= 1))
+        error('CBSRegionGAN:BadMatchedSurvivalMask', ...
+            'Matched survival masks must contain only finite zero/one values.');
+    end
+    Data.survive_P1 = logical(Data.survive_P1);
+    Data.survive_P2 = logical(Data.survive_P2);
+    Data.survive_union = logical(Data.survive_union);
+end
+
+function Metrics = emptyMatchedFrontierMetrics()
+    Metrics = struct( ...
+        'frontier_query_ref_count',0, ...
+        'frontier_matched_de_available',0, ...
+        'frontier_matched_de_available_ref_count',0, ...
+        'frontier_matched_de_unavailable_ref_count',0);
+    prefixes = ["frontier_matched_gan_","frontier_matched_de_"];
+    for i = 1 : numel(prefixes)
+        prefix = prefixes(i);
+        countNames = ["sample_count","feasible_count", ...
+            "survive_P1_count","survive_P2_count","survive_union_count"];
+        rateNames = ["feasible_rate","survive_P1_rate", ...
+            "survive_P2_rate","survive_union_rate"];
+        geometryNames = ["bdist50_true","bwidth90_10_true", ...
+            "bcover_eps_true"];
+        for j = 1 : numel(countNames)
+            Metrics.(char(prefix + countNames(j))) = 0;
+        end
+        for j = 1 : numel(rateNames)
+            Metrics.(char(prefix + rateNames(j))) = NaN;
+        end
+        for j = 1 : numel(geometryNames)
+            Metrics.(char(prefix + geometryNames(j))) = NaN;
+        end
+        refEqualNames = ["refeq_feasible_rate","refeq_survive_P1_rate", ...
+            "refeq_survive_P2_rate","refeq_survive_union_rate", ...
+            "refeq_bdist50_true","refeq_bwidth90_10_true", ...
+            "refeq_bcover_eps_true"];
+        for j = 1 : numel(refEqualNames)
+            Metrics.(char(prefix + refEqualNames(j))) = NaN;
+        end
+    end
+end
+
+function Metrics = addMatchedSubsetMetrics(Metrics,prefix,Data,Mask, ...
+        PF,Options)
+    count = sum(Mask);
+    feasible = generatedFeasibleMask(subsetConstraints(Data.con,Mask),count);
+    Metrics.(char(prefix + "sample_count")) = count;
+    Metrics.(char(prefix + "feasible_count")) = sum(feasible);
+    Metrics.(char(prefix + "survive_P1_count")) = ...
+        sum(Data.survive_P1(Mask));
+    Metrics.(char(prefix + "survive_P2_count")) = ...
+        sum(Data.survive_P2(Mask));
+    Metrics.(char(prefix + "survive_union_count")) = ...
+        sum(Data.survive_union(Mask));
+    if count > 0
+        Metrics.(char(prefix + "feasible_rate")) = mean(double(feasible));
+        Metrics.(char(prefix + "survive_P1_rate")) = ...
+            mean(double(Data.survive_P1(Mask)));
+        Metrics.(char(prefix + "survive_P2_rate")) = ...
+            mean(double(Data.survive_P2(Mask)));
+        Metrics.(char(prefix + "survive_union_rate")) = ...
+            mean(double(Data.survive_union(Mask)));
+    end
+    Geometry = trueBoundaryDiagnostics(Data.obj(Mask,:), ...
+        subsetConstraints(Data.con,Mask),PF,Options);
+    names = fieldnames(Geometry);
+    for i = 1 : numel(names)
+        Metrics.(char(prefix + string(names{i}))) = Geometry.(names{i});
+    end
+end
+
+function Con = subsetConstraints(Con,Mask)
+    if isempty(Con)
+        Con = [];
+    else
+        Con = Con(Mask,:);
+    end
+end
+
+function Metrics = addRefEqualMatchedMetrics(Metrics,prefix,Data,BaseMask, ...
+        Refs,PF,Options)
+    if isempty(Refs)
+        return;
+    end
+    values = NaN(numel(Refs),7);
+    for i = 1 : numel(Refs)
+        mask = BaseMask & Data.ref == Refs(i);
+        count = sum(mask);
+        feasible = generatedFeasibleMask( ...
+            subsetConstraints(Data.con,mask),count);
+        if count > 0
+            values(i,1) = mean(double(feasible));
+            values(i,2) = mean(double(Data.survive_P1(mask)));
+            values(i,3) = mean(double(Data.survive_P2(mask)));
+            values(i,4) = mean(double(Data.survive_union(mask)));
+        end
+        Geometry = trueBoundaryDiagnostics(Data.obj(mask,:), ...
+            subsetConstraints(Data.con,mask),PF,Options);
+        values(i,5) = Geometry.bdist50_true;
+        values(i,6) = Geometry.bwidth90_10_true;
+        values(i,7) = Geometry.bcover_eps_true;
+    end
+    names = ["refeq_feasible_rate","refeq_survive_P1_rate", ...
+        "refeq_survive_P2_rate","refeq_survive_union_rate", ...
+        "refeq_bdist50_true","refeq_bwidth90_10_true", ...
+        "refeq_bcover_eps_true"];
+    for i = 1 : numel(names)
+        Metrics.(char(prefix + names(i))) = meanFiniteMatched(values(:,i));
+    end
+end
+
+function value = meanFiniteMatched(values)
+    values = double(values(:));
+    values = values(isfinite(values));
+    if isempty(values)
+        value = NaN;
+    else
+        value = mean(values);
     end
 end
 
@@ -700,6 +758,65 @@ function Metrics = trueBoundaryDiagnostics(GeneratedObj,GeneratedCon,PF,Options)
     end
     [AbsDist,Nearest] = min(D,[],2);
     Feasible = generatedFeasibleMask(GeneratedCon,size(GeneratedObj,1));
+    Metrics = summarizeTrueBoundaryMetrics(AbsDist,Nearest,Feasible, ...
+        BoundaryN,ArcInfo,Options);
+end
+
+function Metrics = trueBoundarySubsetDiagnostics(GeneratedObj,GeneratedCon, ...
+        PF,Subsets,Options)
+%TRUEBOUNDARYSUBSETDIAGNOSTICS Reuse one boundary projection for subsets.
+%   This read-only diagnostic is intended for offline archive audits. Each
+%   column of Subsets selects rows from the already evaluated GeneratedObj.
+
+    if nargin < 2
+        GeneratedCon = [];
+    end
+    if nargin < 3
+        PF = [];
+    end
+    if nargin < 4 || isempty(Subsets)
+        Subsets = true(size(GeneratedObj,1),1);
+    end
+    if nargin < 5 || isempty(Options)
+        Options = struct();
+    end
+    GeneratedObj = double(GeneratedObj);
+    Subsets = logical(Subsets);
+    if size(Subsets,1) ~= size(GeneratedObj,1)
+        error('CBSRegionGAN:SubsetRowMismatch', ...
+            'Subset masks must have one row per generated objective row.');
+    end
+    nSubset = size(Subsets,2);
+    Metrics = repmat(emptyTrueBoundaryMetrics(),1,nSubset);
+    if isempty(GeneratedObj) || size(GeneratedObj,2) < 2 || nSubset == 0
+        return;
+    end
+    [Boundary,Scale,ArcInfo] = trueBoundaryPoints(PF);
+    if isempty(Boundary)
+        return;
+    end
+    Obj = normalizeTrueBoundaryPoints(GeneratedObj(:,1:2),Scale);
+    BoundaryN = normalizeTrueBoundaryPoints(Boundary,Scale);
+    D = pairwiseDistanceLocal(Obj,BoundaryN);
+    if isempty(D)
+        return;
+    end
+    [AbsDist,Nearest] = min(D,[],2);
+    Feasible = generatedFeasibleMask(GeneratedCon,size(GeneratedObj,1));
+    for i = 1 : nSubset
+        keep = Subsets(:,i);
+        Metrics(i) = summarizeTrueBoundaryMetrics( ...
+            AbsDist(keep),Nearest(keep),Feasible(keep), ...
+            BoundaryN,ArcInfo,Options);
+    end
+end
+
+function Metrics = summarizeTrueBoundaryMetrics(AbsDist,Nearest,Feasible, ...
+        BoundaryN,ArcInfo,Options)
+    Metrics = emptyTrueBoundaryMetrics();
+    if isempty(AbsDist)
+        return;
+    end
     SignedDist = AbsDist;
     SignedDist(~Feasible) = -SignedDist(~Feasible);
 
@@ -1043,29 +1160,8 @@ function value = optionScalar(S,name,defaultValue)
     value = value(1);
 end
 
-function progress = finiteRatio(currentFE,maxFE)
-    currentFE = double(currentFE);
-    maxFE = double(maxFE);
-    if isempty(currentFE) || isempty(maxFE) || ~isfinite(currentFE(1)) || ...
-            ~isfinite(maxFE(1)) || maxFE(1) <= 0
-        progress = 0;
-        return;
-    end
-    progress = min(max(currentFE(1)/maxFE(1),0),1);
-end
-
-function [lastMetric,historyMetric,cloudMetric] = metricNames(ganKind)
-    switch lower(strtrim(string(ganKind)))
-        case "cgan"
-            lastMetric = 'region_cgan_last';
-            historyMetric = 'region_cgan_history';
-            cloudMetric = 'region_cgan_cloud';
-        case "wgan-gp"
-            lastMetric = 'region_wgan_gp_last';
-            historyMetric = 'region_wgan_gp_history';
-            cloudMetric = 'region_wgan_gp_cloud';
-        otherwise
-            error('CBSRegionGAN:BadGANKind', ...
-                'Unsupported region GAN kind: %s.',ganKind);
-    end
+function [lastMetric,historyMetric,cloudMetric] = metricNames()
+    lastMetric = 'region_wgan_gp_last';
+    historyMetric = 'region_wgan_gp_history';
+    cloudMetric = 'region_wgan_gp_cloud';
 end
