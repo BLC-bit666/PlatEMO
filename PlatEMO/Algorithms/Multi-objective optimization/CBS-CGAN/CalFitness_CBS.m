@@ -8,30 +8,14 @@ function Fitness = CalFitness_CBS(PopObj,PopCon)
         CV = sum(max(0,PopCon),2);
     end
 
-    Dominate = false(N);
-    for i = 1 : N-1
-        for j = i+1 : N
-            if CV(i) < CV(j)
-                Dominate(i,j) = true;
-            elseif CV(i) > CV(j)
-                Dominate(j,i) = true;
-            else
-                better = any(PopObj(i,:) < PopObj(j,:));
-                worse  = any(PopObj(i,:) > PopObj(j,:));
-                if better && ~worse
-                    Dominate(i,j) = true;
-                elseif worse && ~better
-                    Dominate(j,i) = true;
-                end
-            end
-        end
-    end
+    left  = reshape(PopObj,N,1,[]);
+    right = reshape(PopObj,1,N,[]);
+    objectiveDominates = all(left <= right,3) & any(left < right,3);
+    Dominate = CV < CV' | (CV == CV' & objectiveDominates);
+    Dominate(1:N+1:end) = false;
 
     Strength = sum(Dominate,2);
-    Raw = zeros(1,N);
-    for i = 1 : N
-        Raw(i) = sum(Strength(Dominate(:,i)));
-    end
+    Raw = Strength'*double(Dominate);
 
     Distance = pairDistance(PopObj,PopObj);
     Distance(logical(eye(N))) = inf;

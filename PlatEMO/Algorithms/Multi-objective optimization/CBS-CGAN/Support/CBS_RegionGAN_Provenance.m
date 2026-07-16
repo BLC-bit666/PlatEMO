@@ -25,7 +25,7 @@ function P = CBS_RegionGAN_Provenance(repoRoot,Options,workerCount)
     end
 
     Manifest = buildSourceManifest(repoRoot);
-    schemaVersion = "cbs_region_wgan_mainline_v1";
+    schemaVersion = "cbs_region_wgan_igd_mainline_v1";
     if isstruct(Options) && isfield(Options,'schemaVersion') && ...
             ~isempty(Options.schemaVersion)
         schemaVersion = string(Options.schemaVersion);

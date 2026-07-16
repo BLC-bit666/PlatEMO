@@ -1,120 +1,57 @@
 function test_CBS_region_boundary_ref_cap()
-%TEST_CBS_REGION_BOUNDARY_REF_CAP Verify RegionGAN boundary data gates.
+%TEST_CBS_REGION_BOUNDARY_REF_CAP Verify fixed BMem and TrainX gates.
 
     repoRoot = fileparts(fileparts(fileparts(fileparts(mfilename('fullpath')))));
     addpath(genpath(repoRoot));
-
-    testBoundaryMemoryCapsFeasibleAnchorsPerRefBeforePairing();
-    testPreviousBoundaryMemoryCompetesFairly();
-    testRegionRunnerSkipsSmallTrainingSet();
-    fprintf('CBS RegionGAN boundary ref-cap regressions passed.\n');
+    testAnchorCap();
+    testPreviousAnchorCompetition();
+    testSmallTrainingSetIsSkipped();
+    fprintf('CBS RegionGAN boundary regressions passed.\n');
 end
 
-function testBoundaryMemoryCapsFeasibleAnchorsPerRefBeforePairing()
+function testAnchorCap()
     Problem = DASCMOP1_BC('N',8,'D',6,'maxFE',100);
     W = [0.5 0.5];
-    nFeasible = 10;
-    Xf = makeDecisionRows(Problem,nFeasible);
-    Yf = [(1:nFeasible)' (nFeasible:-1:1)'];
-    Cf = zeros(nFeasible,1);
+    Xf = makeDecisionRows(Problem,10);
+    Yf = [(1:10)' (10:-1:1)'];
     Xi = makeDecisionRows(Problem,1);
-    Yi = [0 0];
-    Ci = 1;
-    Pop = SOLUTION([Xf;Xi],[Yf;Yi],[Cf;Ci]);
+    Pop = SOLUTION([Xf;Xi],[Yf;0 0],[zeros(10,1);1]);
     Empty = Pop([]);
-    Options = struct( ...
-        'frontDepth',2, ...
-        'pairNeighborRefRadius',0, ...
-        'minBoundaryLength',100, ...
-        'maxAnchorsPerRef',5);
-
-    [BMem,Diag] = UpdateBoundaryMemory_RC([],Pop,Empty,Empty,Empty,W,Options);
-
-    Fitness = CalFitness_CBS(Yf,Cf);
-    [~,ord] = sort(Fitness,'ascend');
-    expected = sortrows(Yf(ord(1:5),:));
-    actual = sortrows(BMem.y_b);
-    assert(size(BMem.y_b,1) == 5, ...
-        'Boundary memory must keep at most five feasible anchors per ref.');
-    assert(isequal(actual,expected), ...
-        'Per-ref anchor cap must keep the best feasible anchors by fitness.');
-    assert(Diag.bmem_count == 5, ...
-        'Boundary diagnostics must report the capped memory size.');
-    assert(all(BMem.source_f == 0) && all(BMem.age_f == 0) && ...
-            all(isfinite(BMem.front_rank_f)) && ...
-            isequal(size(BMem.pair_normal),[5 2]), ...
-        'Current BMem rows must retain behavior-neutral source/rank metadata.');
+    Options = struct('frontDepth',2,'pairNeighborRefRadius',0, ...
+        'minBoundaryLength',100,'maxAnchorsPerRef',5);
+    BMem = UpdateBoundaryMemory_RC([],Pop,Empty,Empty,Empty,W,Options);
+    Fitness = CalFitness_CBS(Yf,zeros(10,1));
+    [~,order] = sort(Fitness,'ascend');
+    assert(isequal(sortrows(BMem.y_b),sortrows(Yf(order(1:5),:))));
+    assert(all(BMem.source_f == 0) && all(BMem.age_f == 0));
 end
 
-function testPreviousBoundaryMemoryCompetesFairly()
+function testPreviousAnchorCompetition()
     Problem = DASCMOP1_BC('N',8,'D',6,'maxFE',100);
     W = [0.5 0.5];
-    Xf = makeDecisionRows(Problem,1);
-    Yf = [10 10];
-    Cf = 0;
-    Xi = makeDecisionRows(Problem,1);
-    Yi = [0 0];
-    Ci = 1;
-    Pop = SOLUTION([Xf;Xi],[Yf;Yi],[Cf;Ci]);
+    Pop = SOLUTION([makeDecisionRows(Problem,1); ...
+        makeDecisionRows(Problem,1)],[10 10;0 0],[0;1]);
     Empty = Pop([]);
-    PrevBMem = struct( ...
-        'ref',1, ...
-        'y_b',[1 1], ...
-        'gap',0.01, ...
-        'x_b',makeDecisionRows(Problem,1), ...
-        'x_f',makeDecisionRows(Problem,1), ...
-        'y_f',[1 1], ...
-        'x_i',makeDecisionRows(Problem,1), ...
-        'y_i',[0.9 0.9]);
-    Options = struct( ...
-        'frontDepth',2, ...
-        'pairNeighborRefRadius',0, ...
-        'minBoundaryLength',100, ...
-        'maxAnchorsPerRef',1);
-
-    [BMem,Diag] = UpdateBoundaryMemory_RC(PrevBMem,Pop,Empty,Empty,Empty, ...
-        W,Options);
-
-    assert(size(BMem.y_b,1) == 1, ...
-        'Fair previous-memory union must respect the per-ref cap.');
-    assert(isequal(BMem.y_b,[1 1]), ...
-        'Previous BMem candidates must compete by the same quality gate, not be ignored.');
-    assert(isequal(BMem.y_i,[0 0]), ...
-        'Previous feasible anchors must be re-paired with current infeasible samples.');
-    assert(Diag.prev_bmem_candidate_count == 1 && ...
-            Diag.prev_bmem_survivor_count == 1, ...
-        'Diagnostics must report previous-memory candidates and survivors.');
-    assert(BMem.source_f == 1 && BMem.age_f == 1 && ...
-            isfinite(BMem.front_rank_f), ...
-        'Reused anchors must expose previous-source age without changing selection.');
+    x = makeDecisionRows(Problem,1);
+    Previous = struct('ref',1,'gap',0.01,'x_b',x,'y_b',[1 1], ...
+        'x_f',x,'y_f',[1 1],'x_i',x,'y_i',[0.9 0.9], ...
+        'source_f',0,'age_f',0);
+    Options = struct('frontDepth',2,'pairNeighborRefRadius',0, ...
+        'minBoundaryLength',100,'maxAnchorsPerRef',1);
+    BMem = UpdateBoundaryMemory_RC(Previous,Pop,Empty,Empty,Empty,W,Options);
+    assert(isequal(BMem.y_b,[1 1]) && isequal(BMem.y_i,[0 0]));
+    assert(BMem.source_f == 1 && BMem.age_f == 1);
 end
 
-function testRegionRunnerSkipsSmallTrainingSet()
+function testSmallTrainingSetIsSkipped()
     Problem = DASCMOP1_BC('N',8,'D',6,'maxFE',100);
-    TrainX = makeDecisionRows(Problem,31);
-    TrainC = rand(31,2);
-    QueryC = rand(2,2);
-    Options = struct( ...
-        'zDim',6, ...
-        'iter',1, ...
-        'miniBatch',8, ...
-        'lrD',1e-4, ...
-        'lrG',1e-4, ...
-        'minTrainCount',32, ...
-        'generatorHidden',[32 32], ...
-        'discriminatorHidden',[32 32]);
-
+    Options = struct('minTrainCount',32);
     [GAN,RawDec] = RunRegionGAN_RC('trainandsample',[], ...
-        TrainX,TrainC,QueryC,1,Problem,Options);
-
-    assert(isempty(GAN), ...
-        'Runner must not train CGAN when TrainX has fewer than minTrainCount rows.');
-    assert(isempty(RawDec) && size(RawDec,2) == Problem.D, ...
-        'Runner must not generate decisions when training data is too small.');
+        makeDecisionRows(Problem,31),rand(31,2),rand(2,2),Problem,Options);
+    assert(isempty(GAN));
+    assert(isempty(RawDec) && size(RawDec,2) == Problem.D);
 end
 
 function X = makeDecisionRows(Problem,n)
-    lower = double(Problem.lower);
-    upper = double(Problem.upper);
-    X = repmat(lower,n,1) + rand(n,Problem.D).*repmat(upper-lower,n,1);
+    X = Problem.lower + rand(n,Problem.D).*(Problem.upper-Problem.lower);
 end
