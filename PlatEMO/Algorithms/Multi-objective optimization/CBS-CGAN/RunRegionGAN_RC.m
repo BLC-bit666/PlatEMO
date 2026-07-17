@@ -1,6 +1,19 @@
 function varargout = RunRegionGAN_RC(action,varargin)
 %RUNREGIONGAN_RC Mainline query allocation and WGAN dispatch.
+%   REGIONQUERYSAMPLES allocates a generation budget between populated
+%   reference vectors and their one-hop frontier.
+%   TRAINANDSAMPLE trains the WGAN-GP and samples full decision vectors.
 
+%------------------------------- Copyright --------------------------------
+% Copyright (c) 2026 BIMK Group. You are free to use the PlatEMO for
+% research purposes. All publications which use this platform or any code
+% in the platform should acknowledge the use of "PlatEMO" and reference "Ye
+% Tian, Ran Cheng, Xingyi Zhang, and Yaochu Jin, PlatEMO: A MATLAB platform
+% for evolutionary multi-objective optimization [educational forum], IEEE
+% Computational Intelligence Magazine, 2017, 12(4): 73-87".
+%--------------------------------------------------------------------------
+
+    %% Dispatch the requested operation
     switch lower(strtrim(string(action)))
         case "regionquerysamples"
             [varargout{1:nargout}] = regionQuerySamples(varargin{:});
@@ -13,6 +26,8 @@ function varargout = RunRegionGAN_RC(action,varargin)
 end
 
 function [SampleC,SampleRefs] = regionQuerySamples(PopulatedRefs,W,nGen)
+%REGIONQUERYSAMPLES Allocate samples to populated and frontier references.
+
     PopulatedRefs = validateRefs(PopulatedRefs,W);
     PopulatedRefs = unique(PopulatedRefs,'stable');
     FrontierRefs = oneHopFrontierRefs(W,PopulatedRefs);
@@ -51,7 +66,8 @@ function [SampleC,SampleRefs] = regionQuerySamples(PopulatedRefs,W,nGen)
 end
 
 function idx = uniformRefRows(PoolRefs,totalBudget)
-% Keep the validated mainline RNG sequence unchanged.
+%UNIFORMREFROWS Draw reference rows with the validated RNG sequence.
+
     PoolRefs = round(double(PoolRefs(:)));
     valid = isfinite(PoolRefs) & PoolRefs > 0;
     if ~any(valid)
@@ -69,6 +85,8 @@ end
 
 function [populatedBudget,frontierBudget] = queryBudgets( ...
         totalBudget,hasPopulated,hasFrontier)
+%QUERYBUDGETS Assign one sixth of the budget to an available frontier.
+
     if ~hasPopulated && ~hasFrontier
         populatedBudget = 0;
         frontierBudget = 0;
@@ -90,6 +108,8 @@ function [populatedBudget,frontierBudget] = queryBudgets( ...
 end
 
 function Refs = oneHopFrontierRefs(W,PopulatedRefs)
+%ONEHOPFRONTIERREFS Find neighboring references without anchor samples.
+
     if isempty(W) || isempty(PopulatedRefs)
         Refs = zeros(0,1);
         return;
@@ -103,6 +123,8 @@ function Refs = oneHopFrontierRefs(W,PopulatedRefs)
 end
 
 function Refs = neighborRefs(W,r,radius)
+%NEIGHBORREFS Return the closest reference-vector indices around r.
+
     if radius <= 0
         Refs = r;
         return;
@@ -113,6 +135,8 @@ function Refs = neighborRefs(W,r,radius)
 end
 
 function Refs = validateRefs(Refs,W)
+%VALIDATEREFS Validate integer reference-vector indices.
+
     Refs = double(Refs(:));
     valid = isfinite(Refs) & Refs == fix(Refs) & ...
         Refs >= 1 & Refs <= size(W,1);
@@ -124,6 +148,8 @@ end
 
 function [GAN,RawDec] = trainAndSampleRegionGAN( ...
         GAN,TrainX,TrainC,SampleC,Problem,Options)
+%TRAINANDSAMPLEREGIONGAN Train only when enough anchor rows are present.
+
     if size(TrainX,1) < Options.minTrainCount || isempty(SampleC)
         RawDec = zeros(0,Problem.D);
         return;

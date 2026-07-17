@@ -1,5 +1,7 @@
 function P = CBS_RegionGAN_Provenance(repoRoot,Options,workerCount)
 %CBS_REGIONGAN_PROVENANCE Build deterministic source and run provenance.
+%   P records Git state, MATLAB release, worker count, serialized options,
+%   the canonical source manifest, and its combined SHA-256 digest.
 
     if ~(ischar(repoRoot) || (isstring(repoRoot) && isscalar(repoRoot)))
         error('CBSRegionGAN:BadRepoRoot', ...
@@ -25,7 +27,7 @@ function P = CBS_RegionGAN_Provenance(repoRoot,Options,workerCount)
     end
 
     Manifest = buildSourceManifest(repoRoot);
-    schemaVersion = "cbs_region_wgan_igd_mainline_v1";
+    schemaVersion = "cbs_region_wgan_igd_mainline_v2";
     if isstruct(Options) && isfield(Options,'schemaVersion') && ...
             ~isempty(Options.schemaVersion)
         schemaVersion = string(Options.schemaVersion);

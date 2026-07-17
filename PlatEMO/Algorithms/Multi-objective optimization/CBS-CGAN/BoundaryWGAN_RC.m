@@ -1,6 +1,19 @@
 function varargout = BoundaryWGAN_RC(action,varargin)
-%BOUNDARYWGAN_RC Lean fixed-mainline conditional WGAN-GP.
+%BOUNDARYWGAN_RC Train and sample the reference-conditioned anchor WGAN.
+%   TRAIN updates a full warm-start generator and critic from feasible
+%   anchor decisions selected using nearby infeasible solutions.
+%   SAMPLEBYCONDITION generates full decision vectors for given conditions.
 
+%------------------------------- Copyright --------------------------------
+% Copyright (c) 2026 BIMK Group. You are free to use the PlatEMO for
+% research purposes. All publications which use this platform or any code
+% in the platform should acknowledge the use of "PlatEMO" and reference "Ye
+% Tian, Ran Cheng, Xingyi Zhang, and Yaochu Jin, PlatEMO: A MATLAB platform
+% for evolutionary multi-objective optimization [educational forum], IEEE
+% Computational Intelligence Magazine, 2017, 12(4): 73-87".
+%--------------------------------------------------------------------------
+
+    %% Dispatch the requested operation
     switch lower(strtrim(string(action)))
         case "train"
             Options = fillOptions(varargin{5});
@@ -16,6 +29,8 @@ function varargout = BoundaryWGAN_RC(action,varargin)
 end
 
 function GAN = trainBoundaryWGAN(GAN,TrainX,TrainC,Problem,Options)
+%TRAINBOUNDARYWGAN Train on every available feasible-anchor row.
+
     if isempty(TrainX) || isempty(TrainC) || Options.iter <= 0
         return;
     end
@@ -28,6 +43,7 @@ function GAN = trainBoundaryWGAN(GAN,TrainX,TrainC,Problem,Options)
             'BoundaryWGAN_RC requires Deep Learning Toolbox.');
     end
 
+    %% Scale and format the fixed training data
     TrainX = double(TrainX);
     TrainC = double(TrainC);
     D = size(TrainX,2);
@@ -42,8 +58,8 @@ function GAN = trainBoundaryWGAN(GAN,TrainX,TrainC,Problem,Options)
     TrainCT = single(TrainC');
     GAN = prepareWGANState(GAN,D,M,lower,upper,Options);
 
-    [TrainIdx,HoldoutIdx] = splitTrainingRows(size(XScaled,1));
-    trainCount = numel(TrainIdx);
+    %% Train the critic and generator with replacement sampling
+    trainCount = size(XScaled,1);
     miniBatch = min(Options.miniBatch,trainCount);
     iterCount = Options.iter;
     nCritic = Options.nCritic;
@@ -55,22 +71,19 @@ function GAN = trainBoundaryWGAN(GAN,TrainX,TrainC,Problem,Options)
     beta2 = 0.9;
     for iter = 1 : iterCount
         for critic = 1 : nCritic
-            idx = TrainIdx(randi(trainCount,1,miniBatch));
+            idx = randi(trainCount,1,miniBatch);
             GAN = updateCriticBatch(GAN,XScaledT,TrainCT,idx, ...
                 zDim,gpLambda,lrD,beta1,beta2);
         end
-        idx = TrainIdx(randi(trainCount,1,miniBatch));
+        idx = randi(trainCount,1,miniBatch);
         GAN = updateGeneratorBatch(GAN,TrainCT,idx,zDim,lrG,beta1,beta2);
     end
-
-    % The removed legacy diagnostics consumed these random values. Retaining
-    % only the RNG advancement keeps the validated optimization trajectory
-    % identical without their extra network forwards or metric storage.
-    advanceLegacyDiagnosticRNG(TrainIdx,HoldoutIdx,zDim);
 end
 
 function GAN = updateCriticBatch(GAN,XScaledT,TrainCT,idx, ...
         zDim,gpLambda,lrD,beta1,beta2)
+%UPDATECRITICBATCH Apply one WGAN-GP critic update.
+
     batchCount = numel(idx);
     dlX = dlarray(XScaledT(:,idx),'CB');
     dlC = dlarray(TrainCT(:,idx),'CB');
@@ -91,6 +104,8 @@ end
 
 function gradC = criticGradients( ...
         netC,dlX,dlC,fakeData,dlHat,gpLambda)
+%CRITICGRADIENTS Differentiate Wasserstein loss and gradient penalty.
+
     dlFake = dlarray(fakeData,'CB');
     scoreReal = forward(netC,[dlX;dlC]);
     scoreFake = forward(netC,[dlFake;dlC]);
@@ -107,6 +122,8 @@ end
 
 function GAN = updateGeneratorBatch(GAN,TrainCT,idx, ...
         zDim,lrG,beta1,beta2)
+%UPDATEGENERATORBATCH Apply one generator update.
+
     batchCount = numel(idx);
     dlC = dlarray(TrainCT(:,idx),'CB');
     Z = randn(batchCount,zDim,'single');
@@ -120,6 +137,8 @@ function GAN = updateGeneratorBatch(GAN,TrainCT,idx, ...
 end
 
 function gradG = generatorGradients(netG,netC,dlC,dlZ)
+%GENERATORGRADIENTS Differentiate the Wasserstein generator objective.
+
     dlFake = forward(netG,[dlZ;dlC]);
     scoreFake = forward(netC,[dlFake;dlC]);
     loss = -mean(scoreFake,'all');
@@ -127,28 +146,9 @@ function gradG = generatorGradients(netG,netC,dlC,dlZ)
         'EnableHigherDerivatives',false);
 end
 
-function [TrainIdx,HoldoutIdx] = splitTrainingRows(N)
-    if N <= 1
-        TrainIdx = 1:N;
-        HoldoutIdx = zeros(1,0);
-        return;
-    end
-    holdoutCount = min(N-1,max(1,round(0.2*N)));
-    order = randperm(N);
-    HoldoutIdx = order(1:holdoutCount);
-    TrainIdx = order(holdoutCount+1:end);
-end
-
-function advanceLegacyDiagnosticRNG(TrainIdx,HoldoutIdx,zDim)
-    diagnosticCount = min(numel(TrainIdx),128);
-    ignored = randperm(numel(TrainIdx),diagnosticCount); %#ok<NASGU>
-    ignored = randn(diagnosticCount,zDim); %#ok<NASGU>
-    if ~isempty(HoldoutIdx)
-        ignored = randn(numel(HoldoutIdx),zDim); %#ok<NASGU>
-    end
-end
-
 function Dec = sampleByCondition(GAN,QueryC,Options)
+%SAMPLEBYCONDITION Generate bounded decisions for reference conditions.
+
     if isempty(GAN) || ~isstruct(GAN) || ...
             ~isfield(GAN,'netG') || isempty(QueryC)
         Dec = zeros(0,0);
@@ -169,6 +169,8 @@ function Dec = sampleByCondition(GAN,QueryC,Options)
 end
 
 function GAN = prepareWGANState(GAN,D,M,lower,upper,Options)
+%PREPAREWGANSTATE Reuse compatible networks or initialize a new state.
+
     incompatible = isempty(GAN) || ~isstruct(GAN) || ...
         ~isfield(GAN,'netG') || ~isfield(GAN,'netC') || ...
         GAN.D ~= D || GAN.M ~= M || GAN.zDim ~= Options.zDim || ...
@@ -180,6 +182,8 @@ function GAN = prepareWGANState(GAN,D,M,lower,upper,Options)
 end
 
 function GAN = initializeWGAN(D,M,lower,upper,Options)
+%INITIALIZEWGAN Create generator, critic, and Adam optimizer state.
+
     GAN = struct();
     GAN.D = D;
     GAN.M = M;
@@ -199,6 +203,8 @@ function GAN = initializeWGAN(D,M,lower,upper,Options)
 end
 
 function netG = createGenerator(inputDim,D,hidden)
+%CREATEGENERATOR Build the fully connected conditional generator.
+
     layers = featureInputLayer(inputDim, ...
         'Normalization','none','Name','g_in');
     for i = 1 : numel(hidden)
@@ -214,6 +220,8 @@ function netG = createGenerator(inputDim,D,hidden)
 end
 
 function netC = createCritic(inputDim,hidden)
+%CREATECRITIC Build the fully connected conditional critic.
+
     layers = featureInputLayer(inputDim, ...
         'Normalization','none','Name','c_in');
     for i = 1 : numel(hidden)
@@ -227,6 +235,8 @@ function netC = createCritic(inputDim,hidden)
 end
 
 function Options = fillOptions(Options)
+%FILLOPTIONS Fill and normalize WGAN-GP options.
+
     Options = defaultOption(Options,'zDim',6);
     Options = defaultOption(Options,'iter',100);
     Options = defaultOption(Options,'miniBatch',32);
@@ -250,12 +260,16 @@ function Options = fillOptions(Options)
 end
 
 function S = defaultOption(S,name,value)
+%DEFAULTOPTION Fill one missing structure field.
+
     if ~isfield(S,name) || isempty(S.(name))
         S.(name) = value;
     end
 end
 
 function value = finiteSigma(value,fallback)
+%FINITESIGMA Normalize the sampling standard deviation.
+
     value = double(value);
     if isempty(value) || ~isfinite(value(1))
         value = fallback;
@@ -265,6 +279,8 @@ function value = finiteSigma(value,fallback)
 end
 
 function hidden = hiddenVector(hidden)
+%HIDDENVECTOR Normalize a hidden-layer width vector.
+
     hidden = double(hidden(:)');
     hidden = max(1,round(hidden(isfinite(hidden) & hidden > 0)));
     if isempty(hidden)

@@ -1,5 +1,6 @@
 function value = CBS_RegionGAN_SourceManifestSHA256(Manifest)
 %CBS_REGIONGAN_SOURCEMANIFESTSHA256 Hash a canonical source manifest.
+%   Manifest must contain relative_path and sha256 columns sorted by path.
 
     required = {'relative_path','sha256','bytes'};
     if ~istable(Manifest) || ...

@@ -1,7 +1,20 @@
 function BMem = UpdateBoundaryMemory_RC(PrevBMem, ...
         Population1,Offspring1,Population2,Offspring2,W,Options)
-%UPDATEBOUNDARYMEMORY_RC Update the fixed legacy boundary memory.
+%UPDATEBOUNDARYMEMORY_RC Update the fixed boundary-anchor memory.
+%   The memory pairs nondominated feasible anchors with nearby infeasible
+%   solutions under reference-vector neighborhoods. Repeated rows are
+%   intentionally retained because they define the training weights.
 
+%------------------------------- Copyright --------------------------------
+% Copyright (c) 2026 BIMK Group. You are free to use the PlatEMO for
+% research purposes. All publications which use this platform or any code
+% in the platform should acknowledge the use of "PlatEMO" and reference "Ye
+% Tian, Ran Cheng, Xingyi Zhang, and Yaochu Jin, PlatEMO: A MATLAB platform
+% for evolutionary multi-objective optimization [educational forum], IEEE
+% Computational Intelligence Magazine, 2017, 12(4): 73-87".
+%--------------------------------------------------------------------------
+
+    %% Collect and validate current evaluated solutions
     Samples = [Population1,Offspring1,Population2,Offspring2];
     [D,M] = inferDimensions(Samples,PrevBMem);
     if isempty(Samples)
@@ -23,27 +36,24 @@ function BMem = UpdateBoundaryMemory_RC(PrevBMem, ...
         return;
     end
 
+    %% Append retained feasible anchors from the previous memory
     currentCount = size(Y,1);
-    [X,Y,C,PrevRows] = appendPreviousAnchors(X,Y,C,PrevBMem,D,M);
-    source = [zeros(currentCount,1);ones(size(Y,1)-currentCount,1)];
-    age = zeros(size(Y,1),1);
-    if size(Y,1) > currentCount
-        previousAge = double(PrevRows.age_f(:));
-        previousAge(~isfinite(previousAge) | previousAge < 0) = 0;
-        age(currentCount+1:end) = previousAge + 1;
-    end
+    [X,Y,C] = appendPreviousAnchors(X,Y,C,PrevBMem,D,M);
     pairableInfeasible = false(size(Y,1),1);
     pairableInfeasible(1:currentCount) = true;
+    %% Associate solutions with reference vectors and harvest pairs
     feasible = sum(max(0,C),2) <= 0;
     Yn = normalizeRows(Y);
     Ref = assignReferences(Yn,W);
     BMem = harvestCloud(X,Y,Yn,feasible,Ref,W,Options, ...
-        pairableInfeasible,source,age,D,M);
+        pairableInfeasible,D,M);
     BMem = filterGapCap(BMem,Options);
 end
 
 function Cloud = harvestCloud(X,Y,Yn,Feasible,Ref,W,Options, ...
-        PairableInfeasible,Source,Age,D,M)
+        PairableInfeasible,D,M)
+%HARVESTCLOUD Pair feasible anchors with nearby infeasible solutions.
+
     Cloud = emptyBMem(0,D,M);
     if isempty(Y) || isempty(W)
         return;
@@ -57,9 +67,12 @@ function Cloud = harvestCloud(X,Y,Yn,Feasible,Ref,W,Options, ...
         mainFeasible(feasibleRows(rank <= frontDepth)) = true;
     end
     mainFeasible = capAnchorsPerRef(mainFeasible,Y,Ref,Options);
+    Cloud = emptyBMem(nnz(mainFeasible),D,M);
+    row = 0;
+    Neighborhoods = referenceNeighborhoods(W,radius);
 
     for r = 1 : size(W,1)
-        neighborhood = neighborRefs(W,r,radius);
+        neighborhood = Neighborhoods{r};
         feasibleIdx = find(mainFeasible & Ref == r);
         infeasibleIdx = find(~Feasible & PairableInfeasible & ...
             ismember(Ref,neighborhood));
@@ -67,28 +80,27 @@ function Cloud = harvestCloud(X,Y,Yn,Feasible,Ref,W,Options, ...
             continue;
         end
         distance = pairDistance(Yn(feasibleIdx,:),Yn(infeasibleIdx,:));
-        [minGap,nearest] = min(distance,[],2);
         for a = 1 : numel(feasibleIdx)
             f = feasibleIdx(a);
-            i = infeasibleIdx(nearest(a));
-            if feasibleDominatesInfeasible(Y(f,:),Y(i,:))
+            legal = ~feasibleDominatesInfeasible( ...
+                Y(f,:),Y(infeasibleIdx,:));
+            if ~any(legal)
                 continue;
             end
-            Cloud.ref(end+1,1) = r;
-            Cloud.gap(end+1,1) = minGap(a);
-            Cloud.x_b(end+1,:) = X(f,:);
-            Cloud.y_b(end+1,:) = Y(f,:);
-            Cloud.x_f(end+1,:) = X(f,:);
-            Cloud.y_f(end+1,:) = Y(f,:);
-            Cloud.x_i(end+1,:) = X(i,:);
-            Cloud.y_i(end+1,:) = Y(i,:);
-            Cloud.source_f(end+1,1) = Source(f);
-            Cloud.age_f(end+1,1) = Age(f);
+            minGap = min(distance(a,legal));
+            row = row + 1;
+            Cloud.ref(row,1) = r;
+            Cloud.gap(row,1) = minGap;
+            Cloud.x_b(row,:) = X(f,:);
+            Cloud.y_b(row,:) = Y(f,:);
         end
     end
+    Cloud = subsetMemory(Cloud,1:row);
 end
 
 function keep = capAnchorsPerRef(keep,Y,Ref,Options)
+%CAPANCHORSPERREF Limit feasible anchors retained by each reference vector.
+
     maxPerRef = optionInteger(Options,'maxAnchorsPerRef',Inf,1);
     if ~isfinite(maxPerRef)
         return;
@@ -108,20 +120,24 @@ function keep = capAnchorsPerRef(keep,Y,Ref,Options)
     keep = capped;
 end
 
-function [X,Y,C,Prev] = appendPreviousAnchors(X,Y,C,PrevBMem,D,M)
+function [X,Y,C] = appendPreviousAnchors(X,Y,C,PrevBMem,D,M)
+%APPENDPREVIOUSANCHORS Carry feasible anchors into the current event.
+
     Prev = ensureMemoryFields(PrevBMem,D,M);
-    if isempty(Prev.y_f)
+    if isempty(Prev.y_b)
         return;
     end
-    valid = all(isfinite(Prev.x_f),2) & all(isfinite(Prev.y_f),2);
+    valid = all(isfinite(Prev.x_b),2) & all(isfinite(Prev.y_b),2);
     Prev = subsetMemory(Prev,valid);
-    count = size(Prev.y_f,1);
-    X = [X;Prev.x_f];
-    Y = [Y;Prev.y_f];
+    count = size(Prev.y_b,1);
+    X = [X;Prev.x_b];
+    Y = [Y;Prev.y_b];
     C = [C;zeros(count,size(C,2))];
 end
 
 function Cloud = filterGapCap(Cloud,Options)
+%FILTERGAPCAP Remove anomalously distant boundary pairs using a MAD cap.
+
     if isempty(Cloud.y_b)
         return;
     end
@@ -152,6 +168,10 @@ function Cloud = filterGapCap(Cloud,Options)
 end
 
 function rank = paretoRankLimited(Y,maxRank)
+%PARETORANKLIMITED Rank only the requested number of Pareto fronts.
+%   The boundary rule uses a 1e-12 dominance tolerance, so the exact-ranking
+%   platform NDSort routine is not semantically interchangeable here.
+
     n = size(Y,1);
     rank = inf(n,1);
     remaining = true(n,1);
@@ -168,26 +188,27 @@ function rank = paretoRankLimited(Y,maxRank)
 end
 
 function front = firstFrontMask(Y)
+%FIRSTFRONTMASK Identify the first Pareto front with a small tolerance.
+
     n = size(Y,1);
-    front = true(n,1);
     tolerance = 1e-12;
-    for i = 1 : n
-        for j = 1 : n
-            if i ~= j && all(Y(j,:) <= Y(i,:) + tolerance) && ...
-                    any(Y(j,:) < Y(i,:) - tolerance)
-                front(i) = false;
-                break;
-            end
-        end
-    end
+    target = reshape(Y,n,1,[]);
+    candidate = reshape(Y,1,n,[]);
+    dominated = all(candidate <= target+tolerance,3) & ...
+        any(candidate < target-tolerance,3);
+    front = ~any(dominated,2);
 end
 
 function yes = feasibleDominatesInfeasible(Yf,Yi)
+%FEASIBLEDOMINATESINFEASIBLE Test objective dominance for a pair.
+
     tolerance = 1e-12;
     yes = all(Yf <= Yi+tolerance,2) & any(Yf < Yi-tolerance,2);
 end
 
 function Ref = assignReferences(Yn,W)
+%ASSIGNREFERENCES Associate normalized objectives with reference vectors.
+
     n = size(Yn,1);
     Wn = W./max(sqrt(sum(W.^2,2)),eps);
     NormY = sqrt(sum(Yn.^2,2));
@@ -202,6 +223,8 @@ function Ref = assignReferences(Yn,W)
 end
 
 function refs = neighborRefs(W,r,radius)
+%NEIGHBORREFS Return the local reference-vector neighborhood.
+
     if radius <= 0
         refs = r;
         return;
@@ -211,7 +234,25 @@ function refs = neighborRefs(W,r,radius)
     refs = order(1:min(numel(order),1+2*radius));
 end
 
+function Neighborhoods = referenceNeighborhoods(W,radius)
+%REFERENCENEIGHBORHOODS Cache fixed neighborhoods across generations.
+
+    persistent cachedW cachedRadius cachedNeighborhoods
+    if isempty(cachedNeighborhoods) || ...
+            ~isequal(W,cachedW) || radius ~= cachedRadius
+        cachedW = W;
+        cachedRadius = radius;
+        cachedNeighborhoods = cell(size(W,1),1);
+        for r = 1 : size(W,1)
+            cachedNeighborhoods{r} = neighborRefs(W,r,radius);
+        end
+    end
+    Neighborhoods = cachedNeighborhoods;
+end
+
 function D = pairDistance(A,B)
+%PAIRDISTANCE Calculate Euclidean distances without an extra toolbox.
+
     if isempty(A) || isempty(B)
         D = zeros(size(A,1),size(B,1));
     else
@@ -220,6 +261,8 @@ function D = pairDistance(A,B)
 end
 
 function Xn = normalizeRows(X)
+%NORMALIZEROWS Min-max normalize each objective over the current rows.
+
     minimum = min(X,[],1);
     span = max(X,[],1)-minimum;
     span(span <= eps) = 1;
@@ -228,6 +271,8 @@ function Xn = normalizeRows(X)
 end
 
 function BMem = subsetMemory(BMem,keep)
+%SUBSETMEMORY Apply a row mask consistently to every memory field.
+
     names = fieldnames(BMem);
     for i = 1 : numel(names)
         BMem.(names{i}) = BMem.(names{i})(keep,:);
@@ -235,30 +280,28 @@ function BMem = subsetMemory(BMem,keep)
 end
 
 function BMem = ensureMemoryFields(BMem,D,M)
+%ENSUREMEMORYFIELDS Complete or initialize the boundary-memory schema.
+
     if isempty(BMem) || ~isstruct(BMem)
         BMem = emptyBMem(0,D,M);
         return;
     end
-    n = size(BMem.y_f,1);
+    n = size(BMem.y_b,1);
     if ~isfield(BMem,'ref'); BMem.ref = zeros(n,1); end
     if ~isfield(BMem,'gap'); BMem.gap = nan(n,1); end
     if ~isfield(BMem,'x_b'); BMem.x_b = nan(n,D); end
     if ~isfield(BMem,'y_b'); BMem.y_b = nan(n,M); end
-    if ~isfield(BMem,'x_f'); BMem.x_f = nan(n,D); end
-    if ~isfield(BMem,'y_f'); BMem.y_f = nan(n,M); end
-    if ~isfield(BMem,'x_i'); BMem.x_i = nan(n,D); end
-    if ~isfield(BMem,'y_i'); BMem.y_i = nan(n,M); end
-    if ~isfield(BMem,'source_f'); BMem.source_f = zeros(n,1); end
-    if ~isfield(BMem,'age_f'); BMem.age_f = zeros(n,1); end
 end
 
 function [D,M] = inferDimensions(Samples,PrevBMem)
+%INFERDIMENSIONS Infer decision and objective dimensions.
+
     if ~isempty(Samples)
         D = size(Samples.decs,2);
         M = size(Samples.objs,2);
-    elseif isstruct(PrevBMem) && isfield(PrevBMem,'x_f')
-        D = size(PrevBMem.x_f,2);
-        M = size(PrevBMem.y_f,2);
+    elseif isstruct(PrevBMem) && isfield(PrevBMem,'x_b')
+        D = size(PrevBMem.x_b,2);
+        M = size(PrevBMem.y_b,2);
     else
         D = 0;
         M = 0;
@@ -266,20 +309,18 @@ function [D,M] = inferDimensions(Samples,PrevBMem)
 end
 
 function BMem = emptyBMem(N,D,M)
+%EMPTYBMEM Create an empty boundary-memory structure.
+
     BMem = struct( ...
         'ref',zeros(N,1), ...
         'gap',zeros(N,1), ...
         'x_b',nan(N,D), ...
-        'y_b',zeros(N,M), ...
-        'x_f',nan(N,D), ...
-        'y_f',zeros(N,M), ...
-        'x_i',nan(N,D), ...
-        'y_i',zeros(N,M), ...
-        'source_f',zeros(N,1), ...
-        'age_f',zeros(N,1));
+        'y_b',zeros(N,M));
 end
 
 function value = optionInteger(Options,name,defaultValue,minimum)
+%OPTIONINTEGER Read and normalize an integer option.
+
     value = defaultValue;
     if isstruct(Options) && isfield(Options,name) && ...
             ~isempty(Options.(name))

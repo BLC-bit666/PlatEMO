@@ -3,6 +3,10 @@ function [Summary,outDir] = run_CBS_RegionWGAN_GP_mainline( ...
 %RUN_CBS_REGIONWGAN_GP_MAINLINE Run the fixed mainline and save final IGD.
 %   Parallel formal runs use exactly nine workers. Each task is immutable,
 %   resumable, and stores only the final IGD plus operational metadata.
+%   The default 200000-FE contract stops new CGAN events at FE=100000.
+%   outDir is the result root, problemNames and runIds define the task
+%   manifest, and Options.resume controls compatible-task reuse.
+%   Summary contains one row per problem-run pair.
 
     rootDir = fileparts(which('platemo'));
     if isempty(rootDir)
@@ -20,7 +24,7 @@ function [Summary,outDir] = run_CBS_RegionWGAN_GP_mainline( ...
     end
     if nargin < 4 || isempty(N); N = 100; end
     if nargin < 5 || isempty(D); D = 30; end
-    if nargin < 6 || isempty(maxFE); maxFE = 100000; end
+    if nargin < 6 || isempty(maxFE); maxFE = 200000; end
     if nargin < 7 || isempty(runIds); runIds = 1:3; end
     if nargin < 8 || isempty(Options); Options = struct(); end
     Options = normalizeOptions(Options);
@@ -96,7 +100,7 @@ function Options = normalizeOptions(Options)
     if ~isfield(Options,'resume') || isempty(Options.resume)
         Options.resume = true;
     end
-    Options.schemaVersion = "cbs_region_wgan_igd_mainline_v1";
+    Options.schemaVersion = "cbs_region_wgan_igd_mainline_v2";
     Options.resume = logical(Options.resume);
     if ~isscalar(Options.resume)
         error('CBSRegionGAN:BadResume','Options.resume must be scalar.');
@@ -222,7 +226,7 @@ function value = sha256Text(value)
 end
 
 function writeRootArtifacts(outDir,P,N,D,maxFE,problemNames,runIds)
-    Config = studyConfig(P,N,D,maxFE,problemNames,runIds);
+    Config = mainlineConfig(P,N,D,maxFE,problemNames,runIds);
     provenanceFile = fullfile(outDir,'provenance.csv');
     configFile = fullfile(outDir,'mainline_config.json');
     if isfile(provenanceFile)
@@ -237,8 +241,9 @@ function writeRootArtifacts(outDir,P,N,D,maxFE,problemNames,runIds)
                 'Existing output directory has no mainline_config.json.');
         end
         ExistingConfig = jsondecode(fileread(configFile));
-        if ~isfield(ExistingConfig,'studySignature') || ...
-                string(ExistingConfig.studySignature) ~= Config.studySignature
+        if ~isfield(ExistingConfig,'configSignature') || ...
+                string(ExistingConfig.configSignature) ~= ...
+                    Config.configSignature
             error('CBSRegionGAN:OutputConfigurationMismatch', ...
                 ['The output directory belongs to another experiment ', ...
                 'configuration. Use a new output directory.']);
@@ -262,11 +267,12 @@ function writeRootArtifacts(outDir,P,N,D,maxFE,problemNames,runIds)
     end
 end
 
-function Config = studyConfig(P,N,D,maxFE,problemNames,runIds)
+function Config = mainlineConfig(P,N,D,maxFE,problemNames,runIds)
     Config = CBS_RegionWGAN_GP.mainlineDefaults();
     Config.N = N;
     Config.D = D;
     Config.maxFE = maxFE;
+    Config.ganStopFE = Config.ganStopFraction*maxFE;
     Config.problems = problemNames;
     Config.runs = runIds;
     Config.workerCount = double(P.worker_count);
@@ -276,12 +282,14 @@ function Config = studyConfig(P,N,D,maxFE,problemNames,runIds)
     SignaturePayload.N = N;
     SignaturePayload.D = D;
     SignaturePayload.maxFE = maxFE;
+    SignaturePayload.ganStopFraction = Config.ganStopFraction;
+    SignaturePayload.ganStopFE = Config.ganStopFE;
     SignaturePayload.problems = problemNames;
     SignaturePayload.runs = runIds;
     SignaturePayload.workerCount = double(P.worker_count);
     SignaturePayload.schemaVersion = string(P.schema_version);
     SignaturePayload.sourceTreeSHA256 = string(P.source_tree_sha256);
-    Config.studySignature = sha256Text(string(jsonencode(SignaturePayload)));
+    Config.configSignature = sha256Text(string(jsonencode(SignaturePayload)));
 end
 
 function ensurePool(workerCount)
