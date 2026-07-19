@@ -54,22 +54,35 @@ function Manifest = buildSourceManifest(repoRoot)
     end
 
     listing = dir(fullfile(algorithmRoot,'**','*.m'));
-    absolutePaths = strings(numel(listing) + 6,1);
-    for i = 1 : numel(listing)
-        absolutePaths(i) = string(fullfile(listing(i).folder,listing(i).name));
+    benchmarkPaths = strings(23,1);
+    nextPath = 0;
+    problemRoot = fullfile(repoRoot,'Problems', ...
+        'Multi-objective optimization','DAS-CMOP_BC');
+    for problem = 1 : 9
+        nextPath = nextPath + 1;
+        benchmarkPaths(nextPath) = string(fullfile(problemRoot, ...
+            sprintf('DASCMOP%d_BC.m',problem)));
     end
     problemRoot = fullfile(repoRoot,'Problems', ...
         'Multi-objective optimization','LIR-CMOP_BC');
-    for problem = 5 : 10
-        index = numel(listing) + problem - 4;
-        absolutePaths(index) = string(fullfile(problemRoot, ...
+    for problem = 1 : 14
+        nextPath = nextPath + 1;
+        benchmarkPaths(nextPath) = string(fullfile(problemRoot, ...
             sprintf('LIRCMOP%d_BC.m',problem)));
-        if ~isfile(absolutePaths(index))
-            error('CBSRegionGAN:MissingProblemSource', ...
-                'Required problem definition does not exist: %s', ...
-                absolutePaths(index));
-        end
     end
+    requiredPaths = [string(fullfile(repoRoot, ...
+        'run_CBS_RegionWGAN_GP_DAS_LIR_full.m')); benchmarkPaths];
+    missing = requiredPaths(~isfile(requiredPaths));
+    if ~isempty(missing)
+        error('CBSRegionGAN:MissingProblemSource', ...
+            'Required experiment source does not exist: %s',missing(1));
+    end
+
+    absolutePaths = strings(numel(listing) + numel(requiredPaths),1);
+    for i = 1 : numel(listing)
+        absolutePaths(i) = string(fullfile(listing(i).folder,listing(i).name));
+    end
+    absolutePaths(numel(listing)+1:end) = requiredPaths;
 
     prefixLength = strlength(string(repoRoot)) + 1;
     relativePaths = replace(extractAfter(absolutePaths,prefixLength),"\","/");

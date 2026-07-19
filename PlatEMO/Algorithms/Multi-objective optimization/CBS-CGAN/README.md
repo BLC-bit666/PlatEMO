@@ -10,6 +10,15 @@
 `finalFE`、runtime、wall time、源码哈希和任务签名只用于完整性、性能及断点
 恢复审计，不是实验指标。
 
+## 固定结论：算子与阶段结构（2026-07-19 定型）
+
+主线为 **S2+BLS**：每群体每代一半子代由 `OperatorGAhalf`(SBX+PM) 生成、
+一半由原 DE 接线生成；CGAN 只在前 50% FE 活跃；其后每代 ≤20 FE 运行
+边界线搜索（可行–不可行二分 + 前沿最稀疏对中点插值，出处为经典
+boundary operators / binary interpolation repair）。两者均为工程组件，
+不属于论文创新点。旧纯 DE 主线可经构造器开关
+`('operatorMode','de','boundarySearch','off')` 逐位复现。
+
 ## 固定结论：CGAN 在哪里停止
 
 主线固定 `ganStopFraction = 0.5`。每一代完成 DE 评价后，仅当
@@ -97,25 +106,18 @@ references；没有 frontier 时全部回退到 populated references。
 ## 唯一正式运行入口
 
 ```matlab
-root = fileparts(which('platemo'));
-outDir = fullfile(root,'Data','CBS_RegionGAN_compare','mainline_igd_runs_v2');
-[Summary,outDir] = run_CBS_RegionWGAN_GP_mainline( ...
-    outDir,9, ...
-    "LIRCMOP" + string((5:10)') + "_BC", ...
-    100,30,200000,1:3,struct('resume',true));
+run_CBS_RegionWGAN_GP_DAS_LIR_full
 ```
 
-若省略 `maxFE`，runner 也默认使用 200000。正式并行固定为 9 workers；测试
-允许 1 worker。每个任务只保存最终 IGD 和审计字段：
-
-- `run_summary.csv`
-- `mainline_config.json`
-- `provenance.csv`
-- `source_manifest.csv`
-- `<problem>_run<seed>/attempt_*/task_result.mat`
-
-schema 为 `cbs_region_wgan_igd_mainline_v2`。旧结果仍是历史证据，但不得与
-当前 source hash 或新输出目录混用。
+根目录启动脚本覆盖 `DASCMOP1_BC`--`DASCMOP9_BC` 与
+`LIRCMOP1_BC`--`LIRCMOP14_BC`；各问题使用其类中声明的默认决策维度，实验
+使用 `N=100`、`maxFE=200000`、`runs=1:10` 和 10 个本地并行 workers。
+正式结果严格保存到 `Data/CBS_RegionWGAN_GP`，文件名遵循
+`CBS_RegionWGAN_GP_<problem>_M<M>_D<D>_<run>.mat`，顶层变量只有 PlatEMO
+原生的 `result` 与 `metric`。其中 `result` 保存最终 `SOLUTION` 种群，
+`metric` 保存 `runtime` 与最终 `IGD`。重复启动会复用结构和配置匹配的原生
+结果文件。若省略 `maxFE`，runner 默认使用 200000；正式并行固定为 10
+workers，测试允许 1 worker。
 
 ## 主线文件
 
@@ -128,8 +130,8 @@ schema 为 `cbs_region_wgan_igd_mainline_v2`。旧结果仍是历史证据，但
 | `BoundaryWGAN_RC.m` | conditional WGAN-GP 训练和采样 |
 | `CalFitness_CBS.m` | SPEA2-style fitness |
 | `EnvironmentalSelection_CBS.m` | 双群体环境选择 |
-| `Support/run_CBS_RegionWGAN_GP_mainline.m` | 最终 IGD runner |
-| `Support/CBS_RegionGAN_Provenance.m` | 可复现实验来源记录 |
+| `../../../run_CBS_RegionWGAN_GP_DAS_LIR_full.m` | 两套完整基准的正式启动脚本 |
+| `Support/run_CBS_RegionWGAN_GP_mainline.m` | PlatEMO 原生结果 runner |
 
 ## 行为中性性能优化
 
@@ -167,6 +169,8 @@ test_CBS_region_wgan_mainline
 test_CBS_calfitness_equivalence
 test_CBS_RegionGAN_provenance
 test_CBS_RegionWGAN_GP_mainline_runner
+test_CBS_operator_modes
+test_CBS_boundary_search
 ```
 
 历史调参和被拒绝方案的结果继续保存在 `Data/CBS_RegionGAN_compare`，仅作证据，

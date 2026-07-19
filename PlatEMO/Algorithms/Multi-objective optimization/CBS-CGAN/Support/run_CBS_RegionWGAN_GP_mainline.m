@@ -1,12 +1,10 @@
 function [Summary,outDir] = run_CBS_RegionWGAN_GP_mainline( ...
         outDir,workerCount,problemNames,N,D,maxFE,runIds,Options)
-%RUN_CBS_REGIONWGAN_GP_MAINLINE Run the fixed mainline and save final IGD.
-%   Parallel formal runs use exactly nine workers. Each task is immutable,
-%   resumable, and stores only the final IGD plus operational metadata.
-%   The default 200000-FE contract stops new CGAN events at FE=100000.
-%   outDir is the result root, problemNames and runIds define the task
-%   manifest, and Options.resume controls compatible-task reuse.
-%   Summary contains one row per problem-run pair.
+%RUN_CBS_REGIONWGAN_GP_MAINLINE Run and save native PlatEMO result files.
+%   Formal runs use ten workers. Every completed run is saved as
+%   Data/CBS_RegionWGAN_GP/CBS_RegionWGAN_GP_<problem>_M<M>_D<D>_<run>.mat
+%   with exactly the native PlatEMO variables result and metric. An empty D
+%   uses the default dimension declared by each problem class.
 
     rootDir = fileparts(which('platemo'));
     if isempty(rootDir)
@@ -14,24 +12,24 @@ function [Summary,outDir] = run_CBS_RegionWGAN_GP_mainline( ...
     end
     addpath(genpath(rootDir));
     if nargin < 1 || isempty(outDir)
-        outDir = fullfile(rootDir,'Data','CBS_RegionGAN_compare', ...
-            ['mainline_igd_',char(datetime('now', ...
-            'Format','yyyyMMdd_HHmmss'))]);
+        outDir = fullfile(rootDir,'Data','CBS_RegionWGAN_GP');
     end
-    if nargin < 2 || isempty(workerCount); workerCount = 9; end
+    [outDir,runRoot] = validateOutputDirectory(outDir);
+    if nargin < 2 || isempty(workerCount); workerCount = 10; end
     if nargin < 3 || isempty(problemNames)
         problemNames = "LIRCMOP" + string((5:10)') + "_BC";
     end
     if nargin < 4 || isempty(N); N = 100; end
-    if nargin < 5 || isempty(D); D = 30; end
+    if nargin < 5; D = []; end
     if nargin < 6 || isempty(maxFE); maxFE = 200000; end
     if nargin < 7 || isempty(runIds); runIds = 1:3; end
     if nargin < 8 || isempty(Options); Options = struct(); end
     Options = normalizeOptions(Options);
-    workerCount = max(1,round(double(workerCount)));
-    if workerCount ~= 1 && workerCount ~= 9
+
+    workerCount = validatePositiveInteger(workerCount,'workerCount');
+    if workerCount ~= 1 && workerCount ~= 10
         error('CBSRegionGAN:MainlineWorkerCount', ...
-            'Use one worker for tests or exactly nine workers for formal runs.');
+            'Use one worker for tests or exactly ten workers for formal runs.');
     end
     if ischar(problemNames)
         problemNames = string(cellstr(problemNames));
@@ -44,21 +42,30 @@ function [Summary,outDir] = run_CBS_RegionWGAN_GP_mainline( ...
         error('CBSRegionGAN:BadProblemNames', ...
             'problemNames must contain nonempty MATLAB class names.');
     end
+    N = validatePositiveInteger(N,'N');
+    maxFE = validatePositiveInteger(maxFE,'maxFE');
     runIds = double(runIds(:)');
-    N = max(1,round(double(N)));
-    D = max(1,round(double(D)));
-    maxFE = max(1,round(double(maxFE)));
-
-    if ~isfolder(outDir); mkdir(outDir); end
-    Provenance = CBS_RegionGAN_Provenance(rootDir,Options,workerCount);
-    writeRootArtifacts(outDir,Provenance,N,D,maxFE,problemNames,runIds);
-    Tasks = buildTasks(problemNames,runIds);
+    if isempty(runIds) || any(~isfinite(runIds) | runIds < 1 | ...
+            runIds ~= round(runIds)) || numel(unique(runIds)) ~= numel(runIds)
+        error('CBSRegionGAN:BadRunIds', ...
+            'runIds must contain unique positive integers.');
+    end
+    useProblemDefaultD = isempty(D);
+    if ~useProblemDefaultD
+        D = validatePositiveInteger(D,'D');
+    end
+    [problemDimensions,problemObjectives] = resolveProblemSettings( ...
+        problemNames,N,D,maxFE,useProblemDefaultD);
+    Tasks = buildTasks(problemNames,runIds,problemDimensions, ...
+        problemObjectives);
     rows = repmat(emptyRunRow(),height(Tasks),1);
 
+    if ~isfolder(runRoot); mkdir(runRoot); end
     if workerCount == 1
         for task = 1 : height(Tasks)
             rows(task) = runTask(Tasks.problem(task),Tasks.run(task), ...
-                outDir,N,D,maxFE,Options,Provenance);
+                Tasks.D(task),Tasks.M(task),runRoot,outDir,N,maxFE, ...
+                useProblemDefaultD,Options);
             reportProgress(task,height(Tasks),rows(task));
         end
     else
@@ -68,21 +75,25 @@ function [Summary,outDir] = run_CBS_RegionWGAN_GP_mainline( ...
         afterEach(queue,@onFinished);
         taskProblems = Tasks.problem;
         taskRuns = Tasks.run;
+        taskDimensions = Tasks.D;
+        taskObjectives = Tasks.M;
         parfor task = 1 : height(Tasks)
             rows(task) = runTask(taskProblems(task),taskRuns(task), ...
-                outDir,N,D,maxFE,Options,Provenance);
+                taskDimensions(task),taskObjectives(task),runRoot,outDir, ...
+                N,maxFE,useProblemDefaultD,Options);
             send(queue,rows(task));
         end
     end
 
     Summary = struct2table(rows);
-    writetable(Summary,fullfile(outDir,'run_summary.csv'));
     failed = Summary.status ~= "ok";
     if any(failed)
+        first = find(failed,1);
         error('CBSRegionGAN:MainlineTasksFailed', ...
-            ['%d of %d mainline tasks failed. Inspect run_summary.csv; ', ...
-            'after diagnosis, rerun the same manifest to execute only ', ...
-            'failed tasks.'],sum(failed),height(Summary));
+            ['%d of %d tasks failed. First failure: %s run %d: %s. ', ...
+            'No nonstandard task files were written.'], ...
+            sum(failed),height(Summary),Summary.problem(first), ...
+            Summary.run(first),Summary.error_message(first));
     end
 
     function onFinished(Row)
@@ -100,196 +111,166 @@ function Options = normalizeOptions(Options)
     if ~isfield(Options,'resume') || isempty(Options.resume)
         Options.resume = true;
     end
-    Options.schemaVersion = "cbs_region_wgan_igd_mainline_v2";
     Options.resume = logical(Options.resume);
     if ~isscalar(Options.resume)
         error('CBSRegionGAN:BadResume','Options.resume must be scalar.');
     end
 end
 
-function Tasks = buildTasks(problemNames,runIds)
-    [problemGrid,runGrid] = ndgrid(problemNames,runIds);
-    Tasks = table(problemGrid(:),runGrid(:), ...
-        'VariableNames',{'problem','run'});
+function value = validatePositiveInteger(value,name)
+    if ~(isnumeric(value) && isscalar(value) && isreal(value) && ...
+            isfinite(value) && value >= 1 && value == round(value))
+        error('CBSRegionGAN:BadPositiveInteger', ...
+            '%s must be a positive integer.',name);
+    end
+    value = double(value);
 end
 
-function Row = runTask(problemName,runId,outDir,N,D,maxFE, ...
-        Options,Provenance)
+function [outDir,runRoot] = validateOutputDirectory(outDir)
+    if ~(ischar(outDir) || (isstring(outDir) && isscalar(outDir)))
+        error('CBSRegionGAN:BadOutputDirectory', ...
+            'outDir must be a character vector or string scalar.');
+    end
+    outDir = char(outDir);
+    while numel(outDir) > 1 && ismember(outDir(end),['/','\'])
+        outDir(end) = [];
+    end
+    [dataDir,algorithmFolder] = fileparts(outDir);
+    [runRoot,dataFolder] = fileparts(dataDir);
+    if string(algorithmFolder) ~= "CBS_RegionWGAN_GP" || ...
+            string(dataFolder) ~= "Data" || isempty(runRoot)
+        error('CBSRegionGAN:NonstandardOutputDirectory', ...
+            ['outDir must follow the native PlatEMO path ', ...
+            '<root>/Data/CBS_RegionWGAN_GP.']);
+    end
+end
+
+function [dimensions,objectives] = resolveProblemSettings( ...
+        problemNames,N,D,maxFE,useProblemDefaultD)
+    dimensions = zeros(numel(problemNames),1);
+    objectives = zeros(numel(problemNames),1);
+    savedRNG = rng;
+    cleanup = onCleanup(@()rng(savedRNG));
+    for problem = 1 : numel(problemNames)
+        Constructor = str2func(char(problemNames(problem)));
+        if useProblemDefaultD
+            Problem = Constructor('N',N,'maxFE',maxFE);
+        else
+            Problem = Constructor('N',N,'D',D,'maxFE',maxFE);
+        end
+        dimensions(problem) = double(Problem.D);
+        objectives(problem) = double(Problem.M);
+        if any(~isfinite([dimensions(problem),objectives(problem)])) || ...
+                any([dimensions(problem),objectives(problem)] < 1)
+            error('CBSRegionGAN:BadProblemSetting', ...
+                'Problem %s did not declare valid M and D values.', ...
+                problemNames(problem));
+        end
+    end
+    clear cleanup
+end
+
+function Tasks = buildTasks(problemNames,runIds,dimensions,objectives)
+    [problemGrid,runGrid] = ndgrid(problemNames,runIds);
+    dimensionGrid = repmat(dimensions(:),1,numel(runIds));
+    objectiveGrid = repmat(objectives(:),1,numel(runIds));
+    Tasks = table(problemGrid(:),runGrid(:),dimensionGrid(:), ...
+        objectiveGrid(:),'VariableNames',{'problem','run','D','M'});
+end
+
+function Row = runTask(problemName,runId,D,M,runRoot,outDir,N,maxFE, ...
+        useProblemDefaultD,Options)
     Row = emptyRunRow();
     Row.problem = string(problemName);
     Row.run = double(runId);
     Row.seed = double(runId);
     Row.N = double(N);
     Row.D = double(D);
+    Row.M = double(M);
     Row.maxFE = double(maxFE);
-    Row.source_tree_sha256 = string(Provenance.source_tree_sha256);
-    Row.task_signature = taskSignature(Row,Options);
-    taskRoot = fullfile(outDir,sprintf('%s_run%d', ...
-        char(Row.problem),round(Row.run)));
-    if ~isfolder(taskRoot); mkdir(taskRoot); end
+    Row.result_file = string(standardResultFile(outDir,Row));
     if Options.resume
-        [Row,reused] = reusableTask(taskRoot,Row);
+        [Row,reused] = readStandardResult(Row);
         if reused
             Row.reused = 1;
             return;
         end
     end
 
-    attemptDir = fullfile(taskRoot,nextAttemptName(taskRoot));
-    mkdir(attemptDir);
-    Row.attempt_folder = string(attemptDir);
-    Row.task_result_file = string(fullfile(attemptDir,'task_result.mat'));
-    wallTimer = tic;
     try
         limitWorkerThreads();
+        previousFolder = pwd;
+        folderCleanup = onCleanup(@()cd(previousFolder));
+        cd(runRoot);
         rng(Row.seed,'twister');
         Constructor = str2func(char(Row.problem));
-        Problem = Constructor('N',N,'D',D,'maxFE',maxFE);
-        Algorithm = CBS_RegionWGAN_GP('save',0, ...
-            'outputFcn',@quietOutput);
-        Algorithm.Solve(Problem);
-        Row.wall_seconds = toc(wallTimer);
-        Row.runtime_seconds = double(Algorithm.metric.runtime);
-        Row.finalFE = double(Algorithm.result{end,1});
-        Population = Algorithm.result{end,2};
-        Row.M = double(Problem.M);
-        Row.IGD = double(Problem.CalMetric('IGD',Population));
-        if Row.finalFE ~= Row.maxFE || ~isfinite(Row.IGD)
-            error('CBSRegionGAN:IncompleteMainlineRun', ...
-                'Expected finalFE=%d and finite IGD, got %d and %.17g.', ...
-                Row.maxFE,Row.finalFE,Row.IGD);
+        if useProblemDefaultD
+            Problem = Constructor('N',N,'maxFE',maxFE);
+        else
+            Problem = Constructor('N',N,'D',D,'maxFE',maxFE);
         end
-        Row.status = "ok";
-        TaskResult = struct('row',Row);
+        if double(Problem.D) ~= Row.D || double(Problem.M) ~= Row.M
+            error('CBSRegionGAN:ProblemSettingMismatch', ...
+                'Resolved and constructed M/D values differ for %s.', ...
+                Row.problem);
+        end
+        Algorithm = CBS_RegionWGAN_GP('save',1,'run',round(Row.run), ...
+            'metName',{'IGD'}); %#ok<NASGU>
+        evalc('Algorithm.Solve(Problem);');
+        clear folderCleanup
+        [Row,valid] = readStandardResult(Row);
+        if ~valid
+            error('CBSRegionGAN:InvalidNativeResult', ...
+                'PlatEMO did not create a valid native result file: %s', ...
+                Row.result_file);
+        end
     catch Error
-        Row.wall_seconds = toc(wallTimer);
         Row.status = "failed";
         Row.error_identifier = string(Error.identifier);
         Row.error_message = string(Error.message);
-        TaskResult = struct('row',Row);
-    end
-    save(Row.task_result_file,'TaskResult');
-end
-
-function [Row,found] = reusableTask(taskRoot,Expected)
-    Row = Expected;
-    found = false;
-    files = dir(fullfile(taskRoot,'attempt_*','task_result.mat'));
-    if isempty(files); return; end
-    [~,order] = sort(string({files.folder}),'descend');
-    for i = order
-        try
-            Loaded = load(fullfile(files(i).folder,files(i).name), ...
-                'TaskResult');
-            Candidate = Loaded.TaskResult.row;
-            valid = string(Candidate.status) == "ok" && ...
-                string(Candidate.task_signature) == Expected.task_signature && ...
-                string(Candidate.source_tree_sha256) == ...
-                    Expected.source_tree_sha256 && ...
-                double(Candidate.finalFE) == Expected.maxFE && ...
-                isfinite(double(Candidate.IGD));
-            if valid
-                Row = Candidate;
-                found = true;
-                return;
-            end
-        catch
-        end
     end
 end
 
-function name = nextAttemptName(taskRoot)
-    attempts = dir(fullfile(taskRoot,'attempt_*'));
-    numbers = zeros(0,1);
-    for i = 1 : numel(attempts)
-        token = regexp(attempts(i).name,'^attempt_(\d+)$','tokens','once');
-        if ~isempty(token); numbers(end+1,1) = str2double(token{1}); end %#ok<AGROW>
+function filePath = standardResultFile(outDir,Row)
+    filePath = fullfile(outDir,sprintf( ...
+        'CBS_RegionWGAN_GP_%s_M%d_D%d_%d.mat',char(Row.problem), ...
+        round(Row.M),round(Row.D),round(Row.run)));
+end
+
+function [Row,valid] = readStandardResult(Row)
+    valid = false;
+    filePath = char(Row.result_file);
+    if ~isfile(filePath); return; end
+    try
+        Variables = whos('-file',filePath);
+        if ~isequal(sort(string({Variables.name})),["metric","result"])
+            return;
+        end
+        Saved = load(filePath,'result','metric');
+        if ~iscell(Saved.result) || isempty(Saved.result) || ...
+                size(Saved.result,2) ~= 2 || ...
+                ~isstruct(Saved.metric) || ...
+                ~all(isfield(Saved.metric,{'runtime','IGD'}))
+            return;
+        end
+        finalFE = double(Saved.result{end,1});
+        Population = Saved.result{end,2};
+        if finalFE ~= Row.maxFE || ~isa(Population,'SOLUTION') || ...
+                numel(Population) ~= Row.N || ...
+                size(Population.decs,2) ~= Row.D || ...
+                size(Population.objs,2) ~= Row.M
+            return;
+        end
+        Row.finalFE = finalFE;
+        Row.IGD = double(Saved.metric.IGD(end));
+        Row.runtime_seconds = double(Saved.metric.runtime(end));
+        Row.status = "ok";
+        Row.error_identifier = "";
+        Row.error_message = "";
+        valid = true;
+    catch
+        valid = false;
     end
-    if isempty(numbers); number = 1; else; number = max(numbers)+1; end
-    name = sprintf('attempt_%03d',number);
-end
-
-function signature = taskSignature(Row,Options)
-    payload = struct( ...
-        'problem',Row.problem,'run',Row.run,'seed',Row.seed, ...
-        'N',Row.N,'D',Row.D,'maxFE',Row.maxFE, ...
-        'source_tree_sha256',Row.source_tree_sha256, ...
-        'schema_version',Options.schemaVersion);
-    signature = sha256Text(string(jsonencode(payload)));
-end
-
-function value = sha256Text(value)
-    digest = java.security.MessageDigest.getInstance('SHA-256');
-    digest.update(unicode2native(char(value),'UTF-8'));
-    value = lower(string(reshape(dec2hex(typecast( ...
-        digest.digest(),'uint8'),2).',1,[])));
-end
-
-function writeRootArtifacts(outDir,P,N,D,maxFE,problemNames,runIds)
-    Config = mainlineConfig(P,N,D,maxFE,problemNames,runIds);
-    provenanceFile = fullfile(outDir,'provenance.csv');
-    configFile = fullfile(outDir,'mainline_config.json');
-    if isfile(provenanceFile)
-        Existing = readtable(provenanceFile,'TextType','string');
-        if ~ismember('source_tree_sha256',Existing.Properties.VariableNames) || ...
-                string(Existing.source_tree_sha256(1)) ~= P.source_tree_sha256
-            error('CBSRegionGAN:OutputProvenanceMismatch', ...
-                'The output directory belongs to another source tree.');
-        end
-        if ~isfile(configFile)
-            error('CBSRegionGAN:OutputConfigurationMismatch', ...
-                'Existing output directory has no mainline_config.json.');
-        end
-        ExistingConfig = jsondecode(fileread(configFile));
-        if ~isfield(ExistingConfig,'configSignature') || ...
-                string(ExistingConfig.configSignature) ~= ...
-                    Config.configSignature
-            error('CBSRegionGAN:OutputConfigurationMismatch', ...
-                ['The output directory belongs to another experiment ', ...
-                'configuration. Use a new output directory.']);
-        end
-    else
-        Scalar = table(P.schema_version,P.git_sha,P.git_branch, ...
-            double(P.git_dirty),P.matlab_release,P.host,P.worker_count, ...
-            P.options_json,P.source_tree_sha256, ...
-            'VariableNames',{'schema_version','git_sha','git_branch', ...
-            'git_dirty','matlab_release','host','worker_count', ...
-            'options_json','source_tree_sha256'});
-        writetable(Scalar,provenanceFile);
-        writetable(P.source_manifest,fullfile(outDir,'source_manifest.csv'));
-        fid = fopen(configFile,'w');
-        if fid < 0
-            error('CBSRegionGAN:ConfigWriteFailed', ...
-                'Cannot create %s.',configFile);
-        end
-        cleanup = onCleanup(@()fclose(fid));
-        fwrite(fid,jsonencode(Config,'PrettyPrint',true),'char');
-    end
-end
-
-function Config = mainlineConfig(P,N,D,maxFE,problemNames,runIds)
-    Config = CBS_RegionWGAN_GP.mainlineDefaults();
-    Config.N = N;
-    Config.D = D;
-    Config.maxFE = maxFE;
-    Config.ganStopFE = Config.ganStopFraction*maxFE;
-    Config.problems = problemNames;
-    Config.runs = runIds;
-    Config.workerCount = double(P.worker_count);
-    Config.schemaVersion = string(P.schema_version);
-    Config.sourceTreeSHA256 = string(P.source_tree_sha256);
-    SignaturePayload = struct();
-    SignaturePayload.N = N;
-    SignaturePayload.D = D;
-    SignaturePayload.maxFE = maxFE;
-    SignaturePayload.ganStopFraction = Config.ganStopFraction;
-    SignaturePayload.ganStopFE = Config.ganStopFE;
-    SignaturePayload.problems = problemNames;
-    SignaturePayload.runs = runIds;
-    SignaturePayload.workerCount = double(P.worker_count);
-    SignaturePayload.schemaVersion = string(P.schema_version);
-    SignaturePayload.sourceTreeSHA256 = string(P.source_tree_sha256);
-    Config.configSignature = sha256Text(string(jsonencode(SignaturePayload)));
 end
 
 function ensurePool(workerCount)
@@ -318,22 +299,16 @@ function setThreadEnvironment()
     for i = 1 : numel(names); setenv(names{i},'1'); end
 end
 
-function quietOutput(~,~)
-end
-
 function reportProgress(done,total,Row)
-    fprintf('[%d/%d] %s run=%d status=%s IGD=%.8g reused=%d\n', ...
+    fprintf('[%d/%d] %s run=%d status=%s IGD=%.8g reused=%d file=%s\n', ...
         done,total,char(Row.problem),Row.run,char(Row.status), ...
-        Row.IGD,Row.reused);
+        Row.IGD,Row.reused,char(Row.result_file));
 end
 
 function Row = emptyRunRow()
     Row = struct( ...
-        'problem',"",'run',NaN,'seed',NaN, ...
-        'N',NaN,'D',NaN,'M',NaN,'maxFE',NaN,'finalFE',NaN, ...
-        'IGD',NaN,'runtime_seconds',NaN,'wall_seconds',NaN, ...
-        'status',"pending",'reused',0, ...
-        'error_identifier',"",'error_message',"", ...
-        'source_tree_sha256',"",'task_signature',"", ...
-        'attempt_folder',"",'task_result_file',"");
+        'problem',"",'run',NaN,'seed',NaN,'N',NaN,'D',NaN,'M',NaN, ...
+        'maxFE',NaN,'finalFE',NaN,'IGD',NaN,'runtime_seconds',NaN, ...
+        'status',"pending",'reused',0,'result_file',"", ...
+        'error_identifier',"",'error_message',"");
 end

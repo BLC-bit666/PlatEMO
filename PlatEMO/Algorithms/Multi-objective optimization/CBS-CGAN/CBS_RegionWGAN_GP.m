@@ -26,7 +26,29 @@ classdef CBS_RegionWGAN_GP < ALGORITHM
 % Computational Intelligence Magazine, 2017, 12(4): 73-87".
 %--------------------------------------------------------------------------
 
+    properties(Access = private,Transient)
+        operatorMode = "ga_de_half";  % Mainline offspring operator (S2)
+        boundarySearch = "on";        % Mainline post-stop line search (BLS)
+    end
+
     methods
+        function Algorithm = CBS_RegionWGAN_GP(varargin)
+        %CBS_REGIONWGAN_GP Construct the algorithm and optional switches.
+            Algorithm@ALGORITHM(varargin{:});
+            Algorithm.operatorMode = readOperatorMode(varargin);
+            Algorithm.boundarySearch = readBoundarySearch(varargin);
+        end
+
+        function mode = effectiveOperatorMode(Algorithm)
+        %EFFECTIVEOPERATORMODE Return the live offspring-operator mode.
+            mode = Algorithm.operatorMode;
+        end
+
+        function state = effectiveBoundarySearch(Algorithm)
+        %EFFECTIVEBOUNDARYSEARCH Return the live boundary-search switch.
+            state = Algorithm.boundarySearch;
+        end
+
         function main(Algorithm,Problem)
             configurePlatEMOUtilityPath();
 
@@ -113,10 +135,10 @@ classdef CBS_RegionWGAN_GP < ALGORITHM
                 deBudget = min(2*Problem.N,remainingFE);
                 count1 = min(Problem.N,ceil(deBudget/2));
                 count2 = min(Problem.N,floor(deBudget/2));
-                Offspring1 = generateRegionDEOffspring( ...
-                    Problem,Population1,Fitness1,count1);
-                Offspring2 = generateRegionDEOffspring( ...
-                    Problem,Population2,Fitness2,count2);
+                Offspring1 = generateRegionOffspring(Problem, ...
+                    Population1,Fitness1,count1,Algorithm.operatorMode);
+                Offspring2 = generateRegionOffspring(Problem, ...
+                    Population2,Fitness2,count2,Algorithm.operatorMode);
 
                 OffspringG = Offspring1([]);
                 if Problem.FE < ganFELimit
@@ -154,8 +176,19 @@ classdef CBS_RegionWGAN_GP < ALGORITHM
                     end
                 end
 
+                OffspringL = Offspring1([]);
+                if Algorithm.boundarySearch == "on" && ...
+                        Problem.FE >= ganFELimit
+                    remainingFE = max(0,Problem.maxFE-Problem.FE);
+                    blsBudget = min(20,remainingFE);
+                    if blsBudget > 0
+                        OffspringL = boundaryLineSearch( ...
+                            Problem,Population1,Population2,blsBudget);
+                    end
+                end
+
                 Union1 = [Population1,Population2,Offspring1, ...
-                    Offspring2,OffspringG];
+                    Offspring2,OffspringG,OffspringL];
                 Union2 = Union1;
                 [Population1,Fitness1] = EnvironmentalSelection_CBS( ...
                     Union1,Problem.N,true);
@@ -166,17 +199,151 @@ classdef CBS_RegionWGAN_GP < ALGORITHM
     end
 end
 
-function Offspring = generateRegionDEOffspring( ...
-        Problem,Population,Fitness,count)
-%GENERATEREGIONDEOFFSPRING Call PlatEMO's DE operator within the FE budget.
-%   Parent selection is performed by TournamentSelection, and all variation
-%   and evaluation are delegated to the platform OperatorDE implementation.
+function state = readBoundarySearch(argumentList)
+%READBOUNDARYSEARCH Read the optional post-stop line-search switch.
+
+    state = "on";
+    names = argumentList(1:2:max(0,numel(argumentList)-1));
+    index = find(cellfun(@(x)ischar(x) && ...
+        strcmp(x,'boundarySearch'),names),1,'last');
+    if isempty(index)
+        return;
+    end
+    state = lower(strtrim(string(argumentList{2*index})));
+    if ~(isscalar(state) && ismember(state,["off","on"]))
+        error('CBSRegionGAN:BadBoundarySearch', ...
+            'boundarySearch must be off or on.');
+    end
+end
+
+function Offspring = boundaryLineSearch(Problem,Population1,Population2, ...
+        budget)
+%BOUNDARYLINESEARCH Membership-oracle line search after the CGAN stops.
+%   Primitive 1 bisects feasible-infeasible decision segments so that the
+%   feasible-side iterates land next to the constraint boundary; primitive
+%   2 evaluates the decision midpoint of the sparsest adjacent feasible
+%   nondominated pair, with one bisection repair step when the midpoint is
+%   infeasible. Both follow the classic boundary-operator idea
+%   (Michalewicz et al.; repair by binary interpolation, GECCO 2007) and
+%   only require the single-bit feasibility oracle. Engineering utility,
+%   not an algorithmic contribution.
+
+    Offspring = Population1([]);
+    All = [Population1,Population2];
+    cv = sum(max(0,All.cons),2);
+    Feasible = All(cv <= 0);
+    if isempty(Feasible) || budget <= 0
+        return;
+    end
+    front = NDSort(Feasible.objs,1) == 1;
+    Front = Feasible(front);
+    FrontDecs = Front.decs;
+    Infeasible = All(cv > 0);
+    used = 0;
+
+    %% Primitive 1: pin anchors onto the boundary by bisection
+    if ~isempty(Infeasible)
+        InfDecs = Infeasible.decs;
+        for anchor = 1 : min(3,size(FrontDecs,1))
+            if used >= budget
+                break;
+            end
+            pick = randi(size(FrontDecs,1));
+            feasiblePoint = FrontDecs(pick,:);
+            distance2 = sum((InfDecs-feasiblePoint).^2,2);
+            [~,nearest] = min(distance2);
+            infeasiblePoint = InfDecs(nearest,:);
+            steps = min(4,budget-used);
+            for k = 1 : steps
+                middle = (feasiblePoint+infeasiblePoint)/2;
+                candidate = Problem.Evaluation(middle);
+                used = used + 1;
+                Offspring = [Offspring,candidate]; %#ok<AGROW>
+                if sum(max(0,candidate.cons),2) <= 0
+                    feasiblePoint = middle;
+                else
+                    infeasiblePoint = middle;
+                end
+            end
+        end
+    end
+
+    %% Primitive 2: fill the sparsest objective-space gaps
+    if used < budget && numel(Front) >= 2
+        FrontObjs = Front.objs;
+        distance = sqrt(max(0,sum(FrontObjs.^2,2) + ...
+            sum(FrontObjs.^2,2)' - 2*(FrontObjs*FrontObjs')));
+        distance(1:numel(Front)+1:end) = inf;
+        [nearestDist,nearestIdx] = min(distance,[],2);
+        [~,order] = sort(nearestDist,'descend');
+        for t = 1 : numel(order)
+            if used >= budget
+                break;
+            end
+            i = order(t);
+            j = nearestIdx(i);
+            middle = (FrontDecs(i,:)+FrontDecs(j,:))/2;
+            candidate = Problem.Evaluation(middle);
+            used = used + 1;
+            Offspring = [Offspring,candidate]; %#ok<AGROW>
+            if used < budget && sum(max(0,candidate.cons),2) > 0
+                repaired = (middle+FrontDecs(i,:))/2;
+                candidate = Problem.Evaluation(repaired);
+                used = used + 1;
+                Offspring = [Offspring,candidate]; %#ok<AGROW>
+            end
+        end
+    end
+end
+
+function mode = readOperatorMode(argumentList)
+%READOPERATORMODE Read the optional engineering offspring-operator switch.
+
+    mode = "ga_de_half";
+    names = argumentList(1:2:max(0,numel(argumentList)-1));
+    index = find(cellfun(@(x)ischar(x) && ...
+        strcmp(x,'operatorMode'),names),1,'last');
+    if isempty(index)
+        return;
+    end
+    mode = lower(strtrim(string(argumentList{2*index})));
+    if ~(isscalar(mode) && ismember(mode,["de","imtcmo_de","ga_de_half"]))
+        error('CBSRegionGAN:BadOperatorMode', ...
+            'operatorMode must be de, imtcmo_de, or ga_de_half.');
+    end
+end
+
+function Offspring = generateRegionOffspring( ...
+        Problem,Population,Fitness,count,mode)
+%GENERATEREGIONOFFSPRING Budget-limited offspring under the selected mode.
+%   The default "de" branch is the validated mainline path, byte-identical
+%   to the previous generateRegionDEOffspring. The two engineering
+%   alternatives keep exactly the same evaluation budget: "imtcmo_de" uses
+%   half DE/rand/1 plus half DE/pbest/1 with per-solution random F and CR,
+%   and "ga_de_half" replaces half of the offspring with platform SBX+PM.
 
     count = max(0,min(numel(Population),round(double(count))));
     if count == 0
         Offspring = Population([]);
         return;
     end
+    if mode == "imtcmo_de" && numel(Population) >= 5
+        Offspring = randPBestDEOffspring(Problem,Population,Fitness,count);
+    elseif mode == "ga_de_half"
+        gaCount = ceil(count/2);
+        Offspring = gaHalfOffspring(Problem,Population,Fitness,gaCount);
+        if count > gaCount
+            Offspring = [Offspring,classicDEOffspring( ...
+                Problem,Population,Fitness,count-gaCount)];
+        end
+    else
+        Offspring = classicDEOffspring(Problem,Population,Fitness,count);
+    end
+end
+
+function Offspring = classicDEOffspring(Problem,Population,Fitness,count)
+%CLASSICDEOFFSPRING The validated mainline DE path (unchanged wiring).
+
     matingPool = platformTournamentSelection(2,2*count,Fitness);
     if count == numel(Population)
         base = Population;
@@ -186,6 +353,107 @@ function Offspring = generateRegionDEOffspring( ...
     Offspring = OperatorDE(Problem,base, ...
         Population(matingPool(1:count)), ...
         Population(matingPool(count+1:end)));
+end
+
+function Offspring = gaHalfOffspring(Problem,Population,Fitness,count)
+%GAHALFOFFSPRING SBX+PM offspring through the platform half operator.
+
+    matingPool = platformTournamentSelection(2,2*count,Fitness);
+    Offspring = OperatorGAhalf(Problem,Population(matingPool));
+end
+
+function Offspring = randPBestDEOffspring(Problem,Population,Fitness,count)
+%RANDPBESTDEOFFSPRING Canonical DE/rand/1 plus DE/pbest/1 offspring.
+%   The operator recipe (random F in {0.6,0.8,1.0} and CR in {0.1,0.2,1.0}
+%   per solution, rand/1 plus pbest/1 halves with p = 0.1) is ported from
+%   the bundled IMTCMO implementation by Kangjia Qiao. The rand/1 mates are
+%   plain mutually distinct random triples; the IMTCMO-specific neighbor
+%   pairing strategy is intentionally not adopted.
+
+    n = numel(Population);
+    randCount = ceil(count/2);
+    bestCount = count - randCount;
+    Decs = Population.decs;
+
+    order = randperm(n);
+    [r1,r2,~] = distinctRandomTriples(n,order);
+    Rand1 = deVariation(Problem, ...
+        Decs(order(1:randCount),:), ...
+        Decs(r1(1:randCount),:) - Decs(r2(1:randCount),:));
+
+    if bestCount > 0
+        perm = randperm(n);
+        [q1,q2,~] = distinctRandomTriples(n,perm);
+        base = Decs(perm(1:bestCount),:);
+        pNP = max(round(0.1*n),2);
+        [~,indBest] = sort(reshape(Fitness,[],1),'ascend');
+        randindex = max(1,ceil(rand(1,bestCount)*pNP));
+        pbest = Decs(indBest(randindex),:);
+        PBest1 = deVariation(Problem,base, ...
+            pbest - base + Decs(q1(1:bestCount),:) - Decs(q2(1:bestCount),:));
+    else
+        PBest1 = zeros(0,size(Decs,2));
+    end
+    Offspring = Problem.Evaluation([Rand1;PBest1]);
+end
+
+function Offspring = deVariation(Problem,Base,Difference)
+%DEVARIATION Random-parameter DE variation with polynomial mutation.
+%   Per-row F and CR are drawn from {0.6,0.8,1.0} and {0.1,0.2,1.0} as in
+%   the bundled IMTCMO operators; polynomial mutation follows the platform
+%   convention with proM = 1 and disM = 20.
+
+    [N,D] = size(Base);
+    [proM,disM] = deal(1,20);
+    Fm = [0.6,0.8,1.0];
+    CRm = [0.1,0.2,1.0];
+    F = Fm(randi(3,N,1))';
+    F = F(:,ones(1,D));
+    CR = CRm(randi(3,N,1))';
+    Site = rand(N,D) < CR;
+    Offspring = Base;
+    Offspring(Site) = Offspring(Site) + F(Site).*Difference(Site);
+
+    Lower = repmat(Problem.lower,N,1);
+    Upper = repmat(Problem.upper,N,1);
+    Site = rand(N,D) < proM/D;
+    mu = rand(N,D);
+    temp = Site & mu <= 0.5;
+    Offspring = min(max(Offspring,Lower),Upper);
+    Offspring(temp) = Offspring(temp)+(Upper(temp)-Lower(temp)).* ...
+        ((2.*mu(temp)+(1-2.*mu(temp)).* ...
+        (1-(Offspring(temp)-Lower(temp))./(Upper(temp)-Lower(temp))) ...
+        .^(disM+1)).^(1/(disM+1))-1);
+    temp = Site & mu > 0.5;
+    Offspring(temp) = Offspring(temp)+(Upper(temp)-Lower(temp)).* ...
+        (1-(2.*(1-mu(temp))+2.*(mu(temp)-0.5).* ...
+        (1-(Upper(temp)-Offspring(temp))./(Upper(temp)-Lower(temp))) ...
+        .^(disM+1)).^(1/(disM+1)));
+end
+
+function [r1,r2,r3] = distinctRandomTriples(n,r0)
+%DISTINCTRANDOMTRIPLES Random indices distinct from r0 and one another.
+%   Ported from the bundled IMTCMO gnR1R2R3 helper.
+
+    count = numel(r0);
+    r1 = floor(rand(1,count)*n)+1;
+    for i = 1 : 999
+        pos = r1 == r0;
+        if ~any(pos); break; end
+        r1(pos) = floor(rand(1,sum(pos))*n)+1;
+    end
+    r2 = floor(rand(1,count)*n)+1;
+    for i = 1 : 999
+        pos = (r2 == r1) | (r2 == r0);
+        if ~any(pos); break; end
+        r2(pos) = floor(rand(1,sum(pos))*n)+1;
+    end
+    r3 = floor(rand(1,count)*n)+1;
+    for i = 1 : 999
+        pos = (r3 == r1) | (r3 == r2) | (r3 == r0);
+        if ~any(pos); break; end
+        r3(pos) = floor(rand(1,sum(pos))*n)+1;
+    end
 end
 
 function index = platformTournamentSelection(K,N,Fitness)

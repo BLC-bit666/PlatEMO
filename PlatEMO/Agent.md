@@ -1,16 +1,29 @@
 # CBS RegionWGAN-GP 固定主线约定
 
-更新时间：2026-07-17
+更新时间：2026-07-19
 
 ## 1. 当前唯一结论
 
 - 唯一算法：`CBS_RegionWGAN_GP`。
-- 唯一正式入口：`Support/run_CBS_RegionWGAN_GP_mainline.m`。
+- **主线配置（2026-07-19 定型并已固化为类默认）：
+  `operatorMode = ga_de_half` + `boundarySearch = on`（S2+BLS）。**
+  默认构造即主线；旧 A1 路径仍可经显式开关
+  `('operatorMode','de','boundarySearch','off')` 逐位复现。
+  旧 A1 全量战役原生结果归档于 `Data/CBS_RegionWGAN_GP-7-18`，
+  规范输出目录 `Data/CBS_RegionWGAN_GP` 已腾空供新战役使用。
+- 唯一正式入口：仓库根目录 `run_CBS_RegionWGAN_GP_DAS_LIR_full.m`，内部调用
+  `Support/run_CBS_RegionWGAN_GP_mainline.m` 产出 PlatEMO 原生结果文件
+  （`Data/CBS_RegionWGAN_GP/*.mat`，顶层变量仅 `result`/`metric`）。
 - 正式实验只比较每个 run 的最终 `IGD`。
 - 正式默认 `maxFE=200000`；CGAN 固定在前 50% FE 活跃，停止阈值为
   **FE=100000**。
 - 检查条件是 `Problem.FE < 0.5*Problem.maxFE`。阈值前已经启动的完整生成
   批次不截断；达到阈值后不再启动新 CGAN 事件。
+- 基准为 `_BC` 单比特约束套件：每个解只返回一个 0/1 可行标量
+  （`any(PopCon>0)` 折叠），不可行解之间没有违反度梯度。该设定与
+  NA-EMT 的 CMOP-UC 一致，比 DRMCMO 论文的逐约束 0/1 计数更严格。
+- **LIRCMOP1_BC–LIRCMOP4_BC 已明确排除出一切分析与结论**
+  （2026-07-18 决策），正式战役可跑但不进对比表。
 - 历史 `Data/CBS_RegionGAN_compare` 只作证据，不是源码依赖，不得删除、覆盖
   或与当前 source hash 混用。
 
@@ -21,13 +34,17 @@
 
 ```text
 双群体 P1/P2
-  -> 两组 DE 后代
+  -> 每群体一半 SBX+PM(OperatorGAhalf) + 一半原 DE 后代   [S2]
   -> 前 50% FE 内更新 BMem
   -> TrainX / TrainC / QueryRefs
   -> 合格事件 full warm-start 训练 WGAN-GP
   -> one-sixth frontier query，真实 Evaluation
-  -> 两次环境选择
+  -> 后 50% FE 每代 ≤20 FE 边界线搜索(二分+前沿中点插值)  [BLS]
+  -> 两次环境选择(Union 含 GAN 与 BLS 后代)
 ```
+
+每代 FE 预算（N=100 稳态）：前半 200(DE/GA)+30(CGAN)=230；
+后半 200(DE/GA)+≤20(BLS)=220；全程受 remainingFE 钳制。
 
 固定默认值：
 
@@ -84,28 +101,24 @@ structured-z、pointwise、MMD、coherent BMem、observer、阶段快照、绘�
 
 ## 4. 最终 IGD runner
 
-正式范围：
+正式范围（全量战役，仅在最终配置定型后运行一次）：
 
 ```text
-LIRCMOP5_BC–LIRCMOP10_BC
-N=100, D=30, M=2, maxFE=200000
-runs/seeds=1:3
-workers=9
+DASCMOP1_BC–DASCMOP9_BC + LIRCMOP1_BC–LIRCMOP14_BC（共 23 题）
+N=100, D=各问题类默认, maxFE=200000
+runs/seeds=1:10
+workers=10（测试允许 1）
+输出 Data/CBS_RegionWGAN_GP 原生文件，可断点复用
 ```
 
 ```matlab
-root = fileparts(which('platemo'));
-outDir = fullfile(root,'Data','CBS_RegionGAN_compare','mainline_igd_runs_v2');
-[Summary,outDir] = run_CBS_RegionWGAN_GP_mainline( ...
-    outDir,9,"LIRCMOP" + string((5:10)') + "_BC", ...
-    100,30,200000,1:3,struct('resume',true));
+run_CBS_RegionWGAN_GP_DAS_LIR_full
 ```
 
-- 正式并行使用 9 workers；测试允许 1 worker。
 - 每个 worker 限制 OpenMP/BLAS 为 1 线程。
-- 每个任务必须 `status=ok`、`finalFE=maxFE` 且最终 IGD 有限。
-- 每个任务只保存最终 IGD 与审计字段，不保存最终种群或过程观测。
-- schema 为 `cbs_region_wgan_igd_mainline_v2`。
+- 每个任务必须 `status=ok`、`finalFE=maxFE`；IGD 为 NaN 是合法数据
+  （无可行解），不是失败。
+- 分析时 L1–4 剔除；工程实验（第 8 节）使用 10 题代表集。
 
 ## 5. 唯一源码集合
 
@@ -117,8 +130,10 @@ outDir = fullfile(root,'Data','CBS_RegionGAN_compare','mainline_igd_runs_v2');
 - `Algorithms/Multi-objective optimization/CBS-CGAN/CalFitness_CBS.m`
 - `Algorithms/Multi-objective optimization/CBS-CGAN/EnvironmentalSelection_CBS.m`
 - `Algorithms/Multi-objective optimization/CBS-CGAN/Support/run_CBS_RegionWGAN_GP_mainline.m`
+- `Algorithms/Multi-objective optimization/CBS-CGAN/Support/run_CBS_operator_triage.m`
 - `Algorithms/Multi-objective optimization/CBS-CGAN/Support/CBS_RegionGAN_Provenance.m`
 - `Algorithms/Multi-objective optimization/CBS-CGAN/Support/CBS_RegionGAN_SourceManifestSHA256.m`
+- `run_CBS_RegionWGAN_GP_DAS_LIR_full.m`（仓库根目录）
 
 ## 6. 性能与等价性纪律
 
@@ -151,4 +166,42 @@ test_CBS_region_wgan_mainline
 test_CBS_calfitness_equivalence
 test_CBS_RegionGAN_provenance
 test_CBS_RegionWGAN_GP_mainline_runner
+test_CBS_operator_modes
+test_CBS_boundary_search
 ```
+
+双指纹（由 `test_CBS_operator_modes` 守护，条件均为
+`LIRCMOP6_BC, N=100, D=30, maxFE=20000, rng(4242,'twister')`）：
+
+- 主线默认路径（S2+BLS）：IGD=`1.3470807122527642`、
+  决策和=`1919.0968011138757`、终态 RNG 首字=`368524342`；
+- 遗留路径（显式 `de`/`off`）：IGD=`1.3653447524657205`、
+  决策和=`1729.4377215220884`、终态 RNG 首字=`415301093`。
+
+任何触碰主循环的改动必须同时逐位复现两条指纹。
+
+## 8. 工程实验状态（不进论文创新点，2026-07-19）
+
+背景诊断：单比特 CV 下全不可行阶段约束适应度退化 + 共享 Union 使
+P1≡P2、原 DE（CR=1、精英差分）步长坍缩，导致 D4–8 双稳态崩溃。
+
+- `operatorMode` 构造器开关：`de`、`imtcmo_de`（S1）、`ga_de_half`（S2）。
+  `boundarySearch` 构造器开关：`off`/`on`（BLS：50% 停止点后每代 ≤20 FE，
+  可行–不可行二分 + 前沿最稀疏对中点插值；出处 Michalewicz 边界算子 /
+  GECCO2007 binary interpolation repair）。默认路径与开关前逐位一致，
+  由 20k 指纹守护。
+- triage 证据（10 题代表集 × 3 seeds，`operator_triage_v1`）：
+  - S1/S2 vs A1：失败域 D4–8 崩溃 run 4→0（两臂同效）；
+    S2 全局 23/5 胜、守护域非劣；S1 劣化 L6/L10 达 30–76% 淘汰。
+  - S2B(S2+BLS) vs S2：L10 三 seed 全胜（−16~−26%，反超本地 MCCMO 与
+    DRMCMO 发表值）、D9 三 seed 全胜；失败域中性（崩溃 0/0）；
+    唯一代价 L6 +2~6%（绝对量 ≤5e-4）；30 对净 IGD 和 ≈ −0.010。
+- **裁决（2026-07-19，用户确认）：主线 = S2+BLS。**
+- 已否决：S1；S3 停滞重初始化；IMTCMO Neighbor_Pairing 移植。
+- 已知未偿债务：CGAN 相对"无 GAN/平凡采样器"的必要性消融从未运行
+  （用户明确搁置）。前半段每代 30 FE 的 CGAN 开销之"值得"目前只有
+  间接证据（时机研究、机制指标），无因果对照。
+- 已完成（2026-07-19）：S2+BLS 固化为类默认，双指纹录制并入测试，
+  启动脚本含主线漂移守卫（`CBSRegionGAN:MainlineDefaultsDrift`）。
+- 待执行：唯一一次全量战役（23 题 × 10 seeds）出论文表；分析时
+  L1–4 剔除。
