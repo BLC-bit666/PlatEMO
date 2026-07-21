@@ -11,8 +11,9 @@
 Developed by BIMK (Institute of Bioinspired Intelligence and Mining Knowledge) of Anhui University 
 <!-- and NICE (Nature Inspired Computing and Engineering Group) of University of Surrey -->
 <div>
-<img src="https://wx2.sinaimg.cn/mw690/00752cx4ly1gnpnfh0i4yj30m80m83zx.jpg" width=160>
+<!--<img src="https://wx2.sinaimg.cn/mw690/00752cx4ly1gnpnfh0i4yj30m80m83zx.jpg" width=160> -->
 <!-- <img src="https://wx2.sinaimg.cn/mw690/00752cx4ly1gnpnfgz0ulj30px08n74t.jpg" height=140> -->
+<img src="./Doc/ahu-logo.jpg" width="160"> <img src="./Doc/key_Lab.jpg" width="160" style="margin-left: 20px;">
 </div>
 
 * 300+ open source evolutionary algorithms
@@ -44,14 +45,12 @@ following literature:
 }
 ```
 
-# Release Highlights of PlatEMO 4.14
+# Release Highlights of PlatEMO 4.16
 [Release Note can be found here](./Doc/releasenote.md)
 
-* A detailed tutorial of using NeuroEAs is added to the user manual.
+* Add a large-scale multi-objective evolutionary algorithm FDSEA, add two constrained multi-objective evolutionary algorithms CMOCEA-DDAP and CPCMO, add five expensive constrained multi-objective evolutionary algorithms CKAnD, KAnD, MaO-TSPP, MOEA/D-EGO-CEI, and TSPP. There are currently 360 algorithms in the platform.
 
-* Add an expensive single-objective evolutionary algorithm MiSACO, two expensive multi-objective evolutionary algorithms CMOEBOD and SAMOEA-TL2M, a sparse multi-objective evolutionary algorithm AMG-PSL, two constrained multi-objective evolutionary algorithms CMOBR and CMODRL, and a multi-model multi-objective evolutionary algorithm MONAS. There are currently 340 algorithms in the platform.
-
-* Add 30 expensive single-objective optimization problems EOPCCV_F1-EOPCCV_F30. There are currently 625 problems in the platform.
+* Add five multimodal multiobjective benchmark problems HYL1-HYL5. There are currently 630 problems in the platform.
 
 # Features of PlatEMO
 *  Totally Developed in MATLAB  
