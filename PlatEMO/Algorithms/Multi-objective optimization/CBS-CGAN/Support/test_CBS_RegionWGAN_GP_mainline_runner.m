@@ -31,7 +31,8 @@ function test_CBS_RegionWGAN_GP_mainline_runner()
     assert(isequal(sort(string({Variables.name})),["metric","result"]), ...
         'A standard result file must contain only result and metric.');
     Saved = load(expectedFile,'result','metric');
-    assert(iscell(Saved.result) && isequal(size(Saved.result),[1,2]));
+    assert(iscell(Saved.result) && isequal(size(Saved.result),[2,2]), ...
+        'save=2 must record the mid-run and final snapshots.');
     assert(Saved.result{end,1} == 120 && ...
         isa(Saved.result{end,2},'SOLUTION'));
     Population = Saved.result{end,2};

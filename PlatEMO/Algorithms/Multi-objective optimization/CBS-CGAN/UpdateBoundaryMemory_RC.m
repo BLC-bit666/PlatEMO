@@ -87,12 +87,14 @@ function Cloud = harvestCloud(X,Y,Yn,Feasible,Ref,W,Options, ...
             if ~any(legal)
                 continue;
             end
-            minGap = min(distance(a,legal));
+            [minGap,which] = min(distance(a,legal));
+            legalIdx = infeasibleIdx(legal);
             row = row + 1;
             Cloud.ref(row,1) = r;
             Cloud.gap(row,1) = minGap;
             Cloud.x_b(row,:) = X(f,:);
             Cloud.y_b(row,:) = Y(f,:);
+            Cloud.x_i(row,:) = X(legalIdx(which),:);
         end
     end
     Cloud = subsetMemory(Cloud,1:row);
@@ -291,6 +293,7 @@ function BMem = ensureMemoryFields(BMem,D,M)
     if ~isfield(BMem,'gap'); BMem.gap = nan(n,1); end
     if ~isfield(BMem,'x_b'); BMem.x_b = nan(n,D); end
     if ~isfield(BMem,'y_b'); BMem.y_b = nan(n,M); end
+    if ~isfield(BMem,'x_i'); BMem.x_i = nan(n,D); end
 end
 
 function [D,M] = inferDimensions(Samples,PrevBMem)
@@ -315,7 +318,8 @@ function BMem = emptyBMem(N,D,M)
         'ref',zeros(N,1), ...
         'gap',zeros(N,1), ...
         'x_b',nan(N,D), ...
-        'y_b',zeros(N,M));
+        'y_b',zeros(N,M), ...
+        'x_i',nan(N,D));
 end
 
 function value = optionInteger(Options,name,defaultValue,minimum)

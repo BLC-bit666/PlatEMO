@@ -1,7 +1,7 @@
 classdef CBS_RegionWGAN_GP < ALGORITHM
 % <2026> <multi> <real> <constrained>
 % Reference vector-conditioned boundary WGAN-GP
-% nGen            ---  30 --- Number of generated solutions per eligible event
+% nGen            ---  20 --- Number of generated solutions per eligible event
 % zDim            ---   6 --- Dimension of the generator noise vector
 % ganIter         --- 100 --- Generator updates per eligible training event
 % ganMiniBatch    ---  32 --- Mini-batch size of WGAN-GP training
@@ -29,6 +29,35 @@ classdef CBS_RegionWGAN_GP < ALGORITHM
     properties(Access = private,Transient)
         operatorMode = "ga_de_half";  % Mainline offspring operator (S2)
         boundarySearch = "on";        % Mainline post-stop line search (BLS)
+        generatorMode = "wgan";       % Ablation switch: wgan | copynoise |
+                                      % jump | jumptrivial
+        scoutMode = "off";            % Mainline (2026-07-20 decision):
+                                      % the guide mechanism replaces the
+                                      % protected-injection mainline; the
+                                      % protection study values stay
+                                      % reachable. off | on | noprotect |
+                                      % nofrontier | halffrontier
+        metricsMode = "off";          % off | on (pure counting, RNG-free)
+        guideMode = "on";             % off | on | mix. "on": unevaluated
+                                      % CGAN guides steer part of P1's
+                                      % offspring; "mix" reproduces the
+                                      % same GA/DE split without guides
+                                      % (ratio-confound control).
+        guideShare = 0.2;             % guided fraction of P1 offspring
+                                      % (GD20 mainline, 2026-07-20)
+        guideCarve = "sym";           % sym: GA/DE shrink equally;
+                                      % de: GA keeps 50%, DE donates
+        guideWindow = "half";         % half | full: guide supply window
+        blsWindow = "full";           % Mainline (2026-07-20 fusion):
+                                      % boundary calibration runs all run.
+                                      % late restores the pre-fusion path.
+        blsFeed = "on";               % Calibration candidates join the
+                                      % same-generation BMem harvest.
+        initDecs = [];                % Optional N-by-D matrix seeding both
+                                      % populations for branched-continuation
+                                      % experiments; empty keeps the native
+                                      % random initialization.
+        scoutMetricsStore = [];       % Collected counters when metricsMode=on
     end
 
     methods
@@ -37,6 +66,16 @@ classdef CBS_RegionWGAN_GP < ALGORITHM
             Algorithm@ALGORITHM(varargin{:});
             Algorithm.operatorMode = readOperatorMode(varargin);
             Algorithm.boundarySearch = readBoundarySearch(varargin);
+            Algorithm.generatorMode = readGeneratorMode(varargin);
+            Algorithm.scoutMode = readScoutMode(varargin);
+            Algorithm.metricsMode = readMetricsMode(varargin);
+            Algorithm.guideMode = readGuideMode(varargin);
+            Algorithm.guideShare = readGuideShare(varargin);
+            Algorithm.guideCarve = readGuideCarve(varargin);
+            Algorithm.guideWindow = readGuideWindow(varargin);
+            Algorithm.blsWindow = readBlsWindow(varargin);
+            Algorithm.blsFeed = readBlsFeed(varargin);
+            Algorithm.initDecs = readInitDecs(varargin);
         end
 
         function mode = effectiveOperatorMode(Algorithm)
@@ -47,6 +86,61 @@ classdef CBS_RegionWGAN_GP < ALGORITHM
         function state = effectiveBoundarySearch(Algorithm)
         %EFFECTIVEBOUNDARYSEARCH Return the live boundary-search switch.
             state = Algorithm.boundarySearch;
+        end
+
+        function mode = effectiveGeneratorMode(Algorithm)
+        %EFFECTIVEGENERATORMODE Return the live generator-ablation mode.
+            mode = Algorithm.generatorMode;
+        end
+
+        function mode = effectiveScoutMode(Algorithm)
+        %EFFECTIVESCOUTMODE Return the live scout-mode switch.
+            mode = Algorithm.scoutMode;
+        end
+
+        function mode = effectiveMetricsMode(Algorithm)
+        %EFFECTIVEMETRICSMODE Return the live metrics-recording switch.
+            mode = Algorithm.metricsMode;
+        end
+
+        function mode = effectiveGuideMode(Algorithm)
+        %EFFECTIVEGUIDEMODE Return the live guide-study switch.
+            mode = Algorithm.guideMode;
+        end
+
+        function share = effectiveGuideShare(Algorithm)
+        %EFFECTIVEGUIDESHARE Return the live guided-offspring share.
+            share = Algorithm.guideShare;
+        end
+
+        function window = effectiveGuideWindow(Algorithm)
+        %EFFECTIVEGUIDEWINDOW Return the live guide-supply window.
+            window = Algorithm.guideWindow;
+        end
+
+        function carve = effectiveGuideCarve(Algorithm)
+        %EFFECTIVEGUIDECARVE Return the live guided-slot carving rule.
+            carve = Algorithm.guideCarve;
+        end
+
+        function window = effectiveBlsWindow(Algorithm)
+        %EFFECTIVEBLSWINDOW Return the live boundary-search window.
+            window = Algorithm.blsWindow;
+        end
+
+        function feed = effectiveBlsFeed(Algorithm)
+        %EFFECTIVEBLSFEED Return the live BLS-to-BMem feed switch.
+            feed = Algorithm.blsFeed;
+        end
+
+        function decs = effectiveInitDecs(Algorithm)
+        %EFFECTIVEINITDECS Return the injected initial population, if any.
+            decs = Algorithm.initDecs;
+        end
+
+        function Mx = collectedScoutMetrics(Algorithm)
+        %COLLECTEDSCOUTMETRICS Return counters recorded when metricsMode=on.
+            Mx = Algorithm.scoutMetricsStore;
         end
 
         function main(Algorithm,Problem)
@@ -77,7 +171,7 @@ classdef CBS_RegionWGAN_GP < ALGORITHM
         function Defaults = mainlineDefaults()
         %MAINLINEDEFAULTS Return public defaults and fixed mainline constants.
             Defaults = struct( ...
-                'nGen',30, ...
+                'nGen',20, ...
                 'zDim',6, ...
                 'ganIter',100, ...
                 'ganMiniBatch',32, ...
@@ -121,79 +215,224 @@ classdef CBS_RegionWGAN_GP < ALGORITHM
                     Config.maxAnchorsPerRef))));
             GANOptions = regionGANOptions(Config,minGANTrainCount);
 
-            Population1 = Problem.Initialization();
-            Population2 = Problem.Initialization();
+            if isempty(Algorithm.initDecs)
+                Population1 = Problem.Initialization();
+                Population2 = Problem.Initialization();
+            else
+                if ~isequal(size(Algorithm.initDecs), ...
+                        [Problem.N,Problem.D])
+                    error('CBSRegionGAN:BadInitDecsSize', ...
+                        'initDecs must be a %d-by-%d matrix.', ...
+                        Problem.N,Problem.D);
+                end
+                Population1 = Problem.Evaluation(Algorithm.initDecs);
+                Population2 = Problem.Evaluation(Algorithm.initDecs);
+            end
             Fitness1 = CalFitness_CBS( ...
                 Population1.objs,Population1.cons);
             Fitness2 = CalFitness_CBS(Population2.objs);
             BMem = [];
             GAN = [];
 
+            scoutQueriesOn = any(Algorithm.scoutMode == ...
+                ["on","noprotect"]);
+            if scoutQueriesOn
+                queryAlloc = "scout";
+            elseif Algorithm.scoutMode == "halffrontier"
+                queryAlloc = "half";
+            else
+                queryAlloc = "legacy";
+            end
+            protectOn = any(Algorithm.scoutMode == ...
+                ["on","nofrontier","halffrontier"]);
+            datasetMode = "anchor";
+            if any(Algorithm.generatorMode == ["jump","jumptrivial"])
+                datasetMode = "landing";
+            end
+            recordOn = Algorithm.metricsMode == "on";
+            useGuides = Algorithm.guideMode == "on";
+            mixReproduction = any(Algorithm.guideMode == ["on","mix"]);
+            if useGuides
+                queryAlloc = "wide";
+            end
+            guideFELimit = ganFELimit;
+            if useGuides && Algorithm.guideWindow == "full"
+                guideFELimit = Problem.maxFE;
+            end
+            GuideBufDecs = zeros(0,Problem.D);
+            GuideBufRefs = zeros(0,1);
+            GuideBufTypes = zeros(0,1);
+            halfWindow = ganFELimit/2;
+            Mx = emptyScoutMetrics();
+            Hood = [];
+            if recordOn
+                Hood = referenceHoods(W);
+            end
+            scoutMask1 = false(1,numel(Population1));
+
             %% Optimization
             while Algorithm.NotTerminated(Population1)
+                feStart = Problem.FE;
+                bucket = 1 + double(feStart >= halfWindow);
+                inWindow = feStart < ganFELimit;
                 remainingFE = max(0,Problem.maxFE-Problem.FE);
                 deBudget = min(2*Problem.N,remainingFE);
                 count1 = min(Problem.N,ceil(deBudget/2));
                 count2 = min(Problem.N,floor(deBudget/2));
-                Offspring1 = generateRegionOffspring(Problem, ...
-                    Population1,Fitness1,count1,Algorithm.operatorMode);
+                if mixReproduction
+                    if Problem.FE >= guideFELimit
+                        GuideBufDecs = zeros(0,Problem.D);
+                        GuideBufRefs = zeros(0,1);
+                        GuideBufTypes = zeros(0,1);
+                    end
+                    [Offspring1,Info1] = generateGuidedMixOffspring( ...
+                        Problem,Population1,Fitness1,count1, ...
+                        GuideBufDecs,GuideBufRefs,GuideBufTypes,W, ...
+                        Algorithm.guideShare,Algorithm.guideCarve);
+                else
+                    [Offspring1,Info1] = generateRegionOffspring( ...
+                        Problem,Population1,Fitness1,count1, ...
+                        Algorithm.operatorMode);
+                end
                 Offspring2 = generateRegionOffspring(Problem, ...
                     Population2,Fitness2,count2,Algorithm.operatorMode);
 
+                % Active boundary observation: the module's calibration
+                % refiner contracts feasible-infeasible intervals on the
+                % feasibility oracle; its evaluated candidates compete in
+                % the ordinary selection and join the same-generation
+                % boundary-memory harvest below.
+                CalibrationCandidates = Offspring1([]);
+                if Algorithm.boundarySearch == "on" && ...
+                        (Algorithm.blsWindow == "full" || ...
+                        Problem.FE >= ganFELimit)
+                    remainingFE = max(0,Problem.maxFE-Problem.FE);
+                    calibrationBudget = min(20,remainingFE);
+                    if calibrationBudget > 0
+                        CalibrationCandidates = ...
+                            RefineBoundaryObservations_RC( ...
+                            Problem,Population1,Population2, ...
+                            calibrationBudget);
+                    end
+                end
+
                 OffspringG = Offspring1([]);
-                if Problem.FE < ganFELimit
+                scoutTypes = zeros(0,1);
+                scoutTargets = zeros(0,1);
+                ganActiveLimit = ganFELimit;
+                if useGuides
+                    ganActiveLimit = guideFELimit;
+                end
+                if Problem.FE < ganActiveLimit
                     % Update the boundary memory before training so every
                     % evaluated offspring can contribute to the current
                     % event. After the configured stop point the memory,
                     % training, and sampling are all skipped and the saved
                     % budget flows back into the DE loop.
+                    HarvestOffspring1 = Offspring1;
+                    if Algorithm.blsFeed == "on" && ...
+                            ~isempty(CalibrationCandidates)
+                        HarvestOffspring1 = [Offspring1, ...
+                            CalibrationCandidates];
+                    end
                     BMem = UpdateBoundaryMemory_RC(BMem,Population1, ...
-                        Offspring1,Population2,Offspring2,W,MemOptions);
+                        HarvestOffspring1,Population2,Offspring2,W, ...
+                        MemOptions);
                     remainingFE = max(0,Problem.maxFE-Problem.FE);
                     eventBudget = min(nGen,remainingFE);
                     if ~isempty(BMem) && eventBudget > 0
                         [TrainX,TrainC,QueryRefs] = ...
-                            BuildBoundaryDataset_RC(BMem,W,Problem);
+                            BuildBoundaryDataset_RC(BMem,W,Problem, ...
+                            datasetMode);
                         eligible = size(TrainX,1) >= ...
                             max(minBoundaryLength,minGANTrainCount) && ...
                             ~isempty(QueryRefs);
                         if eligible
-                            SampleC = RunRegionGAN_RC( ...
-                                'regionquerysamples',QueryRefs,W, ...
-                                eventBudget);
-                            [GAN,RawDec] = RunRegionGAN_RC( ...
-                                'trainandsample', ...
-                                GAN,TrainX,TrainC,SampleC,Problem, ...
-                                GANOptions);
+                            [SampleC,SampleRefs,SampleTypes] = ...
+                                RunRegionGAN_RC('regionquerysamples', ...
+                                QueryRefs,W,eventBudget,queryAlloc);
+                            if any(Algorithm.generatorMode == ...
+                                    ["copynoise","jumptrivial"])
+                                RawDec = copyNoiseSample(Problem, ...
+                                    TrainX,TrainC,SampleC,W,SampleRefs);
+                            else
+                                [GAN,RawDec] = RunRegionGAN_RC( ...
+                                    'trainandsample', ...
+                                    GAN,TrainX,TrainC,SampleC,Problem, ...
+                                    GANOptions);
+                            end
                             remainingFE = max(0,Problem.maxFE-Problem.FE);
                             if size(RawDec,1) > remainingFE
                                 RawDec = RawDec(1:remainingFE,:);
                             end
-                            if ~isempty(RawDec)
+                            if ~isempty(RawDec) && useGuides
+                                % Guides are never evaluated: they only
+                                % steer the next generations' guided DE.
+                                GuideBufDecs = RawDec;
+                                GuideBufRefs = reshape(SampleRefs( ...
+                                    1:size(RawDec,1)),[],1);
+                                GuideBufTypes = reshape(SampleTypes( ...
+                                    1:size(RawDec,1)),[],1);
+                                if recordOn
+                                    b = max(1,min(2,bucket));
+                                    Mx.guideEvents(b) = ...
+                                        Mx.guideEvents(b) + 1;
+                                end
+                            elseif ~isempty(RawDec)
                                 OffspringG = Problem.Evaluation(RawDec);
+                                scoutTypes = SampleTypes( ...
+                                    1:numel(OffspringG));
+                                scoutTargets = SampleRefs( ...
+                                    1:numel(OffspringG));
                             end
                         end
                     end
                 end
 
-                OffspringL = Offspring1([]);
-                if Algorithm.boundarySearch == "on" && ...
-                        Problem.FE >= ganFELimit
-                    remainingFE = max(0,Problem.maxFE-Problem.FE);
-                    blsBudget = min(20,remainingFE);
-                    if blsBudget > 0
-                        OffspringL = boundaryLineSearch( ...
-                            Problem,Population1,Population2,blsBudget);
-                    end
+                ParentObjs1 = [];
+                ParentCons1 = [];
+                if recordOn && inWindow
+                    ParentObjs1 = Population1.objs;
+                    ParentCons1 = Population1.cons;
                 end
 
                 Union1 = [Population1,Population2,Offspring1, ...
-                    Offspring2,OffspringG,OffspringL];
+                    Offspring2,OffspringG,CalibrationCandidates];
                 Union2 = Union1;
-                [Population1,Fitness1] = EnvironmentalSelection_CBS( ...
-                    Union1,Problem.N,true);
+                o1Start = numel(Population1) + numel(Population2);
+                o1Idx = o1Start + (1:numel(Offspring1));
+                gStart = o1Start + numel(Offspring1) + numel(Offspring2);
+                gIdx = gStart + (1:numel(OffspringG));
+                protectIdx = [];
+                if protectOn && ~isempty(gIdx)
+                    protectIdx = gIdx(1:min(numel(gIdx),20));
+                end
+                [NewPop1,NewFit1,sel1,uFit1] = ...
+                    EnvironmentalSelection_CBS( ...
+                    Union1,Problem.N,true,protectIdx);
                 [Population2,Fitness2] = EnvironmentalSelection_CBS( ...
                     Union2,Problem.N,false);
+
+                if recordOn && inWindow
+                    Mx = tallyScoutMetrics(Mx,bucket,W,Hood, ...
+                        ParentObjs1,ParentCons1,Offspring1,Info1, ...
+                        scoutMask1,OffspringG,scoutTypes,scoutTargets, ...
+                        o1Idx,gIdx,protectIdx,sel1,uFit1);
+                end
+                scoutMask1 = ismember(sel1,gIdx);
+                Population1 = NewPop1;
+                Fitness1 = NewFit1;
+                if recordOn
+                    feas1 = sum(max(0,Population1.cons),2) <= 0;
+                    coverage = 0;
+                    if any(feas1)
+                        coverage = numel(unique(assignRefsLocal( ...
+                            Population1(feas1).objs,W)));
+                    end
+                    Mx.covFE(end+1,1) = Problem.FE;
+                    Mx.covCount(end+1,1) = coverage;
+                    Algorithm.scoutMetricsStore = Mx;
+                end
             end
         end
     end
@@ -216,81 +455,508 @@ function state = readBoundarySearch(argumentList)
     end
 end
 
-function Offspring = boundaryLineSearch(Problem,Population1,Population2, ...
-        budget)
-%BOUNDARYLINESEARCH Membership-oracle line search after the CGAN stops.
-%   Primitive 1 bisects feasible-infeasible decision segments so that the
-%   feasible-side iterates land next to the constraint boundary; primitive
-%   2 evaluates the decision midpoint of the sparsest adjacent feasible
-%   nondominated pair, with one bisection repair step when the midpoint is
-%   infeasible. Both follow the classic boundary-operator idea
-%   (Michalewicz et al.; repair by binary interpolation, GECCO 2007) and
-%   only require the single-bit feasibility oracle. Engineering utility,
-%   not an algorithmic contribution.
+function mode = readGeneratorMode(argumentList)
+%READGENERATORMODE Read the optional generator-ablation switch.
 
-    Offspring = Population1([]);
-    All = [Population1,Population2];
-    cv = sum(max(0,All.cons),2);
-    Feasible = All(cv <= 0);
-    if isempty(Feasible) || budget <= 0
+    mode = "wgan";
+    names = argumentList(1:2:max(0,numel(argumentList)-1));
+    index = find(cellfun(@(x)ischar(x) && ...
+        strcmp(x,'generatorMode'),names),1,'last');
+    if isempty(index)
         return;
     end
-    front = NDSort(Feasible.objs,1) == 1;
-    Front = Feasible(front);
-    FrontDecs = Front.decs;
-    Infeasible = All(cv > 0);
-    used = 0;
+    mode = lower(strtrim(string(argumentList{2*index})));
+    if ~(isscalar(mode) && ismember(mode, ...
+            ["wgan","copynoise","jump","jumptrivial"]))
+        error('CBSRegionGAN:BadGeneratorMode', ...
+            'generatorMode must be wgan, copynoise, jump, or jumptrivial.');
+    end
+end
 
-    %% Primitive 1: pin anchors onto the boundary by bisection
-    if ~isempty(Infeasible)
-        InfDecs = Infeasible.decs;
-        for anchor = 1 : min(3,size(FrontDecs,1))
-            if used >= budget
-                break;
+function RawDec = copyNoiseSample(Problem,TrainX,TrainC,SampleC,W, ...
+        SampleRefs)
+%COPYNOISESAMPLE Ablation generator: anchor row plus Gaussian noise.
+%   Keeps the exact evaluation budget, eligibility gate, and one-sixth
+%   query allocation of the mainline CGAN, but replaces adversarial
+%   learning by drawing a uniform training row of the queried reference
+%   (duplicate rows keep their weight) and perturbing it with sigma=0.05
+%   Gaussian noise in the [-1,1]-scaled decision space. Frontier
+%   references without training rows fall back to the full training set.
+
+    lower = double(Problem.lower);
+    upper = double(Problem.upper);
+    span = upper - lower;
+    span(span <= eps) = 1;
+    slotCount = size(SampleC,1);
+    D = size(TrainX,2);
+    RawDec = zeros(slotCount,D);
+    for slot = 1 : slotCount
+        rows = find(ismember(TrainC,W(SampleRefs(slot),:),'rows'));
+        if isempty(rows)
+            rows = (1:size(TrainX,1))';
+        end
+        pick = rows(randi(numel(rows)));
+        scaled = 2*(double(TrainX(pick,:))-lower)./span - 1;
+        scaled = scaled + 0.05*randn(1,D);
+        scaled = max(-1,min(1,scaled));
+        RawDec(slot,:) = lower + (scaled+1).*span/2;
+    end
+end
+
+function mode = readScoutMode(argumentList)
+%READSCOUTMODE Read the optional scout-study switch.
+%   The mainline default is "nofrontier" (2026-07-19 decision): CGAN
+%   offspring receive guaranteed P1 slots instead of competing in the
+%   environmental selection, combined with the validated legacy query
+%   allocation. "on" adds frontier-majority two-hop queries, "noprotect"
+%   keeps only the queries, "halffrontier" uses an even one-hop origin
+%   split, and "off" (the 2026-07-20 mainline default) leaves the
+%   selection untouched for the guide mechanism.
+
+    mode = "off";
+    names = argumentList(1:2:max(0,numel(argumentList)-1));
+    index = find(cellfun(@(x)ischar(x) && ...
+        strcmp(x,'scoutMode'),names),1,'last');
+    if isempty(index)
+        return;
+    end
+    mode = lower(strtrim(string(argumentList{2*index})));
+    if ~(isscalar(mode) && ismember(mode, ...
+            ["off","on","noprotect","nofrontier","halffrontier"]))
+        error('CBSRegionGAN:BadScoutMode', ...
+            ['scoutMode must be off, on, noprotect, nofrontier, ' ...
+            'or halffrontier.']);
+    end
+end
+
+function mode = readGuideMode(argumentList)
+%READGUIDEMODE Read the optional guide-study switch.
+%   "on" turns the CGAN into an unevaluated guide supplier: every event
+%   caches nGen guide decision vectors (6:14 populated-to-empty queries)
+%   and 30 of P1's offspring step from the nearest feasible parent toward
+%   a guide. Guides never consume evaluations, never enter the union, and
+%   are never protected.
+
+    mode = "on";
+    names = argumentList(1:2:max(0,numel(argumentList)-1));
+    index = find(cellfun(@(x)ischar(x) && ...
+        strcmp(x,'guideMode'),names),1,'last');
+    if isempty(index)
+        return;
+    end
+    mode = lower(strtrim(string(argumentList{2*index})));
+    if ~(isscalar(mode) && ismember(mode,["off","on","mix"]))
+        error('CBSRegionGAN:BadGuideMode', ...
+            'guideMode must be off, on, or mix.');
+    end
+end
+
+function share = readGuideShare(argumentList)
+%READGUIDESHARE Read the optional guided-offspring share.
+
+    share = 0.2;
+    names = argumentList(1:2:max(0,numel(argumentList)-1));
+    index = find(cellfun(@(x)ischar(x) && ...
+        strcmp(x,'guideShare'),names),1,'last');
+    if isempty(index)
+        return;
+    end
+    share = double(argumentList{2*index});
+    if ~(isscalar(share) && isfinite(share) && share > 0 && share <= 0.5)
+        error('CBSRegionGAN:BadGuideShare', ...
+            'guideShare must lie in (0, 0.5].');
+    end
+end
+
+function carve = readGuideCarve(argumentList)
+%READGUIDECARVE Read the optional guided-slot carving rule.
+
+    carve = "sym";
+    names = argumentList(1:2:max(0,numel(argumentList)-1));
+    index = find(cellfun(@(x)ischar(x) && ...
+        strcmp(x,'guideCarve'),names),1,'last');
+    if isempty(index)
+        return;
+    end
+    carve = lower(strtrim(string(argumentList{2*index})));
+    if ~(isscalar(carve) && ismember(carve,["sym","de"]))
+        error('CBSRegionGAN:BadGuideCarve', ...
+            'guideCarve must be sym or de.');
+    end
+end
+
+function window = readBlsWindow(argumentList)
+%READBLSWINDOW Read the optional boundary-search window switch.
+%   "late" is the validated mainline (second half only); "full" runs the
+%   search throughout, letting its boundary iterates serve the module in
+%   the CGAN-active window as well.
+
+    window = "full";
+    names = argumentList(1:2:max(0,numel(argumentList)-1));
+    index = find(cellfun(@(x)ischar(x) && ...
+        strcmp(x,'blsWindow'),names),1,'last');
+    if isempty(index)
+        return;
+    end
+    window = lower(strtrim(string(argumentList{2*index})));
+    if ~(isscalar(window) && ismember(window,["late","full"]))
+        error('CBSRegionGAN:BadBlsWindow', ...
+            'blsWindow must be late or full.');
+    end
+end
+
+function feed = readBlsFeed(argumentList)
+%READBLSFEED Read the optional BLS-to-BMem feed switch.
+
+    feed = "on";
+    names = argumentList(1:2:max(0,numel(argumentList)-1));
+    index = find(cellfun(@(x)ischar(x) && ...
+        strcmp(x,'blsFeed'),names),1,'last');
+    if isempty(index)
+        return;
+    end
+    feed = lower(strtrim(string(argumentList{2*index})));
+    if ~(isscalar(feed) && ismember(feed,["off","on"]))
+        error('CBSRegionGAN:BadBlsFeed', ...
+            'blsFeed must be off or on.');
+    end
+end
+
+function decs = readInitDecs(argumentList)
+%READINITDECS Read the optional initial-population injection matrix.
+%   Empty (default) keeps the native random initialization. A finite
+%   numeric matrix seeds BOTH populations with the given decision
+%   vectors, so branched-continuation experiments can restart from a
+%   saved population snapshot. The matrix must match Problem.N-by-D,
+%   which is checked at initialization time.
+
+    decs = [];
+    names = argumentList(1:2:max(0,numel(argumentList)-1));
+    index = find(cellfun(@(x)ischar(x) && ...
+        strcmp(x,'initDecs'),names),1,'last');
+    if isempty(index)
+        return;
+    end
+    decs = argumentList{2*index};
+    if ~(isnumeric(decs) && ismatrix(decs) && ~isempty(decs) && ...
+            all(isfinite(decs(:))))
+        error('CBSRegionGAN:BadInitDecs', ...
+            'initDecs must be a nonempty finite numeric matrix.');
+    end
+    decs = double(decs);
+end
+
+function window = readGuideWindow(argumentList)
+%READGUIDEWINDOW Read the optional guide-supply window.
+
+    window = "half";
+    names = argumentList(1:2:max(0,numel(argumentList)-1));
+    index = find(cellfun(@(x)ischar(x) && ...
+        strcmp(x,'guideWindow'),names),1,'last');
+    if isempty(index)
+        return;
+    end
+    window = lower(strtrim(string(argumentList{2*index})));
+    if ~(isscalar(window) && ismember(window,["half","full"]))
+        error('CBSRegionGAN:BadGuideWindow', ...
+            'guideWindow must be half or full.');
+    end
+end
+
+function [Offspring,Info] = generateGuidedMixOffspring( ...
+        Problem,Population,Fitness,count,GuideDecs,GuideRefs, ...
+        GuideTypes,W,guidedShare,guideCarve)
+%GENERATEGUIDEDMIXOFFSPRING (1-s)/2 GA + (1-s)/2 plain DE + s guided DE.
+%   Guided children step from the nearest feasible parent toward an
+%   unevaluated CGAN guide: child = a + F*(g - a), F cycling over
+%   {0.4, 0.65, 0.85}, built through the platform OperatorDE (CR=1) so
+%   crossover and polynomial mutation follow the validated conventions.
+%   Without guides or feasible parents the guided slots fall back to the
+%   plain DE path, so the mechanism degrades to the S2 mainline.
+
+    count = max(0,min(numel(Population),round(double(count))));
+    if count == 0
+        Offspring = Population([]);
+        Info = struct('deBase',nan(0,1),'guided',false(0,1), ...
+            'targetRef',nan(0,1),'guideF',nan(0,1),'guideType',nan(0,1));
+        return;
+    end
+    if nargin < 10 || isempty(guideCarve)
+        guideCarve = "sym";
+    end
+    if string(guideCarve) == "de"
+        % GA keeps its validated half; guided slots come from DE only.
+        gaCount = min(count,round(0.5*count));
+        guidedCount = min(count-gaCount, ...
+            round(double(guidedShare)*count));
+        plainCount = count - gaCount - guidedCount;
+    else
+        plainShare = (1-double(guidedShare))/2;
+        gaCount = min(count,round(plainShare*count));
+        plainCount = min(count-gaCount,round(plainShare*count));
+        guidedCount = count - gaCount - plainCount;
+    end
+
+    if gaCount > 0
+        Offspring = gaHalfOffspring(Problem,Population,Fitness,gaCount);
+    else
+        Offspring = Population([]);
+    end
+    deBase = nan(gaCount,1);
+    guidedFlag = false(gaCount,1);
+    targetRef = nan(gaCount,1);
+    guideF = nan(gaCount,1);
+    guideType = nan(gaCount,1);
+    if plainCount > 0
+        [PlainOffspring,plainIdx] = classicDEOffspring( ...
+            Problem,Population,Fitness,plainCount);
+        Offspring = [Offspring,PlainOffspring];
+        deBase = [deBase;reshape(plainIdx,[],1)];
+        guidedFlag = [guidedFlag;false(plainCount,1)];
+        targetRef = [targetRef;nan(plainCount,1)];
+        guideF = [guideF;nan(plainCount,1)];
+        guideType = [guideType;nan(plainCount,1)];
+    end
+    feasible = sum(max(0,Population.cons),2) <= 0;
+    if guidedCount > 0 && (isempty(GuideDecs) || ~any(feasible))
+        [FallbackOffspring,fallbackIdx] = classicDEOffspring( ...
+            Problem,Population,Fitness,guidedCount);
+        Offspring = [Offspring,FallbackOffspring];
+        deBase = [deBase;reshape(fallbackIdx,[],1)];
+        guidedFlag = [guidedFlag;false(guidedCount,1)];
+        targetRef = [targetRef;nan(guidedCount,1)];
+        guideF = [guideF;nan(guidedCount,1)];
+        guideType = [guideType;nan(guidedCount,1)];
+        guidedCount = 0;
+    end
+    if guidedCount > 0
+        FeasiblePop = Population(feasible);
+        feasFitness = reshape(Fitness(feasible),[],1);
+        feasRefs = assignRefsLocal(FeasiblePop.objs,W);
+        FeasDecs = FeasiblePop.decs;
+        nGuides = size(GuideDecs,1);
+        parentRow = zeros(nGuides,1);
+        for gi = 1 : nGuides
+            distance = sqrt(sum((W(feasRefs,:) - ...
+                W(GuideRefs(gi),:)).^2,2));
+            ties = find(distance <= min(distance) + 1e-12);
+            [~,k] = min(feasFitness(ties));
+            parentRow(gi) = ties(k);
+        end
+        ladder = [0.4,0.65,0.85];
+        childGuide = mod((0:guidedCount-1)',nGuides) + 1;
+        childF = reshape(ladder(mod(0:guidedCount-1, ...
+            numel(ladder))+1),[],1);
+        ChildDecs = zeros(guidedCount,Problem.D);
+        for b = 1 : numel(ladder)
+            rows = find(childF == ladder(b));
+            if isempty(rows)
+                continue;
             end
-            pick = randi(size(FrontDecs,1));
-            feasiblePoint = FrontDecs(pick,:);
-            distance2 = sum((InfDecs-feasiblePoint).^2,2);
-            [~,nearest] = min(distance2);
-            infeasiblePoint = InfDecs(nearest,:);
-            steps = min(4,budget-used);
-            for k = 1 : steps
-                middle = (feasiblePoint+infeasiblePoint)/2;
-                candidate = Problem.Evaluation(middle);
-                used = used + 1;
-                Offspring = [Offspring,candidate]; %#ok<AGROW>
-                if sum(max(0,candidate.cons),2) <= 0
-                    feasiblePoint = middle;
-                else
-                    infeasiblePoint = middle;
-                end
-            end
+            A = FeasDecs(parentRow(childGuide(rows)),:);
+            G = GuideDecs(childGuide(rows),:);
+            ChildDecs(rows,:) = OperatorDE(Problem,A,G,A, ...
+                {1,ladder(b),1,20});
+        end
+        GuidedOffspring = Problem.Evaluation(ChildDecs);
+        Offspring = [Offspring,GuidedOffspring];
+        deBase = [deBase;nan(guidedCount,1)];
+        guidedFlag = [guidedFlag;true(guidedCount,1)];
+        targetRef = [targetRef; ...
+            reshape(GuideRefs(childGuide),[],1)];
+        guideF = [guideF;childF];
+        if isempty(GuideTypes)
+            guideType = [guideType;nan(guidedCount,1)];
+        else
+            guideType = [guideType; ...
+                reshape(GuideTypes(childGuide),[],1)];
+        end
+    end
+    Info = struct('deBase',deBase,'guided',guidedFlag, ...
+        'targetRef',targetRef,'guideF',guideF,'guideType',guideType);
+end
+
+function mode = readMetricsMode(argumentList)
+%READMETRICSMODE Read the optional metrics-recording switch.
+
+    mode = "off";
+    names = argumentList(1:2:max(0,numel(argumentList)-1));
+    index = find(cellfun(@(x)ischar(x) && ...
+        strcmp(x,'metricsMode'),names),1,'last');
+    if isempty(index)
+        return;
+    end
+    mode = lower(strtrim(string(argumentList{2*index})));
+    if ~(isscalar(mode) && ismember(mode,["off","on"]))
+        error('CBSRegionGAN:BadMetricsMode', ...
+            'metricsMode must be off or on.');
+    end
+end
+
+function Mx = emptyScoutMetrics()
+%EMPTYSCOUTMETRICS Initialize the two-window scout study counters.
+%   Row 1 covers the first half of the CGAN-active window and row 2 the
+%   second half (for maxFE=200k these are 0-50k and 50k-100k FE).
+
+    Z = zeros(2,1);
+    Mx = struct( ...
+        'ganEvents',Z, ...
+        'ganPopGen',Z,'ganPopFeas',Z,'ganPopND',Z,'ganPopP1',Z, ...
+        'ganFrontGen',Z,'ganFrontFeas',Z,'ganFrontND',Z, ...
+        'ganFrontP1',Z,'ganFrontEmpty',Z,'ganHop2Gen',Z, ...
+        'ctrlHit',Z,'ctrlTot',Z, ...
+        'protUsed',Z, ...
+        'guideEvents',Z, ...
+        'gdGen',Z,'gdFeas',Z,'gdND',Z,'gdP1',Z,'gdEmpty',Z, ...
+        'gdFGen',zeros(2,3),'gdFFeas',zeros(2,3),'gdFP1',zeros(2,3), ...
+        'gdTGen',zeros(2,3),'gdTFeas',zeros(2,3),'gdTP1',zeros(2,3), ...
+        'scGen',Z,'scFeas',Z,'scP1',Z,'scEmpty',Z, ...
+        'o1Gen',Z,'o1Feas',Z,'o1P1',Z, ...
+        'covFE',zeros(0,1),'covCount',zeros(0,1));
+end
+
+function Hood = referenceHoods(W)
+%REFERENCEHOODS One-hop neighborhoods (self plus two nearest references).
+
+    n = size(W,1);
+    width = min(3,n);
+    Hood = zeros(n,width);
+    for r = 1 : n
+        distance = sqrt(sum((W-W(r,:)).^2,2));
+        [~,order] = sort(distance,'ascend');
+        Hood(r,:) = reshape(order(1:width),1,[]);
+    end
+end
+
+function Ref = assignRefsLocal(Y,W)
+%ASSIGNREFSLOCAL Batch min-max normalization plus reference assignment.
+%   Mirrors the UpdateBoundaryMemory_RC assignment semantics for metrics
+%   only; deterministic and RNG-free.
+
+    n = size(Y,1);
+    minimum = min(Y,[],1);
+    span = max(Y,[],1)-minimum;
+    span(span <= eps) = 1;
+    Yn = (Y-minimum)./span;
+    Yn(~isfinite(Yn)) = 0;
+    Wn = W./max(sqrt(sum(W.^2,2)),eps);
+    NormY = sqrt(sum(Yn.^2,2));
+    Yu = Yn./max(NormY,eps);
+    [~,Ref] = max(Yu*Wn',[],2);
+    zeroRows = NormY <= eps;
+    if any(zeroRows)
+        distance2 = max(0,sum(Yn(zeroRows,:).^2,2) + ...
+            sum(W.^2,2)' - 2*(Yn(zeroRows,:)*W'));
+        [~,Ref(zeroRows)] = min(distance2,[],2);
+    end
+    Ref = reshape(Ref,n,1);
+end
+
+function Mx = tallyScoutMetrics(Mx,bucket,W,Hood,ParentObjs1, ...
+        ParentCons1,Offspring1,Info1,scoutMask1,OffspringG,scoutTypes, ...
+        scoutTargets,o1Idx,gIdx,protectIdx,sel1,uFit1)
+%TALLYSCOUTMETRICS Accumulate the per-window scout study counters.
+%   Pure arithmetic over already-evaluated solutions; consumes no random
+%   numbers, so recording cannot perturb any trajectory.
+
+    b = max(1,min(2,bucket));
+    O1Objs = Offspring1.objs;
+    O1Cons = Offspring1.cons;
+    nP = size(ParentObjs1,1);
+    nO = size(O1Objs,1);
+    if isempty(ParentCons1)
+        ParentCons1 = zeros(nP,1);
+    end
+    if isempty(O1Cons)
+        O1Cons = zeros(nO,1);
+    end
+    GObjs = zeros(0,size(ParentObjs1,2));
+    GCons = zeros(0,1);
+    if ~isempty(gIdx)
+        GObjs = OffspringG.objs;
+        GCons = OffspringG.cons;
+        if isempty(GCons)
+            GCons = zeros(size(GObjs,1),1);
+        end
+    end
+    refsAll = assignRefsLocal([ParentObjs1;O1Objs;GObjs],W);
+    parentRefs = refsAll(1:nP);
+    o1Refs = refsAll(nP+1:nP+nO);
+    gRefs = refsAll(nP+nO+1:end);
+    parentFeasible = sum(max(0,ParentCons1),2) <= 0;
+    populatedNow = unique(parentRefs(parentFeasible));
+
+    Mx.protUsed(b) = Mx.protUsed(b) + numel(protectIdx);
+
+    o1Feas = sum(max(0,O1Cons),2) <= 0;
+    o1In = ismember(reshape(o1Idx,[],1),sel1(:));
+    Mx.o1Gen(b) = Mx.o1Gen(b) + nO;
+    Mx.o1Feas(b) = Mx.o1Feas(b) + sum(o1Feas);
+    Mx.o1P1(b) = Mx.o1P1(b) + sum(o1In);
+
+    db = Info1.deBase;
+    scRows = false(nO,1);
+    hasBase = ~isnan(db);
+    if any(hasBase) && any(scoutMask1)
+        scRows(hasBase) = reshape(scoutMask1(db(hasBase)),[],1);
+    end
+    if any(scRows)
+        Mx.scGen(b) = Mx.scGen(b) + sum(scRows);
+        Mx.scFeas(b) = Mx.scFeas(b) + sum(scRows & o1Feas);
+        Mx.scP1(b) = Mx.scP1(b) + sum(scRows & o1In);
+        Mx.scEmpty(b) = Mx.scEmpty(b) + ...
+            sum(scRows & ~ismember(o1Refs,populatedNow));
+    end
+
+    if isfield(Info1,'guided') && any(Info1.guided)
+        gd = reshape(Info1.guided,[],1);
+        Mx.gdGen(b) = Mx.gdGen(b) + sum(gd);
+        Mx.gdFeas(b) = Mx.gdFeas(b) + sum(gd & o1Feas);
+        Mx.gdND(b) = Mx.gdND(b) + ...
+            sum(reshape(uFit1(o1Idx(gd)) < 1,[],1));
+        Mx.gdP1(b) = Mx.gdP1(b) + sum(gd & o1In);
+        Mx.gdEmpty(b) = Mx.gdEmpty(b) + ...
+            sum(gd & ~ismember(o1Refs,populatedNow));
+        ladder = [0.4,0.65,0.85];
+        gF = reshape(Info1.guideF,[],1);
+        gT = reshape(Info1.guideType,[],1);
+        for slot = 1 : 3
+            fRows = gd & abs(gF-ladder(slot)) < 1e-9;
+            Mx.gdFGen(b,slot) = Mx.gdFGen(b,slot) + sum(fRows);
+            Mx.gdFFeas(b,slot) = Mx.gdFFeas(b,slot) + ...
+                sum(fRows & o1Feas);
+            Mx.gdFP1(b,slot) = Mx.gdFP1(b,slot) + sum(fRows & o1In);
+            tRows = gd & gT == slot;
+            Mx.gdTGen(b,slot) = Mx.gdTGen(b,slot) + sum(tRows);
+            Mx.gdTFeas(b,slot) = Mx.gdTFeas(b,slot) + ...
+                sum(tRows & o1Feas);
+            Mx.gdTP1(b,slot) = Mx.gdTP1(b,slot) + sum(tRows & o1In);
         end
     end
 
-    %% Primitive 2: fill the sparsest objective-space gaps
-    if used < budget && numel(Front) >= 2
-        FrontObjs = Front.objs;
-        distance = sqrt(max(0,sum(FrontObjs.^2,2) + ...
-            sum(FrontObjs.^2,2)' - 2*(FrontObjs*FrontObjs')));
-        distance(1:numel(Front)+1:end) = inf;
-        [nearestDist,nearestIdx] = min(distance,[],2);
-        [~,order] = sort(nearestDist,'descend');
-        for t = 1 : numel(order)
-            if used >= budget
-                break;
-            end
-            i = order(t);
-            j = nearestIdx(i);
-            middle = (FrontDecs(i,:)+FrontDecs(j,:))/2;
-            candidate = Problem.Evaluation(middle);
-            used = used + 1;
-            Offspring = [Offspring,candidate]; %#ok<AGROW>
-            if used < budget && sum(max(0,candidate.cons),2) > 0
-                repaired = (middle+FrontDecs(i,:))/2;
-                candidate = Problem.Evaluation(repaired);
-                used = used + 1;
-                Offspring = [Offspring,candidate]; %#ok<AGROW>
+    if ~isempty(gIdx)
+        Mx.ganEvents(b) = Mx.ganEvents(b) + 1;
+        gFeas = sum(max(0,GCons),2) <= 0;
+        gIn = ismember(reshape(gIdx,[],1),sel1(:));
+        gND = reshape(uFit1(gIdx) < 1,[],1);
+        isFront = reshape(scoutTypes >= 2,[],1);
+        landEmpty = ~ismember(gRefs,populatedNow);
+        Mx.ganPopGen(b) = Mx.ganPopGen(b) + sum(~isFront);
+        Mx.ganPopFeas(b) = Mx.ganPopFeas(b) + sum(~isFront & gFeas);
+        Mx.ganPopND(b) = Mx.ganPopND(b) + sum(~isFront & gND);
+        Mx.ganPopP1(b) = Mx.ganPopP1(b) + sum(~isFront & gIn);
+        Mx.ganFrontGen(b) = Mx.ganFrontGen(b) + sum(isFront);
+        Mx.ganFrontFeas(b) = Mx.ganFrontFeas(b) + sum(isFront & gFeas);
+        Mx.ganFrontND(b) = Mx.ganFrontND(b) + sum(isFront & gND);
+        Mx.ganFrontP1(b) = Mx.ganFrontP1(b) + sum(isFront & gIn);
+        Mx.ganFrontEmpty(b) = Mx.ganFrontEmpty(b) + ...
+            sum(isFront & landEmpty);
+        Mx.ganHop2Gen(b) = Mx.ganHop2Gen(b) + sum(scoutTypes == 3);
+        popRows = reshape(find(~isFront),1,[]);
+        for t = popRows
+            Mx.ctrlTot(b) = Mx.ctrlTot(b) + 1;
+            if any(Hood(scoutTargets(t),:) == gRefs(t))
+                Mx.ctrlHit(b) = Mx.ctrlHit(b) + 1;
             end
         end
     end
@@ -313,7 +979,7 @@ function mode = readOperatorMode(argumentList)
     end
 end
 
-function Offspring = generateRegionOffspring( ...
+function [Offspring,Info] = generateRegionOffspring( ...
         Problem,Population,Fitness,count,mode)
 %GENERATEREGIONOFFSPRING Budget-limited offspring under the selected mode.
 %   The default "de" branch is the validated mainline path, byte-identical
@@ -321,34 +987,48 @@ function Offspring = generateRegionOffspring( ...
 %   alternatives keep exactly the same evaluation budget: "imtcmo_de" uses
 %   half DE/rand/1 plus half DE/pbest/1 with per-solution random F and CR,
 %   and "ga_de_half" replaces half of the offspring with platform SBX+PM.
+%   INFO.deBase records, per offspring row, the population index of its DE
+%   base vector (NaN for GA/pbest rows); it captures existing RNG draws
+%   without adding any, so trajectories are unchanged.
 
     count = max(0,min(numel(Population),round(double(count))));
     if count == 0
         Offspring = Population([]);
+        Info = struct('deBase',nan(0,1));
         return;
     end
     if mode == "imtcmo_de" && numel(Population) >= 5
         Offspring = randPBestDEOffspring(Problem,Population,Fitness,count);
+        Info = struct('deBase',nan(numel(Offspring),1));
     elseif mode == "ga_de_half"
         gaCount = ceil(count/2);
         Offspring = gaHalfOffspring(Problem,Population,Fitness,gaCount);
+        deBase = nan(numel(Offspring),1);
         if count > gaCount
-            Offspring = [Offspring,classicDEOffspring( ...
-                Problem,Population,Fitness,count-gaCount)];
+            [DeOffspring,deIdx] = classicDEOffspring( ...
+                Problem,Population,Fitness,count-gaCount);
+            Offspring = [Offspring,DeOffspring];
+            deBase = [deBase;reshape(deIdx,[],1)];
         end
+        Info = struct('deBase',deBase);
     else
-        Offspring = classicDEOffspring(Problem,Population,Fitness,count);
+        [Offspring,deIdx] = classicDEOffspring( ...
+            Problem,Population,Fitness,count);
+        Info = struct('deBase',reshape(deIdx,[],1));
     end
 end
 
-function Offspring = classicDEOffspring(Problem,Population,Fitness,count)
+function [Offspring,baseIdx] = classicDEOffspring( ...
+        Problem,Population,Fitness,count)
 %CLASSICDEOFFSPRING The validated mainline DE path (unchanged wiring).
 
     matingPool = platformTournamentSelection(2,2*count,Fitness);
     if count == numel(Population)
         base = Population;
+        baseIdx = 1:count;
     else
-        base = Population(randperm(numel(Population),count));
+        baseIdx = randperm(numel(Population),count);
+        base = Population(baseIdx);
     end
     Offspring = OperatorDE(Problem,base, ...
         Population(matingPool(1:count)), ...

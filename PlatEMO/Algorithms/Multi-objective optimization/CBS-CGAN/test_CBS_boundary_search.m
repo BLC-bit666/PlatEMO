@@ -39,6 +39,7 @@ function value = runShort(state)
     rng(4242,'twister');
     Problem = LIRCMOP6_BC('N',20,'D',10,'maxFE',2000);
     Algorithm = CBS_RegionWGAN_GP('save',0,'outputFcn',@(varargin)[], ...
+        'guideMode','off', ...
         'operatorMode','ga_de_half','boundarySearch',char(state));
     Algorithm.Solve(Problem);
     assert(Problem.FE == 2000);

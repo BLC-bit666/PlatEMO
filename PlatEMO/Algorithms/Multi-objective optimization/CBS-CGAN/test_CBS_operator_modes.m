@@ -34,19 +34,70 @@ function testModeValidation()
 end
 
 function testDefaultTrajectoryUnchanged()
-%   Both fingerprints use LIRCMOP6_BC, N=100, D=30, maxFE=20000,
-%   rng(4242,'twister'). The mainline fingerprint pins the S2+BLS default
-%   path; the legacy fingerprint proves the pre-switch trajectory stays
+%   All fingerprints use LIRCMOP6_BC, N=100, D=30, maxFE=20000,
+%   rng(4242,'twister'). The mainline fingerprint pins the GD20 guide
+%   default (2026-07-20 decision: 40% GA + 40% plain DE + 20% guided DE
+%   toward unevaluated CGAN guides). The protected-injection mainline,
+%   the plain S2+BLS trajectory, and the pure-DE legacy trajectory stay
 %   reachable bit-for-bit through explicit switches.
     rng(4242,'twister');
     Problem = LIRCMOP6_BC('N',100,'D',30,'maxFE',20000);
     Algorithm = CBS_RegionWGAN_GP('save',0,'outputFcn',@(varargin)[]);
+    assert(Algorithm.effectiveGuideMode() == "on");
+    assert(Algorithm.effectiveGuideShare() == 0.2);
+    assert(Algorithm.effectiveBlsWindow() == "full");
+    assert(Algorithm.effectiveBlsFeed() == "on");
     Algorithm.Solve(Problem);
     Population = Algorithm.result{end,2};
     decs = Population.decs;
     assert(isequal(Problem.CalMetric('IGD',Population), ...
+        1.3484288502689699));
+    assert(isequal(sum(decs(:)),1885.893899968843));
+    state = rng;
+    assert(state.State(1) == 3538802550);
+
+    rng(4242,'twister');
+    Pre = LIRCMOP6_BC('N',100,'D',30,'maxFE',20000);
+    PreAlgorithm = CBS_RegionWGAN_GP('save',0, ...
+        'outputFcn',@(varargin)[], ...
+        'blsWindow','late','blsFeed','off');
+    PreAlgorithm.Solve(Pre);
+    PrePopulation = PreAlgorithm.result{end,2};
+    preDecs = PrePopulation.decs;
+    assert(isequal(Pre.CalMetric('IGD',PrePopulation), ...
+        1.3490149458128178));
+    assert(isequal(sum(preDecs(:)),1881.2224281584283));
+    state = rng;
+    assert(state.State(1) == 2349263053);
+
+    rng(4242,'twister');
+    Guard = LIRCMOP6_BC('N',100,'D',30,'maxFE',20000);
+    GuardAlgorithm = CBS_RegionWGAN_GP('save',0, ...
+        'outputFcn',@(varargin)[], ...
+        'guideMode','off','scoutMode','nofrontier', ...
+        'blsWindow','late','blsFeed','off');
+    GuardAlgorithm.Solve(Guard);
+    GuardPopulation = GuardAlgorithm.result{end,2};
+    guardDecs = GuardPopulation.decs;
+    assert(isequal(Guard.CalMetric('IGD',GuardPopulation), ...
+        1.3471946005101978));
+    assert(isequal(sum(guardDecs(:)),1910.3749679275759));
+    state = rng;
+    assert(state.State(1) == 2297882816);
+
+    oldParameter = {30,6,100,32,4,32,0.3};
+    rng(4242,'twister');
+    Prior = LIRCMOP6_BC('N',100,'D',30,'maxFE',20000);
+    PriorAlgorithm = CBS_RegionWGAN_GP('save',0, ...
+        'outputFcn',@(varargin)[], ...
+        'guideMode','off','scoutMode','off', ...
+        'blsWindow','late','blsFeed','off','parameter',oldParameter);
+    PriorAlgorithm.Solve(Prior);
+    PriorPopulation = PriorAlgorithm.result{end,2};
+    priorDecs = PriorPopulation.decs;
+    assert(isequal(Prior.CalMetric('IGD',PriorPopulation), ...
         1.3470807122527642));
-    assert(isequal(sum(decs(:)),1919.0968011138757));
+    assert(isequal(sum(priorDecs(:)),1919.0968011138757));
     state = rng;
     assert(state.State(1) == 368524342);
 
@@ -54,7 +105,9 @@ function testDefaultTrajectoryUnchanged()
     Legacy = LIRCMOP6_BC('N',100,'D',30,'maxFE',20000);
     LegacyAlgorithm = CBS_RegionWGAN_GP('save',0, ...
         'outputFcn',@(varargin)[], ...
-        'operatorMode','de','boundarySearch','off');
+        'operatorMode','de','boundarySearch','off', ...
+        'guideMode','off','scoutMode','off', ...
+        'blsWindow','late','blsFeed','off','parameter',oldParameter);
     LegacyAlgorithm.Solve(Legacy);
     LegacyPopulation = LegacyAlgorithm.result{end,2};
     legacyDecs = LegacyPopulation.decs;

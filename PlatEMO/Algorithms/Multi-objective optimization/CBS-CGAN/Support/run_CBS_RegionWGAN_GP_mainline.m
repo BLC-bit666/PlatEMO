@@ -2,19 +2,24 @@ function [Summary,outDir] = run_CBS_RegionWGAN_GP_mainline( ...
         outDir,workerCount,problemNames,N,D,maxFE,runIds,Options)
 %RUN_CBS_REGIONWGAN_GP_MAINLINE Run and save native PlatEMO result files.
 %   Formal runs use ten workers. Every completed run is saved as
-%   Data/CBS_RegionWGAN_GP/CBS_RegionWGAN_GP_<problem>_M<M>_D<D>_<run>.mat
-%   with exactly the native PlatEMO variables result and metric. An empty D
-%   uses the default dimension declared by each problem class.
+%   Data/<Algorithm>/<Algorithm>_<problem>_M<M>_D<D>_<run>.mat with
+%   exactly the native PlatEMO variables result and metric (save=2, so
+%   metric.IGD holds the ~50%%-FE and final values). Options.algorithm
+%   selects the algorithm class (default CBS_RegionWGAN_GP; the ablation
+%   companions CBS_RegionWGAN_GP_A00/_CNB reuse this runner unchanged).
+%   An empty D uses the default dimension declared by each problem class.
 
     rootDir = fileparts(which('platemo'));
     if isempty(rootDir)
         rootDir = pwd;
     end
     addpath(genpath(rootDir));
+    if nargin < 8 || isempty(Options); Options = struct(); end
+    Options = normalizeOptions(Options);
     if nargin < 1 || isempty(outDir)
-        outDir = fullfile(rootDir,'Data','CBS_RegionWGAN_GP');
+        outDir = fullfile(rootDir,'Data',char(Options.algorithm));
     end
-    [outDir,runRoot] = validateOutputDirectory(outDir);
+    [outDir,runRoot] = validateOutputDirectory(outDir,Options.algorithm);
     if nargin < 2 || isempty(workerCount); workerCount = 10; end
     if nargin < 3 || isempty(problemNames)
         problemNames = "LIRCMOP" + string((5:10)') + "_BC";
@@ -23,9 +28,6 @@ function [Summary,outDir] = run_CBS_RegionWGAN_GP_mainline( ...
     if nargin < 5; D = []; end
     if nargin < 6 || isempty(maxFE); maxFE = 200000; end
     if nargin < 7 || isempty(runIds); runIds = 1:3; end
-    if nargin < 8 || isempty(Options); Options = struct(); end
-    Options = normalizeOptions(Options);
-
     workerCount = validatePositiveInteger(workerCount,'workerCount');
     if workerCount ~= 1 && workerCount ~= 10
         error('CBSRegionGAN:MainlineWorkerCount', ...
@@ -103,10 +105,10 @@ function [Summary,outDir] = run_CBS_RegionWGAN_GP_mainline( ...
 end
 
 function Options = normalizeOptions(Options)
-    unexpected = setdiff(fieldnames(Options),{'resume'});
+    unexpected = setdiff(fieldnames(Options),{'resume','algorithm'});
     if ~isempty(unexpected)
         error('CBSRegionGAN:BadMainlineOptions', ...
-            'The only supported runner option is resume.');
+            'Supported runner options are resume and algorithm.');
     end
     if ~isfield(Options,'resume') || isempty(Options.resume)
         Options.resume = true;
@@ -114,6 +116,16 @@ function Options = normalizeOptions(Options)
     Options.resume = logical(Options.resume);
     if ~isscalar(Options.resume)
         error('CBSRegionGAN:BadResume','Options.resume must be scalar.');
+    end
+    if ~isfield(Options,'algorithm') || ...
+            strlength(string(Options.algorithm)) == 0
+        Options.algorithm = "CBS_RegionWGAN_GP";
+    end
+    Options.algorithm = string(Options.algorithm);
+    if ~isscalar(Options.algorithm) || ...
+            isempty(which(char(Options.algorithm)))
+        error('CBSRegionGAN:BadAlgorithmName', ...
+            'Options.algorithm must name an algorithm class on the path.');
     end
 end
 
@@ -126,7 +138,7 @@ function value = validatePositiveInteger(value,name)
     value = double(value);
 end
 
-function [outDir,runRoot] = validateOutputDirectory(outDir)
+function [outDir,runRoot] = validateOutputDirectory(outDir,algorithmName)
     if ~(ischar(outDir) || (isstring(outDir) && isscalar(outDir)))
         error('CBSRegionGAN:BadOutputDirectory', ...
             'outDir must be a character vector or string scalar.');
@@ -137,11 +149,11 @@ function [outDir,runRoot] = validateOutputDirectory(outDir)
     end
     [dataDir,algorithmFolder] = fileparts(outDir);
     [runRoot,dataFolder] = fileparts(dataDir);
-    if string(algorithmFolder) ~= "CBS_RegionWGAN_GP" || ...
+    if string(algorithmFolder) ~= string(algorithmName) || ...
             string(dataFolder) ~= "Data" || isempty(runRoot)
         error('CBSRegionGAN:NonstandardOutputDirectory', ...
             ['outDir must follow the native PlatEMO path ', ...
-            '<root>/Data/CBS_RegionWGAN_GP.']);
+            '<root>/Data/%s.'],char(algorithmName));
     end
 end
 
@@ -188,7 +200,8 @@ function Row = runTask(problemName,runId,D,M,runRoot,outDir,N,maxFE, ...
     Row.D = double(D);
     Row.M = double(M);
     Row.maxFE = double(maxFE);
-    Row.result_file = string(standardResultFile(outDir,Row));
+    Row.result_file = string(standardResultFile(outDir,Row, ...
+        Options.algorithm));
     if Options.resume
         [Row,reused] = readStandardResult(Row);
         if reused
@@ -214,7 +227,8 @@ function Row = runTask(problemName,runId,D,M,runRoot,outDir,N,maxFE, ...
                 'Resolved and constructed M/D values differ for %s.', ...
                 Row.problem);
         end
-        Algorithm = CBS_RegionWGAN_GP('save',1,'run',round(Row.run), ...
+        Constructor = str2func(char(Options.algorithm));
+        Algorithm = Constructor('save',2,'run',round(Row.run), ...
             'metName',{'IGD'}); %#ok<NASGU>
         evalc('Algorithm.Solve(Problem);');
         clear folderCleanup
@@ -231,9 +245,9 @@ function Row = runTask(problemName,runId,D,M,runRoot,outDir,N,maxFE, ...
     end
 end
 
-function filePath = standardResultFile(outDir,Row)
+function filePath = standardResultFile(outDir,Row,algorithmName)
     filePath = fullfile(outDir,sprintf( ...
-        'CBS_RegionWGAN_GP_%s_M%d_D%d_%d.mat',char(Row.problem), ...
+        '%s_%s_M%d_D%d_%d.mat',char(algorithmName),char(Row.problem), ...
         round(Row.M),round(Row.D),round(Row.run)));
 end
 

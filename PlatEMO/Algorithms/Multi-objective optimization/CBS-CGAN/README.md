@@ -175,3 +175,20 @@ test_CBS_boundary_search
 
 历史调参和被拒绝方案的结果继续保存在 `Data/CBS_RegionGAN_compare`，仅作证据，
 不是当前运行依赖。
+
+## 模块叙事（BC-CGAN，2026-07-20 融合定型）
+
+算法维护参考方向条件化的**边界记忆**（BMem）。记忆的观测来自两路：
+普通进化子代的**被动观测**，与 `RefineBoundaryObservations_RC` 的
+**主动观测**（可行性反馈校准 + 边界覆盖补全，全程运行、每代 ≤20 FE，
+候选正常参选并同代回流收割）。两类观测统一训练条件生成器（WGAN-GP），
+生成器输出**免评估 guide**（6:14 有解:空方向查询、缓存一代），牵引
+P1 的引导 DE（40 GA + 40 DE + 20 引导，`a + F(g−a)`，F∈{0.4,0.65,0.85}）
+向未覆盖方向外扩，形成"观测—学习—外扩"闭环。区间收缩核心遵循经典
+边界算子原理（Michalewicz 等；binary interpolation repair, GECCO 2007）。
+
+实测定位（10 题 × 3 seeds 档案，`guide_ablation_v1`）：闭环稳定运行且
+无损（对融合前 GD20 终值 15/15；L9 坏吸引子免疫保持）；校准回流未
+产生可测的 guide 质量提升——论文表述以"稳定无损的一体化闭环"为限。
+新增回归测试：`test_CBS_guide_pilot`、`test_CBS_bls_fusion`。
+

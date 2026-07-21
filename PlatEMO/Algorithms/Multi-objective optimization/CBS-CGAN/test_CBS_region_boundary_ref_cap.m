@@ -26,7 +26,7 @@ function testAnchorCap()
     [~,order] = sort(Fitness,'ascend');
     assert(isequal(sortrows(BMem.y_b),sortrows(Yf(order(1:5),:))));
     assert(isequal(string(fieldnames(BMem)), ...
-        ["ref";"gap";"x_b";"y_b"]));
+        ["ref";"gap";"x_b";"y_b";"x_i"]));
 end
 
 function testPreviousAnchorCompetition()
