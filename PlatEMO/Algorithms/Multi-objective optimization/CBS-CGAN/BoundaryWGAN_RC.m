@@ -1,7 +1,8 @@
 function varargout = BoundaryWGAN_RC(action,varargin)
-%BOUNDARYWGAN_RC Train and sample the reference-conditioned anchor WGAN.
-%   TRAIN updates a full warm-start generator and critic from feasible
-%   anchor decisions selected using nearby infeasible solutions.
+%BOUNDARYWGAN_RC Train and sample the reference-conditioned boundary WGAN.
+%   TRAIN updates a full warm-start generator and critic from conditioned
+%   boundary decisions. The mainline supplies feasible rows at flag 1 and
+%   their paired infeasible rows at flag 0.
 %   SAMPLEBYCONDITION generates full decision vectors for given conditions.
 
 %------------------------------- Copyright --------------------------------
@@ -29,7 +30,7 @@ function varargout = BoundaryWGAN_RC(action,varargin)
 end
 
 function GAN = trainBoundaryWGAN(GAN,TrainX,TrainC,Problem,Options)
-%TRAINBOUNDARYWGAN Train on every available feasible-anchor row.
+%TRAINBOUNDARYWGAN Train on every available conditioned boundary row.
 
     if isempty(TrainX) || isempty(TrainC) || Options.iter <= 0
         return;
@@ -85,13 +86,14 @@ function GAN = updateCriticBatch(GAN,XScaledT,TrainCT,idx, ...
 %UPDATECRITICBATCH Apply one WGAN-GP critic update.
 
     batchCount = numel(idx);
-    dlX = dlarray(XScaledT(:,idx),'CB');
+    realData = XScaledT(:,idx);
+    dlX = dlarray(realData,'CB');
     dlC = dlarray(TrainCT(:,idx),'CB');
     Z = randn(batchCount,zDim,'single');
     dlZ = dlarray(Z','CB');
     fakeData = extractdata(forward(GAN.netG,[dlZ;dlC]));
     epsilonData = rand(1,batchCount,'single');
-    hatData = epsilonData.*extractdata(dlX) + ...
+    hatData = epsilonData.*realData + ...
         (1-epsilonData).*fakeData;
     dlHat = dlarray(hatData,'CB');
     gradC = dlfeval(@criticGradients,GAN.netC, ...

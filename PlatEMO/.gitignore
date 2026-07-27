@@ -1,6 +1,33 @@
-.ace-tool/
-/Data/
-collect_prbccmo1_t_metrics.m
-idea.md
+# Operating-system metadata
 .DS_Store
-tmp/
+._*
+Thumbs.db
+Desktop.ini
+
+# Local editor and agent state
+.idea/
+.ace-tool/
+.claude/settings.local.json
+*.swp
+*.swo
+*~
+
+# MATLAB editor, crash, and generated-code artifacts
+*.asv
+*.autosave
+matlab_crash_dump.*
+java.log
+hs_err_pid*.log
+slprj/
+codegen/
+*.slxc
+
+# Runtime, experiment, and temporary outputs
+/Data/
+/ExperimentData/
+/tmp/
+*.log
+
+# Project-local scratch files
+/collect_prbccmo1_t_metrics.m
+/idea.md

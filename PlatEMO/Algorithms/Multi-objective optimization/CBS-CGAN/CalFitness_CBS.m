@@ -33,8 +33,8 @@ function Fitness = CalFitness_CBS(PopObj,PopCon)
     Raw = Strength'*double(Dominate);
 
     %% Calculate density and final fitness
-    Distance2 = max(sum(PopObj.^2,2) + sum(PopObj.^2,2)' - ...
-        2*(PopObj*PopObj'),0);
+    squaredNorm = sum(PopObj.^2,2);
+    Distance2 = max(squaredNorm + squaredNorm' - 2*(PopObj*PopObj'),0);
     Distance2(1:N+1:end) = inf;
     kth = max(1,min(N,floor(sqrt(N))));
     Nearest2 = mink(Distance2,kth,2);

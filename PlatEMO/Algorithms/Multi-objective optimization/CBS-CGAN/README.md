@@ -1,194 +1,95 @@
-# CBS RegionWGAN-GP 固定主线
+# CBS-CGAN 主线与唯一消融
 
-该目录只保留 `CBS_RegionWGAN_GP` 这一条可执行算法主线。算法用参考向量
-条件化的 WGAN-GP（本文档沿用 CGAN 简称）学习边界邻近可行锚点的决策
-分布，生成完整决策向量，并把生成解纳入 PlatEMO 的真实评价和双群体环境
-选择。
+本目录保留 `CBS_RegionWGAN_GP` 唯一主线，以及一个明确命名的无 CGAN 消融类 `CBS_RegionWGAN_GP_NoCGAN`。历史参数臂、观测指标和专属实验脚本均已移除。构造器只接受 PlatEMO 标准参数；旧实验开关会明确报错，不会被静默忽略。
 
-正式实验只比较每个 run 的最终 `IGD`。loss、边界距离、coverage、多样性、
-可行率、survival、阶段快照和 query 归因均不计算、不保存。`status`、
-`finalFE`、runtime、wall time、源码哈希和任务签名只用于完整性、性能及断点
-恢复审计，不是实验指标。
+## 固定算法结构
 
-## 固定结论：算子与阶段结构（2026-07-19 定型）
+1. 两个种群分别按约束目标和无约束目标协同进化。
+2. 边界记忆保存配对的可行解与不可行解。
+3. CGAN 训练数据固定为：
+   - 可行解：条件 `[参考方向,1]`；
+   - 与其配对的不可行解：条件 `[参考方向,0]`。
+4. 生成时只请求条件 `[参考方向,1]`。
+5. 每次查询 20 个方向槽位：14 个属于已有边界记忆的方向，6 个属于其一跳空方向。
+6. 每槽生成 5 个候选，共 100 个不评价的原始生成解。
+7. 对每个槽位，从 5 个候选中选择一个，使其引导步长最接近相应可行父代的局部间距。
+8. 第一种群在完整代时产生 40% GA、40% 普通 DE、20% 引导 DE 子代。引导形式为可行父代朝生成解移动，强度循环使用 `0.4、0.65、0.85`；最终子代必须真实评价并参加普通环境选择。
+9. CGAN 的记忆更新、训练与生成只在前 50% 评价预算内进行。边界校准全程开启，每代最多使用 20 次真实评价，并将结果回流边界记忆。
 
-主线为 **S2+BLS**：每群体每代一半子代由 `OperatorGAhalf`(SBX+PM) 生成、
-一半由原 DE 接线生成；CGAN 只在前 50% FE 活跃；其后每代 ≤20 FE 运行
-边界线搜索（可行–不可行二分 + 前沿最稀疏对中点插值，出处为经典
-boundary operators / binary interpolation repair）。两者均为工程组件，
-不属于论文创新点。旧纯 DE 主线可经构造器开关
-`('operatorMode','de','boundarySearch','off')` 逐位复现。
+原始 CGAN 生成解从不直接计入函数评价，也不直接进入种群。
 
-## 固定结论：CGAN 在哪里停止
+## 无 CGAN 消融
 
-主线固定 `ganStopFraction = 0.5`。每一代完成 DE 评价后，仅当
-`Problem.FE < 0.5 * Problem.maxFE` 时才允许启动新的 CGAN 训练与采样事件。
+`CBS_RegionWGAN_GP_NoCGAN` 不建立边界记忆，不构造条件数据，不初始化、训练或查询 WGAN：
 
-- 正式默认 `maxFE = 200000`，因此停止阈值是 **FE = 100000**。
-- 当检查点已经达到或超过 100000 FE 时，不再启动 CGAN，后半程只运行 DE
-  和双群体环境选择。
-- 为保持已经验证的 T50 实验语义，一个在阈值前启动的生成批次可能使 FE
-  越过阈值；下一代不会再启动 CGAN。代码不会为了卡齐 100000 而截断该批次。
+- `Problem.FE < 0.5*Problem.maxFE`：第一种群产生 40% GA、40% 普通 DE、20% 决策空间均匀随机采样子代；
+- `Problem.FE >= 0.5*Problem.maxFE`：与主线的 CGAN 停止阶段一致，产生 40% GA、60% 普通 DE；
+- 第二种群、边界校准、环境选择和真实评价预算与主线完全共用。
 
-## 主线配置
+随机采样通过 PlatEMO 的 `Problem.Initialization` 生成，会真实评价并参加环境选择；它不同于主线中不消耗 FE 的原始 CGAN 候选。正式 200K 预算下，分界点就是 100K。
 
-```text
-full warm-start
-Batch = 32
-G updates = 100 / eligible event
-C:G updates = 4:1
-G/C hidden = 32x32 / 32x32
-zDim = 6
-sampleSigma = 0.3
-nGen = 30
-CGAN active fraction = 0.5
-```
-
-PlatEMO 公开参数仍按以下顺序提供，便于常规 GUI/API 调用；正式 runner 不传
-参数，因此始终使用默认主线：
-
-| 参数 | 默认值 | 含义 |
-|---|---:|---|
-| `nGen` | 30 | 每个合格事件生成的解数 |
-| `zDim` | 6 | 生成器噪声维数 |
-| `ganIter` | 100 | 每次训练的生成器更新数 |
-| `ganMiniBatch` | 32 | WGAN-GP mini-batch |
-| `nCritic` | 4 | 每次生成器更新对应的 critic 更新数 |
-| `minGANTrainCount` | 32 | 触发训练所需的最少锚点行数 |
-| `sampleSigma` | 0.3 | 生成采样噪声标准差 |
-
-`ganStopFraction`、学习率、gradient penalty、锚点记忆规则和网络结构是固定
-主线内部常量，不是实验开关。
-
-## PlatEMO 平台规范
-
-算法类直接继承 `ALGORITHM`，参数通过 `Algorithm.ParameterSet` 读取，种群
-通过 `Problem.Initialization` 创建，终止由 `Algorithm.NotTerminated` 管理，
-生成解统一通过 `Problem.Evaluation` 计入 FE。通用能力复用平台
-`Algorithms/Utility functions` 中的：
-
-- `UniformPoint`：参考向量生成；
-- `TournamentSelection`：父代选择；
-- `OperatorDE`：差分进化、变异、边界处理与真实评价。
-
-`generateRegionDEOffspring` 只负责最后一代的剩余 FE 分配，不实现新的 DE
-算子。由于仓库内 `SSIO-RL` 另有同名 `TournamentSelection.m`，算法入口会把
-官方 Utility functions 目录置于路径首位；并列 fitness 先转换为确定性 rank，
-从而在修正路径遮蔽的同时保持既有随机选择轨迹。
-
-`CalFitness_CBS`、`EnvironmentalSelection_CBS`、边界记忆和条件 WGAN
-属于本算法定义：SPEA2 strength、带容差的边界 Pareto 层和条件生成训练无法
-分别由 `NDSort`、`CrowdingDistance` 或其他通用算子保持同一语义。距离计算
-保留矩阵实现，以免额外依赖 Statistics and Machine Learning Toolbox，并
-保持已经验证的浮点轨迹。
-
-## 算法流程
-
-每一代依次执行：
-
-```text
-P1/P2 两个群体
-  -> 两组 DE 后代
-  -> 在前 50% FE 内更新边界记忆
-  -> 构造 TrainX / TrainC / QueryRefs
-  -> 合格时 full warm-start 训练 WGAN-GP
-  -> one-sixth frontier query 生成完整决策向量并真实评价
-  -> 两次环境选择
-```
-
-边界记忆只保留 `ref/gap/x_b/y_b`。不可行解仅在本次更新中用于合法伙伴
-筛选和 gap 过滤，不作为持久观测字段。训练集固定为 `TrainX = BMem.x_b`；
-重复锚点行有意保留为训练权重。有效训练行少于 32 时，本事件不训练、不采样。
-
-query 预算中 `round(nGen/6)` 分配给一跳 frontier，其余分配给 populated
-references；没有 frontier 时全部回退到 populated references。
-
-## 唯一正式运行入口
+直接运行示例：
 
 ```matlab
-run_CBS_RegionWGAN_GP_DAS_LIR_full
+platemo('algorithm',@CBS_RegionWGAN_GP_NoCGAN, ...
+    'problem',@LIRCMOP5_BC,'N',100,'D',30, ...
+    'maxFE',200000,'save',2,'metName',{'IGD'});
 ```
 
-根目录启动脚本覆盖 `DASCMOP1_BC`--`DASCMOP9_BC` 与
-`LIRCMOP1_BC`--`LIRCMOP14_BC`；各问题使用其类中声明的默认决策维度，实验
-使用 `N=100`、`maxFE=200000`、`runs=1:10` 和 10 个本地并行 workers。
-正式结果严格保存到 `Data/CBS_RegionWGAN_GP`，文件名遵循
-`CBS_RegionWGAN_GP_<problem>_M<M>_D<D>_<run>.mat`，顶层变量只有 PlatEMO
-原生的 `result` 与 `metric`。其中 `result` 保存最终 `SOLUTION` 种群，
-`metric` 保存 `runtime` 与最终 `IGD`。重复启动会复用结构和配置匹配的原生
-结果文件。若省略 `maxFE`，runner 默认使用 200000；正式并行固定为 10
-workers，测试允许 1 worker。
+## 默认参数
 
-## 主线文件
+| 参数 | 默认值 |
+|---|---:|
+| 查询槽位数 | 20 |
+| 噪声维数 | 6 |
+| 每次生成器更新数 | 100 |
+| 小批量大小 | 32 |
+| 每次生成器更新前的判别器更新数 | 4 |
+| 最少训练行数 | 32 |
+| 生成采样标准差 | 0.3 |
 
-| 文件 | 职责 |
-|---|---|
-| `CBS_RegionWGAN_GP.m` | 算法入口、固定 T50 阈值和双群体主循环 |
-| `UpdateBoundaryMemory_RC.m` | 边界锚点记忆更新 |
-| `BuildBoundaryDataset_RC.m` | 构造训练数据和 query references |
-| `RunRegionGAN_RC.m` | one-sixth query 与 WGAN 调用 |
-| `BoundaryWGAN_RC.m` | conditional WGAN-GP 训练和采样 |
-| `CalFitness_CBS.m` | SPEA2-style fitness |
-| `EnvironmentalSelection_CBS.m` | 双群体环境选择 |
-| `../../../run_CBS_RegionWGAN_GP_DAS_LIR_full.m` | 两套完整基准的正式启动脚本 |
-| `Support/run_CBS_RegionWGAN_GP_mainline.m` | PlatEMO 原生结果 runner |
+固定内部值包括：每方向最多 5 个边界锚点、每槽 5 个生成候选、20% 引导份额、CGAN 在 50% 预算处停止。
 
-## 行为中性性能优化
+## 正式实验
 
-保留的优化不改变网络、loss、Adam、训练次数、随机数顺序、采样或选择语义：
+正式入口为：
 
-- 在梯度图外生成并 detach critic 所需的 fake；
-- 无需求导的张量保持 numeric single，只在 GP 内层启用高阶导数；
-- 热循环外提固定标量，每个训练事件只转换一次训练数据；
-- 边界记忆预分配，缓存固定参考向量邻域，向量化 Pareto 首前沿判定；
-- fitness 密度只选取所需的第 k 近邻距离，避免全矩阵开方和完整排序；
-- 删除无用观察字段、研究 observer、多指标/绘图/消融 runner。
+```matlab
+[Summary,outDir] = run_CBS_RegionWGAN_GP_mainline( ...
+    fullfile(pwd,'Data','CBS_RegionWGAN_GP'),10, ...
+    "LIRCMOP"+string((5:12)')+"_BC",100,30,200000,1:5, ...
+    struct('resume',true));
+```
 
-固定 seed 的 20k FE 回归中，清理优化前后最终决策、目标、约束、IGD 和 RNG
-状态均逐元素一致；IGD 均为 `1.2500475807204314`。WGAN 训练仍占主要耗时。
-曾测试的 `dlaccelerate` 虽明显提速，但多问题配对 IGD 退化，故未保留。
+正式契约固定为 `maxFE=200000`，摘要只报告：
 
-本轮 PlatEMO 规范化另使用两个 `600 FE` 快速样本做改前/改后对照，最终
-`Dec/Obj/Con/RNG/IGD` 均逐元素一致；对应 IGD 为
-`2.6964859435480961` 和 `1.7594293949177635`。这属于快速回归，不是新的
-正式实验。
+- `IGD100K`：`save=2` 在 100K 附近保留的第一份种群；同时报告其真实 `FE100K`；
+- `IGD200K`：200K 终点 IGD。
 
-同一单线程条件下，本轮外围优化前 wall time 为 `27.4898 s`；最终代码三次
-独立进程计时为 `27.0072 / 27.0690 / 27.0865 s`，中位数 `27.0690 s`，
-相对单次同轮对照约缩短 1.5%。profiler 复核中 WGAN 训练占
-`37.2428 / 42.3611 s = 87.9%`，critic 更新占 `30.8895 s`；因此在不改变
-算法与数值轨迹的约束下，剩余可提速空间有限。
+新结果写入 `Data/CBS_RegionWGAN_GP`。当前 pairflag 主线在旧 `PF` 类名下生成的 23 个问题 × 5 次历史结果，已经校验数量并迁移到该正式目录，同时统一为 `CBS_RegionWGAN_GP_*.mat` 文件名；仓库中不再存在 `PF` 算法类或 `PF` 数据目录。
+
+## 文件职责
+
+- `CBS_RegionWGAN_GP.m`：唯一主流程、GA/DE/引导子代。
+- `CBS_RegionWGAN_GP_NoCGAN.m`：前半程随机席位、后半程普通 DE 的无 CGAN 消融。
+- `UpdateBoundaryMemory_RC.m`：可行—不可行边界配对记忆。
+- `BuildBoundaryDataset_RC.m`：唯一 pairflag 数据集。
+- `BoundaryWGAN_RC.m`：WGAN-GP 训练与条件生成。
+- `RunRegionGAN_RC.m`：14+6 查询和训练/生成调度。
+- `RefineBoundaryObservations_RC.m`：全程边界校准。
+- `CalFitness_CBS.m`、`EnvironmentalSelection_CBS.m`：双种群适应度与环境选择。
+- `Support/run_CBS_RegionWGAN_GP_mainline.m`：正式 100K/200K IGD runner。
+
+## 性能原则
+
+只接受不改变随机数调用、浮点计算路径和种群轨迹的优化。目前已删除所有观测数据构造，并在判别器热点中复用同一批 `single` 实数数据。没有启用 GPU、混合精度、并行训练、`dlaccelerate`，也没有改变网络、批量、训练次数或随机调用形状。
+
+最新 20K profiler 中，WGAN 训练约占主循环时间的 98.4%；其余搜索逻辑合计不足 2%。`dlaccelerate` 微基准虽然更快，但已观察到单精度梯度末位差异，因此按严格等价原则拒绝。批量实验的主要工程加速仍是正式 runner 的问题/种子级 10-worker 并行。
 
 ## 回归测试
 
-```matlab
-test_CBS_platemo_compliance
-test_CBS_region_one_sixth_query
-test_CBS_region_boundary_ref_cap
-test_CBS_region_wgan_mainline
-test_CBS_calfitness_equivalence
-test_CBS_RegionGAN_provenance
-test_CBS_RegionWGAN_GP_mainline_runner
-test_CBS_operator_modes
-test_CBS_boundary_search
-```
+核心测试包括：pairflag 数据、14+6 查询、无 CGAN 消融、边界记忆、边界校准、PlatEMO 接口、正式 runner 和固定轨迹指纹。固定指纹为 `LIRCMOP6_BC`、`N=100`、`D=30`、`maxFE=20000`、随机种子 4242：
 
-历史调参和被拒绝方案的结果继续保存在 `Data/CBS_RegionGAN_compare`，仅作证据，
-不是当前运行依赖。
-
-## 模块叙事（BC-CGAN，2026-07-20 融合定型）
-
-算法维护参考方向条件化的**边界记忆**（BMem）。记忆的观测来自两路：
-普通进化子代的**被动观测**，与 `RefineBoundaryObservations_RC` 的
-**主动观测**（可行性反馈校准 + 边界覆盖补全，全程运行、每代 ≤20 FE，
-候选正常参选并同代回流收割）。两类观测统一训练条件生成器（WGAN-GP），
-生成器输出**免评估 guide**（6:14 有解:空方向查询、缓存一代），牵引
-P1 的引导 DE（40 GA + 40 DE + 20 引导，`a + F(g−a)`，F∈{0.4,0.65,0.85}）
-向未覆盖方向外扩，形成"观测—学习—外扩"闭环。区间收缩核心遵循经典
-边界算子原理（Michalewicz 等；binary interpolation repair, GECCO 2007）。
-
-实测定位（10 题 × 3 seeds 档案，`guide_ablation_v1`）：闭环稳定运行且
-无损（对融合前 GD20 终值 15/15；L9 坏吸引子免疫保持）；校准回流未
-产生可测的 guide 质量提升——论文表述以"稳定无损的一体化闭环"为限。
-新增回归测试：`test_CBS_guide_pilot`、`test_CBS_bls_fusion`。
-
+- IGD：`1.346550324710176`
+- 决策和：`1883.8784633646248`
+- 随机状态首值：`3522559217`

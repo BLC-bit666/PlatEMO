@@ -66,7 +66,7 @@ function testSmallTrainingSetIsSkipped()
     Problem = DASCMOP1_BC('N',8,'D',6,'maxFE',100);
     Options = struct('minTrainCount',32);
     [GAN,RawDec] = RunRegionGAN_RC('trainandsample',[], ...
-        makeDecisionRows(Problem,31),rand(31,2),rand(2,2),Problem,Options);
+        makeDecisionRows(Problem,31),rand(31,3),rand(2,3),Problem,Options);
     assert(isempty(GAN));
     assert(isempty(RawDec) && size(RawDec,2) == Problem.D);
 end
@@ -75,8 +75,8 @@ function testMinimalWGANTraining()
     Problem = LIRCMOP5_BC('N',10,'D',5,'maxFE',100);
     span = Problem.upper-Problem.lower;
     TrainX = Problem.lower + [0.25;0.75].*span;
-    TrainC = [0.25 0.75;0.75 0.25];
-    SampleC = [0.5 0.5;0.2 0.8];
+    TrainC = [0.25 0.75 1;0.75 0.25 0];
+    SampleC = [0.5 0.5 1;0.2 0.8 1];
     Options = struct('minTrainCount',2,'zDim',2,'iter',1, ...
         'miniBatch',2,'nCritic',1,'generatorHidden',[4 4], ...
         'criticHidden',[4 4],'sampleSigma',0.1);
@@ -88,8 +88,8 @@ function testMinimalWGANTraining()
         all(isfinite(RawDec),'all') && ...
         all(RawDec >= Problem.lower,'all') && ...
         all(RawDec <= Problem.upper,'all'));
-    Population = Problem.Evaluation(RawDec);
-    assert(isfinite(Problem.CalMetric('IGD',Population)));
+    assert(Problem.FE == 0, ...
+        'Raw generator rows must remain unevaluated guides.');
 end
 
 function X = makeDecisionRows(Problem,n)

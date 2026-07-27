@@ -1,8 +1,5 @@
 function varargout = RunRegionGAN_RC(action,varargin)
-%RUNREGIONGAN_RC Mainline query allocation and WGAN dispatch.
-%   REGIONQUERYSAMPLES allocates a generation budget between populated
-%   reference vectors and their one-hop frontier.
-%   TRAINANDSAMPLE trains the WGAN-GP and samples full decision vectors.
+%RUNREGIONGAN_RC Allocate mainline queries and dispatch WGAN training.
 
 %------------------------------- Copyright --------------------------------
 % Copyright (c) 2026 BIMK Group. You are free to use the PlatEMO for
@@ -13,80 +10,39 @@ function varargout = RunRegionGAN_RC(action,varargin)
 % Computational Intelligence Magazine, 2017, 12(4): 73-87".
 %--------------------------------------------------------------------------
 
-    %% Dispatch the requested operation
     switch lower(strtrim(string(action)))
         case "regionquerysamples"
             [varargout{1:nargout}] = regionQuerySamples(varargin{:});
         case "trainandsample"
-            [varargout{1:nargout}] = trainAndSampleRegionGAN(varargin{:});
+            [varargout{1:nargout}] = trainAndSample(varargin{:});
         otherwise
             error('CBSRegionGAN:BadRunnerAction', ...
                 'Unsupported mainline action: %s.',action);
     end
 end
 
-function [SampleC,SampleRefs,SampleTypes] = regionQuerySamples( ...
-        PopulatedRefs,W,nGen,allocMode)
-%REGIONQUERYSAMPLES Allocate samples to populated and frontier references.
-%   Modes: "legacy" (default) keeps the validated one-sixth one-hop
-%   allocation and its exact RNG sequence; "scout" sends two thirds of the
-%   budget to a two-hop frontier; "half" splits the budget evenly between
-%   populated references and the one-hop frontier (jump-origin dose arm).
-%   Logical values remain accepted for backward compatibility (true maps
-%   to "scout"). SAMPLETYPES labels each row: 1 populated, 2 one-hop
-%   frontier, 3 two-hop frontier.
+function [SampleC,SampleRefs] = regionQuerySamples(PopulatedRefs,W,nGen)
+%REGIONQUERYSAMPLES Allocate 70%% of slots to memory-supported references.
+%   The remaining 30%% target their one-hop empty neighbors. At nGen=20
+%   this is the fixed 14+6 mainline allocation. If either pool is empty,
+%   its slots deterministically reflow to the available pool.
 
-    if nargin < 4 || isempty(allocMode)
-        allocMode = "legacy";
-    end
-    if islogical(allocMode)
-        if allocMode
-            allocMode = "scout";
-        else
-            allocMode = "legacy";
-        end
-    end
-    allocMode = lower(strtrim(string(allocMode)));
-    if ~(isscalar(allocMode) && ...
-            ismember(allocMode,["legacy","scout","half","wide"]))
-        error('CBSRegionGAN:BadAllocMode', ...
-            'Query allocation mode must be legacy, scout, half, or wide.');
-    end
     PopulatedRefs = validateRefs(PopulatedRefs,W);
     PopulatedRefs = unique(PopulatedRefs,'stable');
-    if allocMode == "scout"
-        [SampleC,SampleRefs,SampleTypes] = scoutQuerySamples( ...
-            PopulatedRefs,W,nGen,2/3);
-        return;
-    end
-    if allocMode == "wide"
-        % Guide-study allocation: 6:14 populated-to-empty at nGen=20.
-        [SampleC,SampleRefs,SampleTypes] = scoutQuerySamples( ...
-            PopulatedRefs,W,nGen,7/10);
-        return;
-    end
     FrontierRefs = oneHopFrontierRefs(W,PopulatedRefs);
     PoolRefs = [PopulatedRefs;FrontierRefs];
-    PoolGroup = [ones(numel(PopulatedRefs),1); ...
-        2*ones(numel(FrontierRefs),1)];
     totalBudget = max(0,round(double(nGen)));
     if isempty(PoolRefs) || totalBudget == 0
         SampleRefs = zeros(0,1);
         SampleC = zeros(0,size(W,2));
-        SampleTypes = zeros(0,1);
         return;
     end
 
-    populatedRows = find(PoolGroup == 1);
-    frontierRows = find(PoolGroup == 2);
-    if allocMode == "half"
-        [populatedBudget,frontierBudget] = halfBudgets( ...
-            totalBudget,~isempty(populatedRows),~isempty(frontierRows));
-    else
-        [populatedBudget,frontierBudget] = queryBudgets( ...
-            totalBudget,~isempty(populatedRows),~isempty(frontierRows));
-    end
-    selected = zeros(populatedBudget + frontierBudget,1);
+    populatedRows = (1:numel(PopulatedRefs))';
+    frontierRows = numel(PopulatedRefs)+(1:numel(FrontierRefs))';
+    [populatedBudget,frontierBudget] = splitBudget( ...
+        totalBudget,~isempty(populatedRows),~isempty(frontierRows));
+    selected = zeros(populatedBudget+frontierBudget,1);
     next = 0;
     if populatedBudget > 0
         local = uniformRefRows(PoolRefs(populatedRows),populatedBudget);
@@ -96,99 +52,18 @@ function [SampleC,SampleRefs,SampleTypes] = regionQuerySamples( ...
     if frontierBudget > 0
         local = uniformRefRows(PoolRefs(frontierRows),frontierBudget);
         selected(next+1:next+frontierBudget) = frontierRows(local);
-        next = next + frontierBudget;
+        next = next+frontierBudget;
     end
     selected = selected(1:next);
     if ~isempty(selected)
         selected = selected(randperm(numel(selected)));
     end
     SampleRefs = PoolRefs(selected);
-    SampleTypes = PoolGroup(selected);
     SampleC = double(W(SampleRefs,:));
-end
-
-function [SampleC,SampleRefs,SampleTypes] = scoutQuerySamples( ...
-        PopulatedRefs,W,nGen,frontierShare)
-%SCOUTQUERYSAMPLES Frontier-majority allocation over a two-hop pool.
-%   Two thirds of the budget target empty directions; within the frontier
-%   share, one-hop directions receive two thirds and two-hop directions the
-%   remainder. Missing pools reflow their budget (hop2 -> hop1 -> populated
-%   and populated -> frontier) so the full budget is always spent whenever
-%   any pool exists.
-
-    if nargin < 4 || isempty(frontierShare)
-        frontierShare = 2/3;
-    end
-    totalBudget = max(0,round(double(nGen)));
-    Hop1 = oneHopFrontierRefs(W,PopulatedRefs);
-    Hop2 = twoHopFrontierRefs(W,PopulatedRefs,Hop1);
-    if (isempty(PopulatedRefs) && isempty(Hop1) && isempty(Hop2)) || ...
-            totalBudget == 0
-        SampleRefs = zeros(0,1);
-        SampleC = zeros(0,size(W,2));
-        SampleTypes = zeros(0,1);
-        return;
-    end
-
-    frontierBudget = round(frontierShare*totalBudget);
-    if isempty(Hop1) && isempty(Hop2)
-        frontierBudget = 0;
-    elseif isempty(PopulatedRefs)
-        frontierBudget = totalBudget;
-    end
-    populatedBudget = totalBudget - frontierBudget;
-    hop1Budget = ceil(2*frontierBudget/3);
-    hop2Budget = frontierBudget - hop1Budget;
-    if isempty(Hop2)
-        hop1Budget = hop1Budget + hop2Budget;
-        hop2Budget = 0;
-    end
-    if isempty(Hop1)
-        hop2Budget = hop2Budget + hop1Budget;
-        hop1Budget = 0;
-    end
-
-    pools = {PopulatedRefs,Hop1,Hop2};
-    budgets = [populatedBudget,hop1Budget,hop2Budget];
-    SampleRefs = zeros(totalBudget,1);
-    SampleTypes = zeros(totalBudget,1);
-    next = 0;
-    for g = 1 : 3
-        if budgets(g) <= 0
-            continue;
-        end
-        local = uniformRefRows(pools{g},budgets(g));
-        SampleRefs(next+1:next+budgets(g)) = pools{g}(local);
-        SampleTypes(next+1:next+budgets(g)) = g;
-        next = next + budgets(g);
-    end
-    SampleRefs = SampleRefs(1:next);
-    SampleTypes = SampleTypes(1:next);
-    if ~isempty(SampleRefs)
-        order = randperm(numel(SampleRefs));
-        SampleRefs = SampleRefs(order);
-        SampleTypes = SampleTypes(order);
-    end
-    SampleC = double(W(SampleRefs,:));
-end
-
-function Refs = twoHopFrontierRefs(W,PopulatedRefs,Hop1)
-%TWOHOPFRONTIERREFS Empty references adjacent to the one-hop frontier.
-
-    if isempty(W) || isempty(Hop1)
-        Refs = zeros(0,1);
-        return;
-    end
-    candidates = cell(numel(Hop1),1);
-    for i = 1 : numel(Hop1)
-        candidates{i} = neighborRefs(W,Hop1(i),1);
-    end
-    Refs = unique(vertcat(candidates{:}),'stable');
-    Refs = Refs(~ismember(Refs,[PopulatedRefs(:);Hop1(:)]));
 end
 
 function idx = uniformRefRows(PoolRefs,totalBudget)
-%UNIFORMREFROWS Draw reference rows with the validated RNG sequence.
+%UNIFORMREFROWS Sample reference rows while preserving the RNG sequence.
 
     PoolRefs = round(double(PoolRefs(:)));
     valid = isfinite(PoolRefs) & PoolRefs > 0;
@@ -205,45 +80,21 @@ function idx = uniformRefRows(PoolRefs,totalBudget)
     end
 end
 
-function [populatedBudget,frontierBudget] = queryBudgets( ...
-        totalBudget,hasPopulated,hasFrontier)
-%QUERYBUDGETS Assign one sixth of the budget to an available frontier.
+function [populatedBudget,frontierBudget] = ...
+        splitBudget(totalBudget,hasPopulated,hasFrontier)
+%SPLITBUDGET Assign 70%% populated and 30%% frontier slots.
 
     if ~hasPopulated && ~hasFrontier
         populatedBudget = 0;
         frontierBudget = 0;
     elseif hasPopulated && hasFrontier
-        frontierBudget = round(totalBudget/6);
+        frontierBudget = round(0.3*totalBudget);
         if totalBudget >= 2
             frontierBudget = max(1,min(totalBudget-1,frontierBudget));
         else
             frontierBudget = max(0,min(totalBudget,frontierBudget));
         end
-        populatedBudget = totalBudget - frontierBudget;
-    elseif hasPopulated
-        populatedBudget = totalBudget;
-        frontierBudget = 0;
-    else
-        populatedBudget = 0;
-        frontierBudget = totalBudget;
-    end
-end
-
-function [populatedBudget,frontierBudget] = halfBudgets( ...
-        totalBudget,hasPopulated,hasFrontier)
-%HALFBUDGETS Split the budget evenly with the same reflow guards.
-
-    if ~hasPopulated && ~hasFrontier
-        populatedBudget = 0;
-        frontierBudget = 0;
-    elseif hasPopulated && hasFrontier
-        frontierBudget = round(totalBudget/2);
-        if totalBudget >= 2
-            frontierBudget = max(1,min(totalBudget-1,frontierBudget));
-        else
-            frontierBudget = max(0,min(totalBudget,frontierBudget));
-        end
-        populatedBudget = totalBudget - frontierBudget;
+        populatedBudget = totalBudget-frontierBudget;
     elseif hasPopulated
         populatedBudget = totalBudget;
         frontierBudget = 0;
@@ -254,7 +105,7 @@ function [populatedBudget,frontierBudget] = halfBudgets( ...
 end
 
 function Refs = oneHopFrontierRefs(W,PopulatedRefs)
-%ONEHOPFRONTIERREFS Find neighboring references without anchor samples.
+%ONEHOPFRONTIERREFS Return empty references adjacent to supported ones.
 
     if isempty(W) || isempty(PopulatedRefs)
         Refs = zeros(0,1);
@@ -271,13 +122,9 @@ end
 function Refs = neighborRefs(W,r,radius)
 %NEIGHBORREFS Return the closest reference-vector indices around r.
 
-    if radius <= 0
-        Refs = r;
-        return;
-    end
-    distance = sqrt(sum((double(W) - double(W(r,:))).^2,2));
+    distance = sqrt(sum((double(W)-double(W(r,:))).^2,2));
     [~,order] = sort(distance,'ascend');
-    Refs = order(1:min(numel(order),1 + 2*radius));
+    Refs = order(1:min(numel(order),1+2*radius));
 end
 
 function Refs = validateRefs(Refs,W)
@@ -292,14 +139,18 @@ function Refs = validateRefs(Refs,W)
     end
 end
 
-function [GAN,RawDec] = trainAndSampleRegionGAN( ...
+function [GAN,RawDec] = trainAndSample( ...
         GAN,TrainX,TrainC,SampleC,Problem,Options)
-%TRAINANDSAMPLEREGIONGAN Train only when enough anchor rows are present.
+%TRAINANDSAMPLE Train on pairflag rows, then query feasible conditions.
 
-    if size(TrainX,1) < Options.minTrainCount || isempty(SampleC)
+    if size(TrainX,1) < Options.minTrainCount
         RawDec = zeros(0,Problem.D);
         return;
     end
     GAN = BoundaryWGAN_RC('train',GAN,TrainX,TrainC,Problem,Options);
+    if isempty(SampleC)
+        RawDec = zeros(0,Problem.D);
+        return;
+    end
     RawDec = BoundaryWGAN_RC('samplebycondition',GAN,SampleC,Options);
 end

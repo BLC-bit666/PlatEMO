@@ -28,7 +28,7 @@ function test_CBS_platemo_compliance()
     assert(Defaults.ganStopFraction == 0.5);
 
     assert(contains(source,'Problem.Initialization()'));
-    assert(contains(source,'Problem.Evaluation(RawDec)'));
+    assert(contains(source,'Problem.Evaluation(ChildDecs)'));
     assert(contains(source,'Algorithm.NotTerminated(Population1)'));
     assert(contains(source,'Algorithm.ParameterSet('));
 

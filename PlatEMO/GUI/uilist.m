@@ -106,7 +106,7 @@ classdef uilist < handle
             item.fold  = false;
             item.title = uibutton(obj.grid,'Text',name,'FontSize',11,'BackgroundColor',color,'FontColor',[1 1 1],'Tooltip',Comment,'ButtonPushedFcn',@obj.cb_fold);
             item.title.Layout.Column = [1 4];
-            item.tip = uibutton(obj.grid,'Text','¨‹','FontSize',10,'BackgroundColor',color,'FontColor',[1 1 1],'Tooltip',Comment,'ButtonPushedFcn',@obj.cb_callmenu);
+            item.tip = uibutton(obj.grid,'Text','‹','FontSize',10,'BackgroundColor',color,'FontColor',[1 1 1],'Tooltip',Comment,'ButtonPushedFcn',@obj.cb_callmenu);
             item.tip.Layout.Column = 4;
             item.label  = [];
             item.edit   = [];
@@ -121,7 +121,7 @@ classdef uilist < handle
                 end
                 item.edit(end).Layout.Column = 3;
                 if strcmp(Parameter{i,1},'maxFE')
-                    item.button = uibutton(obj.grid,'Text','¨‹','FontSize',10,'BackgroundColor','w','UserData',{item.label(end),item.edit(end)},'ButtonPushedFcn',@obj.cb_switch);
+                    item.button = uibutton(obj.grid,'Text','‹','FontSize',10,'BackgroundColor','w','UserData',{item.label(end),item.edit(end)},'ButtonPushedFcn',@obj.cb_switch);
                     item.button.Layout.Column = 4;
                 end
             end
@@ -191,7 +191,7 @@ classdef uilist < handle
                     if obj.items(i).fold
                         obj.items(i).tip.Text = '¡ø';
                     else
-                        obj.items(i).tip.Text = '¨‹';
+                        obj.items(i).tip.Text = '‹';
                     end
                     if ~isempty(obj.items(i).label)
                         [obj.items(i).label.Visible] = deal(~obj.items(i).fold);
@@ -224,7 +224,7 @@ classdef uilist < handle
             else
                 set(ui.UserData{1},'Text','maxFE','Tooltip','Maximum number of function evaluations');
                 set(ui.UserData{2},'Value','10000','Tooltip','Maximum number of function evaluations');
-                set(ui,'Text','¨‹');
+                set(ui,'Text','‹');
             end
         end
         %% Open file
