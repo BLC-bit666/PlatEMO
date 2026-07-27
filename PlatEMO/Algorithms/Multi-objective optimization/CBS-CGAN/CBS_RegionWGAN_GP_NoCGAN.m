@@ -7,6 +7,13 @@ classdef CBS_RegionWGAN_GP_NoCGAN < CBS_RegionWGAN_GP
 % budget, it follows the mainline's CGAN-inactive reproduction exactly:
 % 40% GA and 60% ordinary DE. Boundary calibration, the second population,
 % environmental selection, and all real-evaluation budgets remain unchanged.
+% nGen             ---  20 --- Number of region-query slots per training event
+% zDim             ---   6 --- Dimension of the generator noise vector
+% ganIter          --- 100 --- Generator updates per training event
+% ganMiniBatch     ---  32 --- Mini-batch size of WGAN-GP training
+% nCritic          ---   4 --- Critic updates per generator update
+% minGANTrainCount ---  32 --- Minimum conditioned rows required for training
+% sampleSigma      --- 0.3 --- Standard deviation of generator sampling noise
 
 %------------------------------- Reference --------------------------------
 % Ablation companion of CBS_RegionWGAN_GP; see that class for references.
@@ -19,13 +26,6 @@ classdef CBS_RegionWGAN_GP_NoCGAN < CBS_RegionWGAN_GP
 % for evolutionary multi-objective optimization [educational forum], IEEE
 % Computational Intelligence Magazine, 2017, 12(4): 73-87".
 %--------------------------------------------------------------------------
-
-    methods
-        function Algorithm = CBS_RegionWGAN_GP_NoCGAN(varargin)
-        %CBS_REGIONWGAN_GP_NOCGAN Construct the explicit no-CGAN ablation.
-            Algorithm@CBS_RegionWGAN_GP(varargin{:});
-        end
-    end
 
     methods(Static)
         function enabled = randomSlotsAtFE(currentFE,ganFELimit)

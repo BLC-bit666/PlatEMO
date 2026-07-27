@@ -38,9 +38,6 @@ function test_CBS_region_wgan_mainline()
     sourceTree = source+newline+dataSource+newline+querySource+newline+ ...
         string(fileread(which('BoundaryWGAN_RC')));
     assert(~any(contains(sourceTree,forbidden)));
-    assertThrows(@()CBS_RegionWGAN_GP('branchMode','anything'), ...
-        'CBSRegionGAN:UnsupportedOption');
-
     Parameters = {0,7,50,8,5,9,0.2};
     Algorithm = CBS_RegionWGAN_GP('parameter',Parameters,'save',0, ...
         'outputFcn',@(varargin)[]);
@@ -49,14 +46,4 @@ function test_CBS_region_wgan_mainline()
     Algorithm.Solve(Problem);
     assert(Algorithm.result{end,1} == Problem.maxFE);
     fprintf('CBS mainline and approved-ablation structure passed.\n');
-end
-
-function assertThrows(F,identifier)
-    didThrow = false;
-    try
-        F();
-    catch Error
-        didThrow = strcmp(Error.identifier,identifier);
-    end
-    assert(didThrow);
 end

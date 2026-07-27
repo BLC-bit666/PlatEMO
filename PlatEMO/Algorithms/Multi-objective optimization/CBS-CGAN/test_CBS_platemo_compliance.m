@@ -20,6 +20,13 @@ function test_CBS_platemo_compliance()
     assert(isequal(names,expectedNames));
     assert(all(strlength(descriptions) > 0));
 
+    ablationFile = which('CBS_RegionWGAN_GP_NoCGAN');
+    [ablationNames,ablationDefaults,ablationDescriptions] = ...
+        headerParameters(ablationFile);
+    assert(isequal(ablationNames,names));
+    assert(isequal(ablationDefaults,defaultText));
+    assert(isequal(ablationDescriptions,descriptions));
+
     Defaults = CBS_RegionWGAN_GP.mainlineDefaults();
     expectedDefaults = [Defaults.nGen,Defaults.zDim,Defaults.ganIter, ...
         Defaults.ganMiniBatch,Defaults.nCritic, ...
@@ -32,12 +39,30 @@ function test_CBS_platemo_compliance()
     assert(contains(source,'Algorithm.NotTerminated(Population1)'));
     assert(contains(source,'Algorithm.ParameterSet('));
 
+    %% Verify the actual PlatEMO name-value entry point
+    Algorithms = {@CBS_RegionWGAN_GP,@CBS_RegionWGAN_GP_NoCGAN};
+    for a = 1 : numel(Algorithms)
+        [decs,objs,cons] = platemo( ...
+            'algorithm',Algorithms{a}, ...
+            'problem',@DASCMOP1_BC, ...
+            'N',10,'D',5,'maxFE',1, ...
+            'save',0,'run',1, ...
+            'outputFcn',@(varargin)[]);
+        assert(size(decs,1) == 10 && size(decs,2) == 5);
+        assert(size(objs,1) == 10 && size(cons,1) == 10);
+    end
+
     %% Verify that all documented public parameters are accepted
     Parameters = {5,4,0,8,2,1,0.1};
+    for a = 1 : numel(Algorithms)
+        Algorithm = Algorithms{a}( ...
+            'parameter',Parameters,'save',0, ...
+            'outputFcn',@(varargin)[]);
+        assert(isa(Algorithm,'ALGORITHM') && ...
+            isequal(Algorithm.parameter,Parameters));
+    end
     Algorithm = CBS_RegionWGAN_GP('parameter',Parameters,'save',0, ...
         'outputFcn',@(varargin)[]);
-    assert(isa(Algorithm,'ALGORITHM') && ...
-        isequal(Algorithm.parameter,Parameters));
     Problem = LIRCMOP5_BC('N',10,'D',5,'maxFE',120);
     Algorithm.Solve(Problem);
     assert(Algorithm.result{end,1} == Problem.maxFE);

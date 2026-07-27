@@ -27,23 +27,6 @@ classdef CBS_RegionWGAN_GP < ALGORITHM
 %--------------------------------------------------------------------------
 
     methods
-        function Algorithm = CBS_RegionWGAN_GP(varargin)
-        %CBS_REGIONWGAN_GP Construct the supported mainline algorithm.
-            if mod(numel(varargin),2) ~= 0
-                error('CBSRegionGAN:UnsupportedOption', ...
-                    'Constructor inputs must be name-value pairs.');
-            end
-            allowed = {'parameter','save','run','metName','outputFcn'};
-            names = varargin(1:2:end);
-            valid = cellfun(@(x)ischar(x) && ismember(x,allowed),names);
-            if ~all(valid)
-                error('CBSRegionGAN:UnsupportedOption', ...
-                    ['Only standard PlatEMO options are accepted; ', ...
-                    'experimental algorithm switches have been removed.']);
-            end
-            Algorithm@ALGORITHM(varargin{:});
-        end
-
         function main(Algorithm,Problem)
             configurePlatEMOUtilityPath();
 
