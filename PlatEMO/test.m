@@ -1,28 +1,18 @@
 clc; clear;
 
-%% ===== 基本设置 =====
-nRun    = 10;
-nWorker = 8;
+%% ===== 正式确认实验 =====
 
+nWorker = 10;
 popSize = 100;
 maxFE   = 2e5;
 saveNum = 2;
+runs    = 1:10;
+algName = 'CBS_RegionWGAN_GP';
 
-%% ===== 算法列表 =====
-% 旧算法列表（已停用，保留为注释）
-% algs = {@IMTCMO,@MCCMO,@MTCMO,@CPCMO,{@DRMCMO,2}};
-
-algs = {@CBS_RegionWGAN_GP,@CBS_RegionWGAN_GP_NoCGAN};
-
-%% ===== 问题列表 =====
 problemSets = {
     'DASCMOP',  9
     'LIRCMOP', 14
-    'MW',      14
     'CF',      10
-    'DOC',      9
-    'FCP',      5
-    'SDC',     15
 };
 
 proNames = {};
@@ -32,49 +22,57 @@ for s = 1:size(problemSets,1)
     end
 end
 
+rootPath = fileparts(mfilename('fullpath'));
+cd(rootPath);
+addpath(genpath(rootPath));
+
+%% ===== 任务清单（跳过已完成） =====
+tasks = cell(0,2);
+for p = 1:numel(proNames)
+    for r = runs
+        tasks(end+1,:) = {proNames{p},r}; %#ok<SAGROW>
+    end
+end
+dataDir = fullfile(rootPath,'Data',algName);
+todo = true(size(tasks,1),1);
+for t = 1:size(tasks,1)
+    f = dir(fullfile(dataDir,sprintf('%s_%s_M*_D*_%d.mat', ...
+        algName,tasks{t,1},tasks{t,2})));
+    todo(t) = isempty(f);
+end
+tasks = tasks(todo,:);
+fprintf('Confirmation remaining tasks: %d\n',size(tasks,1));
+if isempty(tasks)
+    disp('ALL CONFIRMATION TASKS DONE');
+    return;
+end
+
 %% ===== 清理旧并行池和旧 Jobs =====
 delete(gcp('nocreate'));
-
 try
     c = parcluster('Processes');
     delete(c.Jobs);
 catch
 end
 
-%% ===== 打开并行池 =====
+%% ===== 并行池 =====
 parpool("Processes",nWorker);
-
-%% ===== 确保所有 worker 都有当前路径 =====
-rootPath = fileparts(mfilename('fullpath'));
-cd(rootPath);
-addpath(genpath(rootPath));
 pctRunOnAll addpath(genpath(rootPath));
 
-%% ===== 批量实验 =====
-for a = 1:numel(algs)
-    algHandle = algs{a};
-    algName   = func2str(algHandle);
-
-    for p = 1:numel(proNames)
-        proName   = proNames{p};
-        proHandle = str2func(proName);
-
-        fprintf('\nRunning %s on %s\n',algName,proName);
-
-        parfor run = 1:nRun
-            platemo( ...
-                'algorithm',algHandle, ...
-                'problem',  proHandle, ...
-                'N',        popSize, ...
-                'maxFE',    maxFE, ...
-                'save',     saveNum, ...
-                'run',      run ...
-            );
-        end
-    end
+%% ===== 扁平化并行（问题 x run 一起排队，吃满 worker） =====
+nTask = size(tasks,1);
+parfor t = 1:nTask
+    proHandle = str2func(tasks{t,1});
+    fprintf('Running %s on %s run %d\n',algName,tasks{t,1},tasks{t,2});
+    platemo( ...
+        'algorithm',@CBS_RegionWGAN_GP, ...
+        'problem',  proHandle, ...
+        'N',        popSize, ...
+        'maxFE',    maxFE, ...
+        'save',     saveNum, ...
+        'run',      tasks{t,2} ...
+    );
 end
 
-%% ===== 关闭并行池 =====
 delete(gcp('nocreate'));
-
-disp('All CBS-CGAN experiments finished.');
+disp('ALL CONFIRMATION TASKS DONE');

@@ -88,6 +88,34 @@ classdef CBS_RegionWGAN_GP < ALGORITHM
         %RANDOMGUIDESLOTSENABLED Mainline never replaces guides by random rows.
             enabled = false;
         end
+
+        function share = plainGAShare(~,guidedShare,currentFE,ganFELimit)
+        %PLAINGASHARE 40% GA during the CGAN phase, 25% GA afterwards.
+        %   The refinement phase after the CGAN cutoff generates 25% GA and
+        %   75% plain DE offspring in the first population (adopted from
+        %   the 2026-08 B1 configuration screening).
+            if currentFE >= ganFELimit
+                share = 0.25;
+            else
+                share = (1-double(guidedShare))/2;
+            end
+        end
+
+        function params = deParameterCycle(~,currentFE,ganFELimit) %#ok<INUSD>
+        %DEPARAMETERCYCLE Mainline always uses the platform default DE setting.
+            params = {};
+        end
+
+        function fraction = ganStopFractionValue(~,configFraction)
+        %GANSTOPFRACTIONVALUE Mainline keeps the configured stop fraction.
+            fraction = double(configFraction);
+        end
+
+        function budget = calibrationBudgetNow( ...
+                ~,configBudget,currentFE,ganFELimit) %#ok<INUSD>
+        %CALIBRATIONBUDGETNOW Mainline keeps calibration active all run.
+            budget = double(configBudget);
+        end
     end
 
     methods(Access = private)
@@ -99,7 +127,8 @@ classdef CBS_RegionWGAN_GP < ALGORITHM
                 Config.minBoundaryLength)));
             minGANTrainCount = max(1,round(double( ...
                 Config.minGANTrainCount)));
-            ganFELimit = Config.ganStopFraction*Problem.maxFE;
+            ganFELimit = Algorithm.ganStopFractionValue( ...
+                Config.ganStopFraction)*Problem.maxFE;
             cganEnabled = Algorithm.cganModuleEnabled();
 
             %% Reference vectors, models, and two coevolving populations
@@ -134,6 +163,10 @@ classdef CBS_RegionWGAN_GP < ALGORITHM
             while Algorithm.NotTerminated(Population1)
                 randomGuideSlots = Algorithm.randomGuideSlotsEnabled( ...
                     double(Problem.FE),ganFELimit);
+                plainGA = Algorithm.plainGAShare(Config.guideShare, ...
+                    double(Problem.FE),ganFELimit);
+                deParams = Algorithm.deParameterCycle( ...
+                    double(Problem.FE),ganFELimit);
                 remainingFE = max(0,Problem.maxFE-Problem.FE);
                 offspringBudget = min(2*Problem.N,remainingFE);
                 count1 = min(Problem.N,ceil(offspringBudget/2));
@@ -146,18 +179,21 @@ classdef CBS_RegionWGAN_GP < ALGORITHM
                 end
                 Offspring1 = generateGuidedOffspring(Problem, ...
                     Population1,Fitness1,count1,GuideDecs,GuideRefs, ...
-                    GuideSlots,W,Config.guideShare,randomGuideSlots);
+                    GuideSlots,W,Config.guideShare,randomGuideSlots, ...
+                    plainGA,deParams);
                 % A generated pool guides exactly one generation.
                 GuideDecs = zeros(0,Problem.D);
                 GuideRefs = zeros(0,1);
                 GuideSlots = zeros(0,1);
                 Offspring2 = generateBackboneOffspring(Problem, ...
-                    Population2,Fitness2,count2);
+                    Population2,Fitness2,count2,deParams);
 
                 %% Active boundary calibration (real evaluations)
                 Calibration = Offspring1([]);
                 remainingFE = max(0,Problem.maxFE-Problem.FE);
-                budget = min(Config.calibrationBudget,remainingFE);
+                calBudget = Algorithm.calibrationBudgetNow( ...
+                    Config.calibrationBudget,double(Problem.FE),ganFELimit);
+                budget = min(calBudget,remainingFE);
                 if budget > 0
                     Calibration = RefineBoundaryObservations_RC( ...
                         Problem,Population1,Population2,budget);
@@ -215,13 +251,16 @@ classdef CBS_RegionWGAN_GP < ALGORITHM
 end
 
 function Offspring = generateGuidedOffspring(Problem,Population,Fitness, ...
-        count,GuideDecs,GuideRefs,GuideSlots,W,guidedShare,randomGuideSlots)
-%GENERATEGUIDEDOFFSPRING 40%% GA + 40%% DE + 20%% CGAN-guided DE.
-%   Each query slot owns five unevaluated candidates. One candidate is
-%   selected by matching its previewed movement to the feasible parent's
-%   local spacing. The explicit no-CGAN ablation uses uniformly initialized
-%   solutions in these slots before the CGAN cutoff; otherwise missing
-%   guides fall back to ordinary DE.
+        count,GuideDecs,GuideRefs,GuideSlots,W,guidedShare, ...
+        randomGuideSlots,plainGAShare,deParams)
+%GENERATEGUIDEDOFFSPRING GA + plain DE + CGAN-guided DE offspring.
+%   The mainline shares are 40%% GA + 40%% DE + 20%% CGAN-guided DE; the
+%   GA share is supplied by the plainGAShare hook so experimental arms can
+%   rebalance it per phase. Each query slot owns five unevaluated
+%   candidates. One candidate is selected by matching its previewed
+%   movement to the feasible parent's local spacing. The explicit no-CGAN
+%   ablation uses uniformly initialized solutions in these slots before
+%   the CGAN cutoff; otherwise missing guides fall back to ordinary DE.
 
     count = max(0,min(numel(Population),round(double(count))));
     if count == 0
@@ -229,7 +268,7 @@ function Offspring = generateGuidedOffspring(Problem,Population,Fitness, ...
         return;
     end
     plainShare = (1-double(guidedShare))/2;
-    gaCount = min(count,round(plainShare*count));
+    gaCount = min(count,round(double(plainGAShare)*count));
     plainCount = min(count-gaCount,round(plainShare*count));
     guidedCount = count-gaCount-plainCount;
 
@@ -240,7 +279,7 @@ function Offspring = generateGuidedOffspring(Problem,Population,Fitness, ...
     end
     if plainCount > 0
         PlainOffspring = deOffspring( ...
-            Problem,Population,Fitness,plainCount);
+            Problem,Population,Fitness,plainCount,deParams);
         Offspring = [Offspring,PlainOffspring];
     end
 
@@ -254,7 +293,7 @@ function Offspring = generateGuidedOffspring(Problem,Population,Fitness, ...
     end
     if isempty(GuideDecs) || isempty(GuideSlots) || ~any(feasible)
         Offspring = [Offspring,deOffspring( ...
-            Problem,Population,Fitness,guidedCount)];
+            Problem,Population,Fitness,guidedCount,deParams)];
         return;
     end
 
@@ -278,7 +317,7 @@ function Offspring = generateGuidedOffspring(Problem,Population,Fitness, ...
     fallbackCount = guidedCount-selectedCount;
     if fallbackCount > 0
         Offspring = [Offspring,deOffspring( ...
-            Problem,Population,Fitness,fallbackCount)];
+            Problem,Population,Fitness,fallbackCount,deParams)];
     end
     ChildDecs = zeros(selectedCount,Problem.D);
     for group = 1 : 3
@@ -402,7 +441,7 @@ function Ref = assignReferences(Y,W)
 end
 
 function Offspring = generateBackboneOffspring( ...
-        Problem,Population,Fitness,count)
+        Problem,Population,Fitness,count,deParams)
 %GENERATEBACKBONEOFFSPRING Half SBX+PM and half ordinary DE.
 
     count = max(0,min(numel(Population),round(double(count))));
@@ -414,12 +453,14 @@ function Offspring = generateBackboneOffspring( ...
     Offspring = gaOffspring(Problem,Population,Fitness,gaCount);
     if count > gaCount
         Offspring = [Offspring,deOffspring( ...
-            Problem,Population,Fitness,count-gaCount)];
+            Problem,Population,Fitness,count-gaCount,deParams)];
     end
 end
 
-function Offspring = deOffspring(Problem,Population,Fitness,count)
+function Offspring = deOffspring(Problem,Population,Fitness,count,deParams)
 %DEOFFSPRING Validated ordinary DE path.
+%   deParams is empty for the platform default parameter set; experimental
+%   arms may pass an explicit {CR,F,proM,disM} cell instead.
 
     matingPool = platformTournamentSelection(2,2*count,Fitness);
     if count == numel(Population)
@@ -427,9 +468,15 @@ function Offspring = deOffspring(Problem,Population,Fitness,count)
     else
         base = Population(randperm(numel(Population),count));
     end
-    Offspring = OperatorDE(Problem,base, ...
-        Population(matingPool(1:count)), ...
-        Population(matingPool(count+1:end)));
+    if isempty(deParams)
+        Offspring = OperatorDE(Problem,base, ...
+            Population(matingPool(1:count)), ...
+            Population(matingPool(count+1:end)));
+    else
+        Offspring = OperatorDE(Problem,base, ...
+            Population(matingPool(1:count)), ...
+            Population(matingPool(count+1:end)),deParams);
+    end
 end
 
 function Offspring = gaOffspring(Problem,Population,Fitness,count)

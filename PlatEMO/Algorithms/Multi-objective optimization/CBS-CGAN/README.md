@@ -13,7 +13,7 @@
 5. 每次查询 20 个方向槽位：14 个属于已有边界记忆的方向，6 个属于其一跳空方向。
 6. 每槽生成 5 个候选，共 100 个不评价的原始生成解。
 7. 对每个槽位，从 5 个候选中选择一个，使其引导步长最接近相应可行父代的局部间距。
-8. 第一种群在完整代时产生 40% GA、40% 普通 DE、20% 引导 DE 子代。引导形式为可行父代朝生成解移动，强度循环使用 `0.4、0.65、0.85`；最终子代必须真实评价并参加普通环境选择。
+8. 第一种群在完整代时产生 40% GA、40% 普通 DE、20% 引导 DE 子代；CGAN 截止后转为 25% GA、75% 普通 DE（2026-08 B1 筛选采纳）。引导形式为可行父代朝生成解移动，强度循环使用 `0.4、0.65、0.85`；最终子代必须真实评价并参加普通环境选择。
 9. CGAN 的记忆更新、训练与生成只在前 50% 评价预算内进行。边界校准全程开启，每代最多使用 20 次真实评价，并将结果回流边界记忆。
 
 原始 CGAN 生成解从不直接计入函数评价，也不直接进入种群。
@@ -23,7 +23,7 @@
 `CBS_RegionWGAN_GP_NoCGAN` 不建立边界记忆，不构造条件数据，不初始化、训练或查询 WGAN：
 
 - `Problem.FE < 0.5*Problem.maxFE`：第一种群产生 40% GA、40% 普通 DE、20% 决策空间均匀随机采样子代；
-- `Problem.FE >= 0.5*Problem.maxFE`：与主线的 CGAN 停止阶段一致，产生 40% GA、60% 普通 DE；
+- `Problem.FE >= 0.5*Problem.maxFE`：与主线的 CGAN 停止阶段一致，产生 25% GA、75% 普通 DE；
 - 第二种群、边界校准、环境选择和真实评价预算与主线完全共用。
 
 随机采样通过 PlatEMO 的 `Problem.Initialization` 生成，会真实评价并参加环境选择；它不同于主线中不消耗 FE 的原始 CGAN 候选。正式 200K 预算下，分界点就是 100K。
@@ -70,7 +70,7 @@ platemo('algorithm',@CBS_RegionWGAN_GP_NoCGAN, ...
 
 ## 文件职责
 
-- `CBS_RegionWGAN_GP.m`：唯一主流程、GA/DE/引导子代。
+- `CBS_RegionWGAN_GP.m`：唯一主流程、GA/DE/引导子代。相位相关的比例与预算通过四个受保护钩子提供（`plainGAShare`、`deParameterCycle`、`ganStopFractionValue`、`calibrationBudgetNow`），供显式消融子类覆写；2026-08 起主线精修段（CGAN 截止后）为 25% GA + 75% 普通 DE。
 - `CBS_RegionWGAN_GP_NoCGAN.m`：前半程随机席位、后半程普通 DE 的无 CGAN 消融。
 - `UpdateBoundaryMemory_RC.m`：可行—不可行边界配对记忆。
 - `BuildBoundaryDataset_RC.m`：唯一 pairflag 数据集。
@@ -88,8 +88,8 @@ platemo('algorithm',@CBS_RegionWGAN_GP_NoCGAN, ...
 
 ## 回归测试
 
-核心测试包括：pairflag 数据、14+6 查询、无 CGAN 消融、边界记忆、边界校准、PlatEMO 接口、正式 runner 和固定轨迹指纹。固定指纹为 `LIRCMOP6_BC`、`N=100`、`D=30`、`maxFE=20000`、随机种子 4242：
+核心测试包括：pairflag 数据、14+6 查询、无 CGAN 消融、边界记忆、边界校准、PlatEMO 接口、正式 runner 和固定轨迹指纹。固定指纹为 `LIRCMOP6_BC`、`N=100`、`D=30`、`maxFE=20000`、随机种子 4242（2026-08-02 采纳 B1 精修配比后重定）：
 
-- IGD：`1.346550324710176`
-- 决策和：`1883.8784633646248`
-- 随机状态首值：`3522559217`
+- IGD：`1.3464870356600867`
+- 决策和：`1879.6116888233294`
+- 随机状态首值：`2164559186`
