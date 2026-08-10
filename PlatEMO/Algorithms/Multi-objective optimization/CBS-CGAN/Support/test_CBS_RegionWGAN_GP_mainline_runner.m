@@ -2,7 +2,8 @@ function test_CBS_RegionWGAN_GP_mainline_runner()
 %TEST_CBS_REGIONWGAN_GP_MAINLINE_RUNNER Verify the 100K/200K contract.
 
     repoRoot = fileparts(which('platemo'));
-    addpath(genpath(repoRoot));
+    addpath(fileparts(fileparts(mfilename('fullpath'))),'-begin');
+    addCBSPaths(repoRoot);
     testRoot = fullfile(tempdir,'cbs_region_wgan_mainline_runner_test');
     outDir = fullfile(testRoot,'Data','CBS_RegionWGAN_GP');
     if isfolder(testRoot); rmdir(testRoot,'s'); end

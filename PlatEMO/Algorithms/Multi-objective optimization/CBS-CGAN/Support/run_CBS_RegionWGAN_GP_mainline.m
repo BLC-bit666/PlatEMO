@@ -7,7 +7,8 @@ function [Summary,outDir] = run_CBS_RegionWGAN_GP_mainline( ...
 
     rootDir = fileparts(which('platemo'));
     if isempty(rootDir); rootDir = pwd; end
-    addpath(genpath(rootDir));
+    addpath(fileparts(fileparts(mfilename('fullpath'))),'-begin');
+    addCBSPaths(rootDir);
     if nargin < 8 || isempty(Options); Options = struct(); end
     Options = normalizeOptions(Options);
     if nargin < 1 || isempty(outDir)
@@ -21,7 +22,7 @@ function [Summary,outDir] = run_CBS_RegionWGAN_GP_mainline( ...
     if nargin < 4 || isempty(N); N = 100; end
     if nargin < 5; D = []; end
     if nargin < 6 || isempty(maxFE); maxFE = 200000; end
-    if nargin < 7 || isempty(runIds); runIds = 1:5; end
+    if nargin < 7 || isempty(runIds); runIds = 1:10; end
 
     workerCount = validatePositiveInteger(workerCount,'workerCount');
     if workerCount ~= 1 && workerCount ~= 10

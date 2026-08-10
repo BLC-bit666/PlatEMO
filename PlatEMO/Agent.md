@@ -1,141 +1,189 @@
-# CBS-CGAN 当前状态
+# CBS-CGAN 唯一主线开发记录
 
-更新时间：2026-08-01
+更新时间：2026-08-10
 
-## 唯一主线
+适用范围：`/Users/lanai/Code/Matlab/PlatEMO/PlatEMO` 当前未暂存工作树。本文件是算法身份、实验裁决、运行协议和后续约束的权威入口；旧类名、旧结果目录或旧文档不能覆盖这里的结论。
 
-仓库的唯一主线是 `CBS_RegionWGAN_GP`。算法语义固定为：可行边界解使用条件 1，与其配对的不可行解使用条件 0；生成时只请求条件 1。另保留一个明确命名且没有公共开关的消融类 `CBS_RegionWGAN_GP_NoCGAN`，它不改变主线默认路径。
+## 1. 唯一结论
 
-完整代、种群规模 100 时：
+- 唯一生产算法类是 `CBS_RegionWGAN_GP`。
+- 历史实验标签中的 **BT0/F0 已晋级为主线真实语义**：后半程保留认证 boundary-target 引导，不叠加横向 donor 差分；普通 DE 仍走全局 distinct-parent 的 `current/1-like` 路径；引导步长仍循环 `0.4/0.65/0.85`。
+- BT0/F0 不再由别名类或 override hook 表达。所有实验算法类、实验专用 helper、runner 和测试已从活动源码清除。
+- 最终 BT0-vs-NoBT 预注册实验的 5 个 gate 全部通过，因此保留 boundary transfer，否决“后半程完全取消边界目标”的 NoBT 对照。
+- 该裁决只确立项目内部唯一主线，不等于已经证明优于 DRMCMO。现有外部对照证据仍不足以宣称在 LIRCMOP 与 CF 上整体超过 DRMCMO。
 
-- 第一种群：CGAN 活跃期为 40 个 GA + 40 个普通 DE + 20 个 CGAN 引导 DE；CGAN 截止后为 25 个 GA + 75 个普通 DE（2026-08-02 采纳 B1 配比）；
-- 第二种群：50 个 GA + 50 个普通 DE；
-- 边界校准：每代最多额外评价 20 个解；
-- CGAN：前 50% FE 更新边界记忆、训练和生成；
-- 边界校准：全程运行，并在 CGAN 活跃期回流边界记忆。
+## 2. 主线的精确算法语义
 
-## CGAN 训练与使用
+### 2.1 双种群、算子配比和 FE
 
-边界记忆的每一条记录包含一个可行锚点及其不可行配对点。训练矩阵按以下顺序组成：
+以下为 `N=100` 完整进化批次的名义数量，不含校准评价：
+
+| 代首阶段 | 约束种群 Pop1 | 无约束种群 Pop2 |
+|---|---|---|
+| `FE < 0.5*maxFE` | 25 GA + 55 普通 DE + 20 CGAN 引导 DE | 25 GA + 75 普通 DE |
+| `FE >= 0.5*maxFE` | 25 GA + 55 普通 DE + 20 认证边界目标 DE | 25 GA + 75 普通 DE |
+
+- 后半程若没有认证边界目标，或没有同参考方向的可行父代，引导席位回退为普通 DE；当边界存档为空时，Pop1 直接按 25 GA + 75 普通 DE 分配。
+- 每个完整迭代另有最多 20 次真实边界校准评价。`maxFE` 同时约束两套子代和校准评价。
+- 阶段由一代开始时的 `generationFE` 判断；末代会受剩余 FE、舍入和回退影响。
+- Pop2 全程不读取 CGAN、参考分区或边界目标存档。
+
+### 2.2 普通 DE
+
+`OperatorDEDistinct_CBS.m` 选出互异的 `base/r1/r2`，再调用平台 `OperatorDE`。多项式变异前：
 
 ```text
-决策：[全部可行锚点；全部有限的不可行配对点]
-条件：[对应参考方向, 1；对应参考方向, 0]
+x_child = x_base + 0.5 * (x_r1 - x_r2)
 ```
 
-每次生成查询 20 个方向槽位，其中 14 个来自已有记忆的方向，6 个来自相邻一跳空方向。每槽重复条件 5 次，因此一次得到 100 个原始候选。所有查询末列固定为 1。
+- 请求数等于种群规模时，每一行恰好作为 base 一次；否则 base 无放回抽取。
+- `r1`、`r2` 分别由二元适应度锦标赛选择，并强制三者互异。
+- 默认 `CR=1, F=0.5, proM=1, disM=20`，随后执行边界截断和多项式变异。
+- 该路径不是 `rand/1`、`best/1` 或 `current-to-pbest/1`。
 
-原始生成解不评价。下一代的 20% 引导槽位按槽处理：匹配最近参考方向上的最佳可行父代，从该槽 5 个生成解中选择预览移动尺度最接近父代局部间距者，再通过 `OperatorDE` 产生并评价子代。引导强度依次循环 `0.4、0.65、0.85`。槽位缺失或没有可行父代时退化为普通 DE。
+### 2.3 CGAN 与 boundary-target 的公共引导公式
 
-## 唯一消融分支
+引导子代统一调用：
 
-`CBS_RegionWGAN_GP_NoCGAN` 完全跳过边界记忆、pairflag 数据集、WGAN 训练和条件生成。正式 200K 预算中：
+```matlab
+OperatorDE(Problem,A,G,A,{1,F,1,20})
+```
 
-- 前 100K：第一种群为 40 个 GA + 40 个普通 DE + 20 个通过 `Problem.Initialization` 生成并真实评价的均匀随机解；
-- 100K–200K：与主线 CGAN 停止后的结构一致，为 25 个 GA + 75 个普通 DE；
-- 第二种群、每代最多 20 次边界校准、环境选择和 FE 处理保持主线实现。
+多项式变异前为 `A + F*(G-A)`：
 
-阶段判断复用主线的 `0.5*Problem.maxFE` 阈值，并在每代开始按当前 `Problem.FE` 决定。分支通过受保护多态钩子复用主流程，没有重新加入隐藏实验参数。
+- `A` 是可行父代，`F` 按子代循环 `0.4, 0.65, 0.85`。
+- 前半程 `G` 是尚未评价的 CGAN 输出；网络只生成目标点，最终子代才接受真实评价。
+- 后半程 `G` 是二分校准后经真实评价认证的可行端点 `xf`。
+- 主线不再存在 BT1/BT2/BT3 的横向 `0.5*(R1-R2)` 分支，也不存在相关步长 cap 或诊断容器。
 
-## 已删除内容
+### 2.4 两套边界状态
 
-已移除历史实验子类、旧消融类、参数臂、观测开关、指标存储、原始生成解记录、分支 runner、分支测试和对应实验数据。当前唯一例外是新批准的 `CBS_RegionWGAN_GP_NoCGAN` 消融。旧的 78GB 比较实验目录及其他挑战臂数据已移出工作区。它们目前位于 macOS 废纸篓，清空废纸篓后不可恢复。
+| 状态 | 生命周期与用途 | 核心规则 |
+|---|---|---|
+| `BMem` | 仅前半程更新；构造 pairflag 数据并训练/查询 CGAN | 每参考方向最多 5 个前两层可行锚点；不可行配对每代重建；使用邻近参考方向与 MAD gap 过滤 |
+| `BoundaryTargetXf/Yf` | 校准全程产生；仅后半程 Pop1 消费 | 只存真实认证的 `xf/yf`；FIFO 上限 1500；newest-first；目标与父代必须在联合归一化后属于同一参考方向 |
 
-旧 `Data/CBS_RegionWGAN_GP_PF` 中的 23 问题 × 5 次结果属于 pairflag 当前主线，已迁移到 `Data/CBS_RegionWGAN_GP` 并统一文件名前缀。`PF` 源码别名和数据目录均已删除，以后所有实验只使用正式类名与正式目录。
+`AssignReferenceVectors_CBS.m` 统一采用逐目标 min-max 归一化和最大余弦相似度分区：
 
-## 指标与正式 runner
+- 默认请求 `UniformPoint(max(2,round(N/2)),M)`。
+- 前半程复用 `BMem` 返回的 `minimum/span`，使查询方向与下一代父代处于同一尺度。
+- 后半程以当前可行父代目标和历史 `yf` 联合定标，不借相邻参考方向。
 
-当前只关注 100K 和 200K 的 IGD。正式入口：
+### 2.5 主动校准与 CGAN
 
-`Algorithms/Multi-objective optimization/CBS-CGAN/Support/run_CBS_RegionWGAN_GP_mainline.m`
+`RefineBoundaryObservations_RC` 每代最多使用 20 FE：
 
-正式 runner 强制 `maxFE=200000`，只在摘要中输出 `FE100K/IGD100K` 与 `FE200K/IGD200K`。由于 PlatEMO 的 `save=2` 按代保存，第一份种群通常略早于 100000 FE，因此必须同时查看 `FE100K`；终点固定为 200000 FE。
+1. 从可行非支配前沿抽取锚点，以变量范围归一化距离寻找最近不可行点，最多进行 4 次二分，输出真实认证的 `xf/xi/yf/ell`；主线存档只消费 `xf/yf`。
+2. 用剩余预算搜索可行前沿的稀疏目标间隙并评价决策中点；必要时只修复一次。
 
-## 性能优化边界
+校准解进入公共 `Union`；未经评价的 CGAN 原始点不会直接进入环境选择。
 
-MATLAB 性能审查确认，WGAN 深度学习训练约占总耗时的 82%–88%。为了不损害 IGD：
+CGAN 的固定语义：
 
-- 已删除主循环内全部观测指标和无用 `Info` 数组；
-- 判别器更新直接复用 `XScaledT(:,idx)`，避免从 `dlarray` 再提取同一批数据；
-- 保持 GA、普通 DE、三档引导 DE 的顺序、随机调用次数及浮点表达式不变；
-- 禁止把 GPU、混合精度、`dlaccelerate`、训练并行、合并前向传播或改变网络/批量/训练次数当作等价加速。
+- pairflag 行为 `[x_b, reference, 1]` 与有限的 `[x_i, reference, 0]`；生成时只查询条件 1。
+- 每次通常查询 20 个方向槽，其中 70% 来自已有记忆方向、30% 来自一跳空邻域；池为空时预算回流。
+- 每槽生成 5 个候选，通过父代局部尺度选一个，再形成真实评价子代。
+- 仅在校准后仍满足 `Problem.FE < 0.5*maxFE` 时训练。
+- 默认：`zDim=6`、生成器/critic 隐层 `[32 32]`、100 次生成器更新、每次 4 个 critic 更新、mini-batch 32、学习率 `1e-4`、GP 系数 10、最少训练行 32、采样噪声 0.3。
 
-固定 20K 回归中，重构前后以下值完全一致：
+## 3. 开发阶段与实验收敛
 
-- IGD：`1.346550324710176`
-- 决策和：`1883.8784633646248`
-- 目标和：`443.43527478704067`
-- 随机状态首值：`3522559217`
+1. **主流程修正**：建立 pairflag 条件数据、14+6 查询、主动边界校准和双种群流程；统一参考向量尺度。
+2. **算子与选择筛选**：考察 100DE、PBestDE、NoCGAN 和 BE。它们没有形成可重复的统一收益，均未进入主线。
+3. **boundary formula 筛选**：BT1/BT2 未过 gate；BT3 的 runs 1:5 只产生初筛信号，runs 6:10 独立复现未过预注册门槛，CF5/CF6 机制诊断也未支持继续 locality arm。
+4. **唯一因素确认**：最终只比较 BT0/F0 与 NoBT，隔离“后半程是否保留认证边界目标”这一因素；该实验通过全部预注册 gate，形成当前唯一主线。
 
-同一环境重构前的一次 wall time 为 `58.347369 s`；重构后三次为 `55.289654、55.922484、51.152201 s`，中位数 `55.289654 s`，相对该重构前样本约快 5.2%。三次重构后运行的决策、目标、约束、IGD 与随机状态均逐元素一致。由于重构前只有一个计时样本，5.2% 只作为工程参考，不作为正式性能结论。
+历史 BE、BT1、BT2、BT3、100DE、PBestDE、NoCGAN 与兼容别名的活动源码均已删除。它们只能作为已否决历史解释，不得重新被当作当前候选。
 
-清理 F 分支后重新做的 20K profiler 显示：主循环 `119.34 s` 中，`trainBoundaryWGAN` 占 `117.37 s`（profiler 下约 `98.4%`）；30 次训练事件严格对应 12,000 次判别器更新和 3,000 次生成器更新。其余进化、评价、记忆与选择合计约 `1.8 s`。因此当前进一步提速的瓶颈不是 GA/DE 或候选筛选，而是主线明确规定的 WGAN 梯度更新次数。
+## 4. 最终 BT0-vs-NoBT 证据
 
-曾单独验证 MATLAB `dlaccelerate`：代表性梯度微基准虽快约 `7.66` 倍，但第一次梯度即出现最大约 `2.98e-08` 的单精度差异，不满足逐位轨迹一致约束，故未进入主线。当前只保留可证明等价的公共子表达式复用和排名逆置换；正式批量吞吐继续使用 runner 已有的 10 个独立 worker 并行。
+协议：
 
-## 核心文件与测试
+- 问题共 15 个：DASCMOP 5 题、LIRCMOP 6 题、CF 4 题。
+- 两个算法 × 15 题 × runs `101:110`，共 300 项任务。
+- `N=100`、`maxFE=200000`；100K 是同一运行的检查点，200K 是终点。
+- 300/300 完成，0 failure，0 unresolved。
 
-核心源码位于 `Algorithms/Multi-objective optimization/CBS-CGAN`。正式保留的测试：
+`G` 为候选 BT0/F0 相对 NoBT 的跨题几何均值 IGD 比，小于 1 更好；W/T/L 使用预注册的 ±2% 实用区间：
 
-- `test_CBS_pairflag_dataset`
-- `test_CBS_guide_allocation_mainline`
-- `test_CBS_no_cgan_ablation`
-- `test_CBS_mainline_fingerprint`
-- `test_CBS_boundary_search`
-- `test_CBS_region_boundary_ref_cap`
-- `test_CBS_calfitness_equivalence`
-- `test_CBS_region_wgan_mainline`
-- `test_CBS_platemo_compliance`
-- `Support/test_CBS_RegionWGAN_GP_mainline_runner`
+| 分组 | 题数 | G | W/T/L |
+|---|---:|---:|---:|
+| ALL | 15 | 0.969851945891575 | 8/7/0 |
+| LIRCF | 10 | 0.958059765602720 | 7/3/0 |
+| LIR | 6 | 0.948667046651121 | 5/1/0 |
+| CF | 4 | 0.972323500747906 | 2/2/0 |
+| DAS | 5 | 0.993873521467221 | 1/4/0 |
 
-不要重新加入隐藏的算法开关。新的消融必须像 `CBS_RegionWGAN_GP_NoCGAN` 一样采用显式类并复用受保护主流程，不得污染主线默认语义。
+裁决细节：
 
-## 已完成的 F 策略筛选
+- `AllEffectGate`、`CoreLIRCFEffectGate`、`DASNoHarmGate`、`LIRNoHarmGate`、`CFNoHarmGate` 全部为真；`GatePass=1`。
+- 150/150 配对任务在 100K 保存点的 FE、IGD、FR、种群决策/目标/约束逐项一致；结合冻结源码可确认两臂只在后半程边界目标消费上分离。
+- BT0/F0 使用晚期引导席位 `1,352,166 / 1,362,583 = 0.992354961128973`；NoBT 为 `0 / 1,362,583`。
+- 15 个逐题 Wilcoxon 结果经 Holm 校正后均未显著。因此正确表述是“预注册聚合效应与实用门槛通过”，不能写成“每个问题均统计显著”。
 
-2026-07-27 完成了 10 个问题、3 个配对种子、4 个候选策略的 120 项筛选。相对当前三档循环主线，固定 `0.4`、固定 `0.65`、固定 `0.85` 和三段递减在 100K/200K 上均未形成一致优势，因此不替换主线。对应的成对中位 IGD 比值（小于 1 为更好）分别为：
+冻结证据保留在：
 
-- 固定 `0.4`：100K `1.0177`，200K `1.0021`；
-- 固定 `0.65`：100K `1.0005`，200K `1.0040`；
-- 固定 `0.85`：100K `1.0020`，200K `1.0042`；
-- 三段递减：100K `1.0041`，200K `0.9943`。
+- `Data/CBS_bt0_vs_nobt_gate_manifest.mat`
+- `Data/CBS_bt0_vs_nobt_gate_source_snapshot/`：41 个冻结源码文件，含已删除的最终对照类和 runner
+- `Data/CBS_bt0_vs_nobt_gate_runs101_110_{runs,problems,groups,decision,results,penalties}.*`
+- `Data/CBS_bt0_vs_nobt_gate_diagnostics/`
+- `Data/CBS_bt0_vs_nobt_gate_attempt1_failures.csv` 与 `Data/CBS_bt0_vs_nobt_gate_unresolved.csv`：仅表头
 
-最后一个策略只有约 `0.57%` 的 200K 中位改善，且 100K 退化、问题间不一致，不足以承担替换唯一主线的风险。实验源码和完整任务数据已在结论固化后清理；主线固定为按子代循环使用 `0.4、0.65、0.85`，不再公开 F 策略参数。
+`Data/` 被 Git 忽略，但本次清理没有删除或改写任何冻结实验凭证。
 
-## 2026-08-01 竞品对比结论与实验协议决策
+## 5. 当前活动源码边界
 
-从 `Data/` 原始 .mat 重算（30 run，快照 FE≈100K 与 200K）得出，并已固化为协议：
+生产与核心 helper：
 
-- **maxFE 固定 200000**。100K 快照下对 DRMCMO 反而接近平手是假象：DRMCMO 的检测区域日程绑定 `maxFE`（sigmoid 中心在 60% 预算处），2e5 实验的半程快照严重低估其真实 1e5 水平；而本算法每代真实评价 220 次（2N 子代 + 20 标定）对 DRMCMO 的 100 次，固定开销需要大预算摊薄，且后半程相对降幅远大于 DRMCMO。
-- **正式基准 = DASCMOP(9) + LIRCMOP(14) + CF(10) 共 33 题**。弃 MW（对 CPCMO 1-13、MCCMO 1-12、DRMCMO 2-6-6，属框架级短板，且 MW2/6/10/13 后半程 10 万次评价 IGD 零移动）；弃 DOC/FCP/SDC（大量问题全算法 30 run 无可行解；SDC1/9/10/13/14 为死题）。DRMCMO 原论文基准也只有 DASCMOP/BC + LIRCMOP/BC，先例支持。
-- **统计口径**：PlatEMO 官方（`GUI/module_exp.m:341`）与 MATLAB `ranksum` 均丢弃 NaN（不可行 run），即"除以成功次数"。这会掩盖 DRMCMO 在 LIRCMOP1/3/4 只有 10/15/19 个 run 找到可行解（本算法 26/30/26）的事实。正式表格保持平台口径，但必须增设可行率 FR 列；显著性检验采用"NaN 记最差"敏感性口径复核，该口径下 L1/L3 转胜。
-- 历史注意：`8-1.xlsx` 与 `8-1(1e5).xlsx` 内容完全相同，均为 200K 终点值，"1e5" 标签有误。
+- `CBS_RegionWGAN_GP.m`
+- `AssignReferenceVectors_CBS.m`
+- `OperatorDEDistinct_CBS.m`
+- `BoundaryWGAN_RC.m`
+- `BuildBoundaryDataset_RC.m`
+- `CalFitness_CBS.m`
+- `EnvironmentalSelection_CBS.m`
+- `RefineBoundaryObservations_RC.m`
+- `RunRegionGAN_RC.m`
+- `UpdateBoundaryMemory_RC.m`
+- `addCBSPaths.m`：先移除当前仓库的 `Data/**` 路径，再只加入 Algorithms/Problems/Metrics，避免冻结源码重新暴露旧类
 
-## 2026-08-01 后半程配比筛选（B 系臂）与裁决
+唯一正式 runner：
 
-为支持显式实验臂，主线新增三个受保护钩子：`plainGAShare`、`deParameterCycle`、`ganStopFractionValue`，默认实现与历史主线逐位一致（不消耗随机数、同一算术路径），指纹测试四项数值（IGD `1.346550324710176`、决策和、目标和、随机状态首值）在钩子加入后逐位复验通过。臂类均为显式子类、只覆写钩子，符合"不加隐藏开关"约束：
+- `Support/run_CBS_RegionWGAN_GP_mainline.m`
+- `Support/test_CBS_RegionWGAN_GP_mainline_runner.m`
 
-- `CBS_RegionWGAN_GP_B1`：CGAN 截止后第一种群 GA 40%→25%、DE 60%→75%；
-- `CBS_RegionWGAN_GP_B1B2`：B1 + 后半程每代 50% 概率全体普通 DE 用 `{0.5,0.5,0.5,0.75}`；
-- `CBS_RegionWGAN_GP_B3`：B1B2 + CGAN 截止提前到 40% 预算。
+根部旧 `run_bt*.m`、`test_arm_*.m`、`test_operator_branches.m` 与重复且不安全的 `test.m` 已删除。当前本地 Git 只有 `UC-GAN-2` 分支；本次没有删除、切换或修改任何本地/远端 Git ref，“清分支”仅指清除代码层实验臂。
 
-筛选协议：LIRCMOP1-12 × 5 run × maxFE=2e5 × 10 workers（runner：根目录 `test_B1.m`/`test_B1B2.m`/`test_B3.m`，断点续跑），对基线 30 run 做 NaN-记最差秩和检验。裁决：
+## 6. 正式运行协议
 
-- **B1 采纳（当前最终配置候选）**：毫厘组无害且方向性略优（L6 7.56e-3 对基线 7.95e-3、L10 6.63e-3 对 7.12e-3），探索组大幅获益且 L1/L3/L4 可行率 5/5（L2 中位 2.15e-2 已反超 DRMCMO 的 3.02e-2，L9 均值反超）；
-- **B2 成分（粗变异轮换）否决**：伤精修最后一公里（B1B2 的 L6 显著差），仅 L4 获益（B3 达 1.75e-1），"可行解稀缺期条件化启用"列为备选未实施；
-- **B3（0.4 截止）否决**：毫厘组三项显著差，提前截止损失的前半程质量无法靠更长精修补回，`ganStopFraction` 保持 0.5。
+- 正式入口是 `Support/run_CBS_RegionWGAN_GP_mainline.m`，固定 `maxFE=200000`，允许 1 个验证 worker 或 10 个正式 worker；默认 run IDs 为 `1:10`。
+- 配对实验必须在每项任务中执行 `rng(runId,'twister')` 后直接调用 `Algorithm.Solve`。`platemo(...)` 会调用 `rng('shuffle')`，并以 `genpath(cd)` 将 `Data/` 内冻结源码快照重新加入 MATLAB 路径，不能作为干净主线或配对随机种子入口；正式 runner 使用 `addCBSPaths` 隔离这些快照。
+- runner 的 `resume` 只验证 MAT 文件结构与 FE，不验证源码哈希。代码变化后必须使用新结果根目录，或显式设置 `resume=false`；不得仅凭文件存在复用旧版本结果。
+- 原生正式输出目录必须是 `<root>/Data/CBS_RegionWGAN_GP`；`Data/` 不会自动进入 Git。
 
-待办：B1 尚需 33 题 × 30 run 正式确认（约 40 小时，10 workers）；B1 对 DASCMOP/CF/三目标 LIRCMOP13/14 的影响未实测（筛选只覆盖 LIRCMOP1-12）。臂数据位于 `Data/CBS_RegionWGAN_GP_B1|B1B2|B3`（各 60 个 .mat）。全部改动未提交 git。
+## 7. 2026-08-10 清理与等价性验证
 
-## 2026-08-02 C1 裁决与真 1e5 对照
+- 主类由 994 行降为 571 行，删除 cutoff 全状态快照、差分实验诊断、NoCGAN/PBest/份额覆写 hook 和不可达分支。
+- 保留三项最小生产观测：认证目标行数、晚期请求/使用/回退席位。
+- MATLAB Code Analyzer 对目录内 22 个活动 `.m` 文件报告 0 issue。
+- LIRCMOP6_BC，`N=100,D=30,maxFE=20000,rng=4242`：重构前后两个保存点的 FE、决策、目标、约束、IGD 与 RNG 末态逐元素完全一致：
+  - IGD `1.3468921272381897`
+  - 决策和 `1729.8887087629678`
+  - 目标和 `1056.8965815545916`
+  - 约束和 `0`
+  - RNG state 首值 `281257120`
+  - boundary rows `222`，晚期使用 `904/904`
+- CF6_BC 与 DASCMOP9_BC 的独立小预算基线也完成 FE、全保存种群、IGD 和 RNG 逐元素比较。
+- 10 个保留测试全部通过（10/10），覆盖主线指纹、boundary transfer、普通 DE 互异父代、pairflag、14+6 分配、边界搜索、参考方向上限、适应度等价、PlatEMO 接口和正式 runner。
+- 重构前剖析中，WGAN 训练约占主流程 `105.5/108.2` 秒；因此未改动 WGAN 数值内核或三组引导调用。性能清理集中在删除生产路径的大对象快照、死诊断分配和动态增长的选择输出。
+- 同机、同进程顺序、相同种子和逐元素同结果的 4K-FE 单次复测中，CF6 从 `5.799948s` 降至 `4.559108s`，DASCMOP9 从 `2.018038s` 降至 `1.463814s`。这是工程回归参考而非统计性能基准；长期耗时仍由 WGAN 训练主导。
 
-- **C1（B1 + 后半程关闭边界校准）否决**。主线为此新增第四个行为等价钩子 `calibrationBudgetNow`（指纹逐位复验通过），臂类 `CBS_RegionWGAN_GP_C1`。筛选结果：L10 8.37e-3、L11 3.34e-3 显著差于基线（B1 分别为 6.63e-3、2.75e-3），探索组 L2/L4/L9 亦退化。结论修正：后半程边界校准不是纯开销——在 CPF 位于约束边界的 LIRCMOP 上，它等效于每代 20 次边界局部搜索，价值高于砍掉它换来的约 10% 代数。未验证的反向备选：后半程加大标定预算至 30-40。
-- **真 1e5 对照**：以 run 编号 101 起新跑 B1×5、DRMCMO(type2)×30 于 LIRCMOP1-12（`test_1e5.m`；101+ 编号专用于 1e5 预算，分析脚本必须按编号过滤，勿与 2e5 数据混算）。真 1e5 下 B1 对 DRMCMO **1胜6负5平**（仅 L1 靠可行率取胜）。实测日程压缩效应：DRMCMO 真 1e5 ≈ 其 2e5 实验的 1e5 快照（日程压缩收益被代数减半抵消，此前"真 1e5 ≈ 2e5 水平"的预测方向正确但幅度高估）；我方真 1e5 普遍优于自家快照（压缩后仍有 5e4 精修段）但绝对水平不足。**maxFE=200000 作为唯一协议再次确认，1e5 不作副协议。**
-- 最终配置候选维持 **B1**（后半程 GA 25%/DE 75%，其余与主线一致）；已否决：B2 轮换、B3 提前截止、C1 标定门控、C2 Pop2 减半（用户禁做）、真 1e5 协议。
+## 8. 已知限制与后续约束
 
-## 2026-08-02 B1 并入唯一主线与仓库清理
-
-- **B1 配比正式并入 `CBS_RegionWGAN_GP`**：`plainGAShare` 默认实现改为"CGAN 活跃期 40%、截止后 25%"。其余三个钩子（`deParameterCycle`、`ganStopFractionValue`、`calibrationBudgetNow`）保留且默认行为不变，作为未来显式消融的覆写点。
-- **已删除**：实验臂类 `CBS_RegionWGAN_GP_B1/B1B2/B3/C1` 与根目录临时 runner `test_B1/B1B2/B3/C1/1e5.m`。唯一消融仍为 `CBS_RegionWGAN_GP_NoCGAN`（其后半程随主线变为 25/75）。
-- **指纹重定**（同场景 LIRCMOP6_BC、N=100、D=30、maxFE=20000、种子 4242）：IGD `1.3464870356600867`、决策和 `1879.6116888233294`、目标和 `446.29148591202545`、随机状态首值 `2164559186`；`test_CBS_mainline_fingerprint` 已更新并通过，其余 8 项结构测试全部通过。
-- **数据目录**：旧配置数据已由用户归档为 `Data/CBS_RegionWGAN_GP-8-1` 与 `Data/CBS_RegionWGAN_GP_NoCGAN-8-1`；臂数据 `Data/CBS_RegionWGAN_GP_B1|B1B2|B3|C1` 保留为证据（B1 与 DRMCMO 目录中 run 编号 ≥101 的文件属 1e5 预算，分析必须过滤）。规范目录 `Data/CBS_RegionWGAN_GP` 已空出，供确认实验写入。
-- **`test.m` 已改写为正式确认实验**：33 题（DASCMOP1-9 + LIRCMOP1-14 + CF1-10）× 10 run × maxFE=2e5、10 workers、断点续跑；尚未启动，等待用户确认。
+- `BoundaryTargetXf/Yf` 不去重、没有参考方向配额，也没有利用 `ell` 排序；高频方向仍可能占据晚期席位。
+- Primitive 1 的随机锚点可能重复，4 次二分后的 `xf` 未必足够贴近真实边界。
+- Primitive 2 的目标距离未归一化；后半程联合尺度也可能受历史极值影响。
+- 前半程 CGAN `RawDec` 未经评价，查询参考方向不等于生成点的真实目标方向或可行性。
+- 当前证据只支持保留 boundary transfer，不支持声称已超过 DRMCMO。
+- 后续任何机制改动都必须以当前主线为唯一对照，使用新目录、冻结源码、配对种子和预注册门槛；不得因单题、旧版本或初筛信号复活已否决分支。
+- 不得改变 GA/DE 数量舍入、评价顺序、三组 `OperatorDE` 调用顺序或 RNG 调用数，除非先建立新的可复现实验协议并明确接受指纹变化。

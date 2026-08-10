@@ -2,13 +2,27 @@ function test_CBS_region_boundary_ref_cap()
 %TEST_CBS_REGION_BOUNDARY_REF_CAP Verify fixed BMem and TrainX gates.
 
     repoRoot = fileparts(fileparts(fileparts(fileparts(mfilename('fullpath')))));
-    addpath(genpath(repoRoot));
+    addCBSPaths(repoRoot);
     testAnchorCap();
     testPreviousAnchorCompetition();
     testNearestLegalPartner();
+    testSharedReferenceScale();
     testSmallTrainingSetIsSkipped();
     testMinimalWGANTraining();
     fprintf('CBS RegionGAN boundary regressions passed.\n');
+end
+
+function testSharedReferenceScale()
+    W = [0 1;0.5 0.5;1 0];
+    Y = [0 0;10 100;9 10;8 20];
+    [allRefs,Scale] = AssignReferenceVectors_CBS(Y,W);
+    sharedRefs = AssignReferenceVectors_CBS(Y(3:4,:),W,Scale);
+    localRefs = AssignReferenceVectors_CBS(Y(3:4,:),W);
+    assert(isequal(Scale.minimum,[0 0]) && ...
+        isequal(Scale.span,[10 100]));
+    assert(isequal(sharedRefs,allRefs(3:4)));
+    assert(~isequal(localRefs,sharedRefs), ...
+        'The fixture must expose the cross-generation scale mismatch.');
 end
 
 function testAnchorCap()

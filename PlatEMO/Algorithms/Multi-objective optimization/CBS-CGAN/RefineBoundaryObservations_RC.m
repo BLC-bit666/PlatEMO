@@ -1,4 +1,4 @@
-function Candidates = RefineBoundaryObservations_RC( ...
+function [Candidates,Brackets] = RefineBoundaryObservations_RC( ...
         Problem,Population1,Population2,budget)
 %REFINEBOUNDARYOBSERVATIONS_RC Active boundary observation for the module.
 %   The boundary-memory module observes the constraint boundary in two
@@ -14,17 +14,14 @@ function Candidates = RefineBoundaryObservations_RC( ...
 %   same-generation boundary-memory harvest. The interval-contraction
 %   core follows the classic boundary-operator principle (Michalewicz et
 %   al.; repair by binary interpolation, GECCO 2007).
-%BOUNDARYLINESEARCH Membership-oracle line search after the CGAN stops.
-%   Primitive 1 bisects feasible-infeasible decision segments so that the
-%   feasible-side iterates land next to the constraint boundary; primitive
-%   2 evaluates the decision midpoint of the sparsest adjacent feasible
-%   nondominated pair, with one bisection repair step when the midpoint is
-%   infeasible. Both follow the classic boundary-operator idea
-%   (Michalewicz et al.; repair by binary interpolation, GECCO 2007) and
-%   only require the single-bit feasibility oracle. Engineering utility,
-%   not an algorithmic contribution.
-
     Candidates = Population1([]);
+    Brackets = struct( ...
+        'xf',zeros(0,Problem.D), ...
+        'xi',zeros(0,Problem.D), ...
+        'yf',zeros(0,Problem.M), ...
+        'ell',zeros(0,1));
+    span = double(Problem.upper)-double(Problem.lower);
+    span(span <= eps) = 1;
     All = [Population1,Population2];
     cv = sum(max(0,All.cons),2);
     Feasible = All(cv <= 0);
@@ -46,7 +43,8 @@ function Candidates = RefineBoundaryObservations_RC( ...
             end
             pick = randi(size(FrontDecs,1));
             feasiblePoint = FrontDecs(pick,:);
-            distance2 = sum((InfDecs-feasiblePoint).^2,2);
+            feasibleObjs = Front(pick).objs;
+            distance2 = sum(((InfDecs-feasiblePoint)./span).^2,2);
             [~,nearest] = min(distance2);
             infeasiblePoint = InfDecs(nearest,:);
             steps = min(4,budget-used);
@@ -57,10 +55,18 @@ function Candidates = RefineBoundaryObservations_RC( ...
                 Candidates = [Candidates,candidate]; %#ok<AGROW>
                 if sum(max(0,candidate.cons),2) <= 0
                     feasiblePoint = middle;
+                    feasibleObjs = candidate.objs;
                 else
                     infeasiblePoint = middle;
                 end
             end
+            % The final interval is a certified feasible/infeasible
+            % bracket: both endpoints carry real evaluations.
+            Brackets.xf(end+1,:) = feasiblePoint;
+            Brackets.xi(end+1,:) = infeasiblePoint;
+            Brackets.yf(end+1,:) = feasibleObjs;
+            Brackets.ell(end+1,1) = sqrt(sum( ...
+                ((feasiblePoint-infeasiblePoint)./span).^2,2));
         end
     end
 
@@ -91,4 +97,3 @@ function Candidates = RefineBoundaryObservations_RC( ...
         end
     end
 end
-

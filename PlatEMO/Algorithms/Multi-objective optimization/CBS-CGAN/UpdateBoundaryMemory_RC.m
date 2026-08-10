@@ -1,9 +1,10 @@
-function BMem = UpdateBoundaryMemory_RC(PrevBMem, ...
+function [BMem,RefScale] = UpdateBoundaryMemory_RC(PrevBMem, ...
         Population1,Offspring1,Population2,Offspring2,W,Options)
 %UPDATEBOUNDARYMEMORY_RC Update the fixed boundary-anchor memory.
 %   The memory pairs nondominated feasible anchors with nearby infeasible
 %   solutions under reference-vector neighborhoods. Repeated rows are
 %   intentionally retained because they define the training weights.
+%   REFSCALE records the objective normalization used for those references.
 
 %------------------------------- Copyright --------------------------------
 % Copyright (c) 2026 BIMK Group. You are free to use the PlatEMO for
@@ -17,6 +18,7 @@ function BMem = UpdateBoundaryMemory_RC(PrevBMem, ...
     %% Collect and validate current evaluated solutions
     Samples = [Population1,Offspring1,Population2,Offspring2];
     [D,M] = inferDimensions(Samples,PrevBMem);
+    RefScale = struct('minimum',zeros(1,M),'span',ones(1,M));
     if isempty(Samples)
         BMem = emptyBMem(0,D,M);
         return;
@@ -43,8 +45,7 @@ function BMem = UpdateBoundaryMemory_RC(PrevBMem, ...
     pairableInfeasible(1:currentCount) = true;
     %% Associate solutions with reference vectors and harvest pairs
     feasible = sum(max(0,C),2) <= 0;
-    Yn = normalizeRows(Y);
-    Ref = assignReferences(Yn,W);
+    [Ref,RefScale,Yn] = AssignReferenceVectors_CBS(Y,W);
     BMem = harvestCloud(X,Y,Yn,feasible,Ref,W,Options, ...
         pairableInfeasible,D,M);
     BMem = filterGapCap(BMem,Options);
@@ -208,22 +209,6 @@ function yes = feasibleDominatesInfeasible(Yf,Yi)
     yes = all(Yf <= Yi+tolerance,2) & any(Yf < Yi-tolerance,2);
 end
 
-function Ref = assignReferences(Yn,W)
-%ASSIGNREFERENCES Associate normalized objectives with reference vectors.
-
-    n = size(Yn,1);
-    Wn = W./max(sqrt(sum(W.^2,2)),eps);
-    NormY = sqrt(sum(Yn.^2,2));
-    Yu = Yn./max(NormY,eps);
-    [~,Ref] = max(Yu*Wn',[],2);
-    zeroRows = NormY <= eps;
-    if any(zeroRows)
-        distance = pairDistance(Yn(zeroRows,:),W);
-        [~,Ref(zeroRows)] = min(distance,[],2);
-    end
-    Ref = reshape(Ref,n,1);
-end
-
 function refs = neighborRefs(W,r,radius)
 %NEIGHBORREFS Return the local reference-vector neighborhood.
 
@@ -260,16 +245,6 @@ function D = pairDistance(A,B)
     else
         D = sqrt(max(0,sum(A.^2,2)+sum(B.^2,2)'-2*(A*B')));
     end
-end
-
-function Xn = normalizeRows(X)
-%NORMALIZEROWS Min-max normalize each objective over the current rows.
-
-    minimum = min(X,[],1);
-    span = max(X,[],1)-minimum;
-    span(span <= eps) = 1;
-    Xn = (X-minimum)./span;
-    Xn(~isfinite(Xn)) = 0;
 end
 
 function BMem = subsetMemory(BMem,keep)

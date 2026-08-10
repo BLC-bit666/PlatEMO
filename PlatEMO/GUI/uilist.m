@@ -76,7 +76,7 @@ classdef uilist < handle
             end
             Comment = strjoin(strSet(1:loc-1),' ');
             if type == 3        % For algorithms in application module
-                Parameter = {'N','100','Population size';'maxFE','100000','Maximum number of function evaluations'};
+                Parameter = {'N','100','Population size';'maxFE','200000','Maximum number of function evaluations'};
                 type = 1;
             elseif type > 0     % For algorithms in other modules
                 Parameter = {};
@@ -84,7 +84,7 @@ classdef uilist < handle
                 Parameter = {'N','100','Population size'
                              'M','','Number of objectives'
                              'D','','Number of decision variables'
-                             'maxFE','100000','Maximum number of function evaluations'};
+                             'maxFE','200000','Maximum number of function evaluations'};
             end
             for i = loc : length(strSet)
                 str = regexp(strSet{i},'\s*---\s*','split');

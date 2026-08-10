@@ -3,7 +3,7 @@ function test_CBS_platemo_compliance()
 
     repoRoot = fileparts(fileparts(fileparts(fileparts( ...
         mfilename('fullpath')))));
-    addpath(genpath(repoRoot));
+    addCBSPaths(repoRoot);
     algorithmFile = which('CBS_RegionWGAN_GP');
     algorithmRoot = fileparts(algorithmFile);
     source = string(fileread(algorithmFile));
@@ -20,13 +20,6 @@ function test_CBS_platemo_compliance()
     assert(isequal(names,expectedNames));
     assert(all(strlength(descriptions) > 0));
 
-    ablationFile = which('CBS_RegionWGAN_GP_NoCGAN');
-    [ablationNames,ablationDefaults,ablationDescriptions] = ...
-        headerParameters(ablationFile);
-    assert(isequal(ablationNames,names));
-    assert(isequal(ablationDefaults,defaultText));
-    assert(isequal(ablationDescriptions,descriptions));
-
     Defaults = CBS_RegionWGAN_GP.mainlineDefaults();
     expectedDefaults = [Defaults.nGen,Defaults.zDim,Defaults.ganIter, ...
         Defaults.ganMiniBatch,Defaults.nCritic, ...
@@ -40,7 +33,7 @@ function test_CBS_platemo_compliance()
     assert(contains(source,'Algorithm.ParameterSet('));
 
     %% Verify the actual PlatEMO name-value entry point
-    Algorithms = {@CBS_RegionWGAN_GP,@CBS_RegionWGAN_GP_NoCGAN};
+    Algorithms = {@CBS_RegionWGAN_GP};
     for a = 1 : numel(Algorithms)
         [decs,objs,cons] = platemo( ...
             'algorithm',Algorithms{a}, ...
@@ -51,6 +44,10 @@ function test_CBS_platemo_compliance()
         assert(size(decs,1) == 10 && size(decs,2) == 5);
         assert(size(objs,1) == 10 && size(cons,1) == 10);
     end
+    addCBSPaths(repoRoot);
+    assert(isempty(which('CBS_RegionWGAN_GP_BT0F0')) && ...
+        isempty(which('CBS_RegionWGAN_GP_NoBT')), ...
+        'PlatEMO path pollution must be removed after the contract test.');
 
     %% Verify that all documented public parameters are accepted
     Parameters = {5,4,0,8,2,1,0.1};

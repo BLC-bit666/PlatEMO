@@ -2,7 +2,7 @@ function test_CBS_guide_allocation_mainline()
 %TEST_CBS_GUIDE_ALLOCATION_MAINLINE Verify the fixed 14+6 query policy.
 
     repoRoot = fileparts(fileparts(fileparts(fileparts(mfilename('fullpath')))));
-    addpath(genpath(repoRoot));
+    addCBSPaths(repoRoot);
     [W,~] = UniformPoint(50,2);
     populated = (5:10)';
 

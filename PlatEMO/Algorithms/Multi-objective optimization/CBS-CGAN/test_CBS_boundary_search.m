@@ -2,10 +2,34 @@ function test_CBS_boundary_search()
 %TEST_CBS_BOUNDARY_SEARCH Verify the always-on calibration primitive.
 
     repoRoot = fileparts(fileparts(fileparts(fileparts(mfilename('fullpath')))));
-    addpath(genpath(repoRoot));
+    addCBSPaths(repoRoot);
     testBudgetAndEvaluation();
+    testRangeNormalizedNearestEndpoint();
     testNoFeasibleInput();
     fprintf('CBS boundary calibration regressions passed.\n');
+end
+
+function testRangeNormalizedNearestEndpoint()
+    Problem = CF4_BC('N',3,'D',2,'maxFE',20);
+    feasible = [0.5,0];
+    rawNearest = [0.3,0];
+    normalizedNearest = [0.5,-0.3];
+    Pop = Problem.Evaluation([feasible;rawNearest;normalizedNearest]);
+    assert(Pop(1).cons <= 0 && Pop(2).cons > 0 && Pop(3).cons > 0);
+    span = Problem.upper-Problem.lower;
+    assert(norm(rawNearest-feasible) < norm(normalizedNearest-feasible));
+    assert(norm((rawNearest-feasible)./span) > ...
+        norm((normalizedNearest-feasible)./span));
+
+    beforeFE = Problem.FE;
+    [Candidates,Brackets] = RefineBoundaryObservations_RC( ...
+        Problem,Pop,Pop([]),1);
+    expected = (feasible+normalizedNearest)/2;
+    assert(isscalar(Candidates) && Problem.FE == beforeFE+1);
+    assert(max(abs(Candidates.decs-expected),[],'all') < 1e-12);
+    assert(max(abs(Brackets.xf-feasible),[],'all') < 1e-12);
+    assert(max(abs(Brackets.xi-expected),[],'all') < 1e-12);
+    assert(all(isfinite(Brackets.ell)) && all(Brackets.ell > 0));
 end
 
 function testBudgetAndEvaluation()
