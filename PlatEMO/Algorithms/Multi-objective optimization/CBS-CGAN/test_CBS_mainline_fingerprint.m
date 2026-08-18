@@ -9,7 +9,6 @@ function test_CBS_mainline_fingerprint()
     Algorithm.Solve(Problem);
     Population = Algorithm.result{end,2};
     state = rng;
-    Snapshot = Algorithm.boundaryTransferSnapshot();
 
     assert(Problem.FE == 20000);
     assert(isequal(Problem.CalMetric('IGD',Population), ...
@@ -18,8 +17,5 @@ function test_CBS_mainline_fingerprint()
     assert(isequal(sum(Population.objs,'all'),1056.8965815545916));
     assert(isequal(sum(Population.cons,'all'),0));
     assert(state.State(1) == 281257120);
-    assert(Snapshot.bracketRows == 222 && ...
-        Snapshot.lateRequested == 904 && Snapshot.lateUsed == 904 && ...
-        Snapshot.lateFallback == 0);
     fprintf('CBS unique-mainline deterministic fingerprint passed.\n');
 end

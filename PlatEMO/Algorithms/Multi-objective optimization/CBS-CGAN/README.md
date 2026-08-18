@@ -16,7 +16,8 @@
 - 无可用边界目标或同参考方向父代时，引导席位回退为普通 DE。
 - 普通 DE 使用互异的 `base/r1/r2`，多项式变异前为 `base + 0.5*(r1-r2)`。
 - 引导 DE 调用 `OperatorDE(Problem,A,G,A,{1,F,1,20})`，即变异前为 `A + F*(G-A)`；`F` 循环 `0.4/0.65/0.85`。
-- 每代最多使用 20 个真实 FE 做主动边界校准。所有校准解进入公共环境选择；未经评价的 CGAN 原始候选不会直接入种群。
+- 每代最多使用 20 个真实 FE 做主动边界校准。校准解进入共享 `Union` 并被两套环境选择共同读取；未经评价的 CGAN 原始候选不会直接入种群。
+- 两套环境选择共享 `Population1 + Population2 + Offspring1 + Offspring2 + Calibration`。Pop1 使用约束适应度，Pop2 使用无约束适应度；两者都采用 raw-objective SPEA2 近邻密度和字典序拥挤截断。
 - 前半程边界记忆 `BMem` 服务 pairflag WGAN；后半程 `BoundaryTargetXf/Yf` 服务认证目标引导，两者用途不同。
 - 后半程存档 newest-first、FIFO 上限 1500；目标与父代必须在联合归一化后属于同一参考方向。
 
@@ -86,18 +87,31 @@ problems = ["LIRCMOP5_BC";"LIRCMOP7_BC";"CF5_BC";"CF6_BC"];
 
 清理后的主类已移除 cutoff 全种群快照、实验诊断数组、override 分派和不可达分支，并预分配引导选择输出。WGAN 训练仍占绝大多数运行时间；网络、精度、batch、训练次数和随机调用形状均未改变。
 
-固定指纹为 `LIRCMOP6_BC`、`N=100`、`D=30`、`maxFE=20000`、`rng(4242,'twister')`：
+固定指纹为 shared Union + raw-objective SPEA2 主线，问题为 `LIRCMOP6_BC`、`N=100`、`D=30`、`maxFE=20000`、`rng(4242,'twister')`，使用 MATLAB 默认计算线程：
 
 - IGD：`1.3468921272381897`
 - 决策和：`1729.8887087629678`
 - 目标和：`1056.8965815545916`
 - 约束和：`0`
 - RNG state 首值：`281257120`
-- boundary rows：`222`；晚期目标使用：`904/904`
+
+## 环境选择裁决
+
+四类单因素改造均已被配对实验否决：task-specific survival pool 在 33 题全集未过 gate；归一化参考方向硬保护（NRBT）和仅归一化 SPEA2 截断在 15 个代表问题上都未增加方向覆盖，且后者 200K 的 `ALL G=1.02255`、`LIRCF G=1.04091`、`CF G=1.08653`，四个 CF 全部退化。
+
+第四类 CA-anchored auxiliary truncation（CAAT）只在 Pop2 `Fitness<1` 超额时用更新后 Pop1 作为固定 anchor。15 题 × runs `106:110` 的 200K 结果为 `ALL G=0.995415, 4/5/6`、`LIRCF G=0.990102, 4/1/5`、`LIR G=1.026551`、`CF G=0.937841`；输出覆盖中位变化为 0、W/T/L 为 `0/12/3`，辅助新颖覆盖为 0、`0/15/0`，Pop1/joint PF-GD 的 ALL 比为 `1.097952/1.076822`。它减少了跨种群重复，但没有产生新方向，并且违反主效应、LIR 安全、覆盖和收敛 gates，`PROMOTE=0`。
+
+因此唯一主线保持 `shared Union + constrained/unconstrained SPEA2 + raw-objective peer-only truncation`。task-specific 的初筛与 33 题补齐证据位于 `Data/CBS_env_selection_task_identity_runs101_105/`、`Data/CBS_env_selection_fullsets_runs101_105/`；其余证据位于 `Data/CBS_env_selection_nrbt_runs101_105/`、`Data/CBS_env_selection_normalized_truncation_runs101_105/`、`Data/CBS_env_selection_caat_runs106_110/`。不得通过追加方向配额、PBI、crowding、anchor 距离或问题专用分支挽救失败候选；后续多样性假设必须先产生 Union 中缺失的有效方向。
+
+## 最终主线审计裁决
+
+来源审计确认环境截断不是当前 IGD 瓶颈，稀疏 gap midpoint 才是现有最有效候选源；同时发现 Primitive 2 会把互为最近邻的两个方向重复评价为同一个决策中点。最后一次候选仅按无向 pair 去重，不加入归一化、保护、配额、反馈目标或问题分支。
+
+`LIRCMOP6_BC/CF5_BC/CF6_BC × runs 101:105` 的 15/15 个任务均完成 200K FE。终点中位配对 IGD 比为 `0.961026390/0.817093875/1.317862006`，三题几何比为 `1.011484119`；终态方向覆盖中位变化为 `0/-1/-2`。候选虽然消除了重复 FE 并显著改善 CF5，却使 CF6 中位 IGD 恶化 `31.79%`，违反预注册 no-harm 与总体门槛，故 `PROMOTE=0`。活动代码已恢复实验前 Primitive 2；完整协议、源码快照、结果和分析位于 `Data/CBS_sparse_gap_unique_pairs_runs101_105/`。
 
 ## 回归测试
 
-保留 10 个生产测试：
+保留 12 个生产测试：
 
 - 主线结构与 distinct-parent DE
 - 固定轨迹指纹
@@ -109,5 +123,7 @@ problems = ["LIRCMOP5_BC";"LIRCMOP7_BC";"CF5_BC";"CF6_BC"];
 - `CalFitness_CBS` 等价
 - PlatEMO 接口
 - 正式 runner 契约
+- 选择来源审计的聚合计算
+- 审计开关的行为中立集成验证
 
 实验专用测试已经随实验类删除。冻结的最终 BT0-vs-NoBT 结果、manifest、41 文件源码快照和诊断仍保存在 `Data/CBS_bt0_vs_nobt_gate_*`。

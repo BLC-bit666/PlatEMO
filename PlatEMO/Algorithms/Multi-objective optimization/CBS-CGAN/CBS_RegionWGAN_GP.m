@@ -34,9 +34,6 @@ classdef CBS_RegionWGAN_GP < ALGORITHM
     properties(Access = private)
         BoundaryTargetXf = [];
         BoundaryTargetYf = [];
-        LateGuideRequested = 0;
-        LateGuideUsed = 0;
-        LateGuideFallback = 0;
     end
 
     methods
@@ -59,17 +56,6 @@ classdef CBS_RegionWGAN_GP < ALGORITHM
             Config.minGANTrainCount = minGANTrainCount;
             Config.sampleSigma = sampleSigma;
             Algorithm.runMainline(Problem,Config);
-        end
-
-        function Snapshot = boundaryTransferSnapshot(Algorithm)
-        %BOUNDARYTRANSFERSNAPSHOT Read-only boundary-target diagnostics.
-            Snapshot = struct( ...
-                'bracketRows',size(Algorithm.BoundaryTargetXf,1), ...
-                'lateRequested',Algorithm.LateGuideRequested, ...
-                'lateUsed',Algorithm.LateGuideUsed, ...
-                'lateFallback',Algorithm.LateGuideFallback, ...
-                'lateUseRate',Algorithm.LateGuideUsed/max( ...
-                    Algorithm.LateGuideRequested,1));
         end
     end
 
@@ -97,13 +83,6 @@ classdef CBS_RegionWGAN_GP < ALGORITHM
                 'calibrationBudget',20, ...
                 'generatorHidden',[32 32], ...
                 'criticHidden',[32 32]);
-        end
-
-        function shares = operatorSharesAtFE(~,~)
-        %OPERATORSHARESATFE Return nominal [C-GA,C-DE,C-GUIDE,U-GA,U-DE].
-        %   C-GUIDE is CGAN-guided before the cutoff and boundary-target
-        %   guided afterwards. Unavailable guides fall back to ordinary DE.
-            shares = [0.25,0.55,0.20,0.25,0.75];
         end
     end
 
@@ -153,23 +132,10 @@ classdef CBS_RegionWGAN_GP < ALGORITHM
             GuideSlots = (1:numel(newestFirst))';
         end
 
-        function recordGuideUsage(Algorithm,Usage)
-        %RECORDGUIDEUSAGE Retain late boundary-target usage diagnostics.
-            Algorithm.LateGuideRequested = Algorithm.LateGuideRequested + ...
-                double(Usage.requested);
-            Algorithm.LateGuideUsed = Algorithm.LateGuideUsed + ...
-                double(Usage.used);
-            Algorithm.LateGuideFallback = Algorithm.LateGuideFallback + ...
-                double(Usage.fallback);
-        end
-
         function runMainline(Algorithm,Problem,Config)
         %RUNMAINLINE Execute the unique pairflag CGAN-guided search.
             Algorithm.BoundaryTargetXf = [];
             Algorithm.BoundaryTargetYf = [];
-            Algorithm.LateGuideRequested = 0;
-            Algorithm.LateGuideUsed = 0;
-            Algorithm.LateGuideFallback = 0;
             nGen = max(0,round(double(Config.nGen)));
             refDivisor = max(1,round(double(Config.refDivisor)));
             minBoundaryLength = max(1,round(double( ...
@@ -216,22 +182,13 @@ classdef CBS_RegionWGAN_GP < ALGORITHM
                 count1 = min(Problem.N,ceil(offspringBudget/2));
                 count2 = min(Problem.N,floor(offspringBudget/2));
 
-                if Problem.FE >= ganFELimit
-                    GuideDecs = zeros(0,Problem.D);
-                    GuideRefs = zeros(0,1);
-                    GuideSlots = zeros(0,1);
-                    GuideRefScale = [];
-                end
                 [GuideDecs,GuideRefs,GuideSlots,GuideObjs,strictGuideRefs] = ...
                     Algorithm.guidePoolAtFE(GuideDecs,GuideRefs, ...
                     GuideSlots,generationFE,ganFELimit,Problem);
-                [Offspring1,GuideUsage] = generateGuidedOffspring(Problem, ...
+                Offspring1 = generateGuidedOffspring(Problem, ...
                     Population1,Fitness1,count1,GuideDecs,GuideRefs, ...
                     GuideSlots,GuideObjs,strictGuideRefs,GuideRefScale,W, ...
                     plainDE);
-                if generationFE >= ganFELimit
-                    Algorithm.recordGuideUsage(GuideUsage);
-                end
                 % A generated pool guides exactly one generation.
                 GuideDecs = zeros(0,Problem.D);
                 GuideRefs = zeros(0,1);
@@ -304,7 +261,7 @@ classdef CBS_RegionWGAN_GP < ALGORITHM
     end
 end
 
-function [Offspring,Usage] = generateGuidedOffspring( ...
+function Offspring = generateGuidedOffspring( ...
         Problem,Population,Fitness,count,GuideDecs,GuideRefs,GuideSlots, ...
         GuideObjs,strictGuideRefs,GuideRefScale,W,plainDEShare)
 %GENERATEGUIDEDOFFSPRING GA + plain DE + target-guided DE offspring.
@@ -315,7 +272,6 @@ function [Offspring,Usage] = generateGuidedOffspring( ...
 %   targets always fall back to ordinary DE.
 
     count = max(0,min(numel(Population),round(double(count))));
-    Usage = struct('requested',0,'used',0,'fallback',0);
     if count == 0
         Offspring = Population([]);
         return;
@@ -323,8 +279,6 @@ function [Offspring,Usage] = generateGuidedOffspring( ...
     gaCount = min(count,round(0.25*count));
     plainCount = min(count-gaCount,round(plainDEShare*count));
     guidedCount = count-gaCount-plainCount;
-    Usage.requested = guidedCount;
-    Usage.fallback = guidedCount;
 
     if gaCount > 0
         Offspring = gaOffspring(Problem,Population,Fitness,gaCount);
@@ -373,8 +327,6 @@ function [Offspring,Usage] = generateGuidedOffspring( ...
         Problem,FeasDecs,feasRefs,feasFitness,GuideDecs,GuideRefs, ...
         GuideSlots,W,plannedF,guidedCount,strictGuideRefs);
     selectedCount = numel(childGuide);
-    Usage.used = selectedCount;
-    Usage.fallback = guidedCount-selectedCount;
     childF = plannedF(1:selectedCount);
     childGroup = callGroup(1:selectedCount);
     if numel(unique(childGuide)) ~= selectedCount || ...
