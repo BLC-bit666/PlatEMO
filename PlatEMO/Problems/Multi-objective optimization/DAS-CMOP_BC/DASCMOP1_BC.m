@@ -3,8 +3,8 @@ classdef DASCMOP1_BC < PROBLEM
 % Difficulty-adjustable and scalable constrained benchmark MOP (Binary Constraint version)
 %
 % Binary Constraint (BC) Variant:
-%   CalCon returns N*1 binary feasibility vector (0=feasible, 1=infeasible)
-%   instead of the original N*C per-constraint violation matrix.
+%   CalCon returns one binary feasibility value for each solution
+%   (0=feasible, 1=infeasible), instead of one value per constraint.
 %   Designed for unknown/binary constraint modeling scenarios.
 
 %------------------------------- Reference --------------------------------

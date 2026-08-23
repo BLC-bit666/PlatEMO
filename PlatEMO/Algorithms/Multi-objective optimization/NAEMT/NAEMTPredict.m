@@ -5,6 +5,6 @@ function Value = NAEMTPredict(Model,Dec)
         Value = zeros(0,1);
     else
         Value = Model.Net(Dec')';
-        Value = min(max(Value(:),0),1);
+        Value = Value(:);
     end
 end

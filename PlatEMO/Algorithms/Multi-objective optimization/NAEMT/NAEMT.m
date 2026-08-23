@@ -47,6 +47,7 @@ classdef NAEMT < ALGORITHM
             %% Generate the main and auxiliary populations
             Population1 = Problem.Initialization();
             Population2 = Problem.Initialization();
+            Value1      = InfeasibleSolutionValues(Model,Population1);
 
             %% Store offspring from the latest ten generations
             ArchiveWindow = cell(1,archiveLength);
@@ -56,24 +57,39 @@ classdef NAEMT < ALGORITHM
             while Algorithm.NotTerminated(Population1)
                 Offspring1 = NAEMTOperatorDE(Problem,Population1,{CR,F,proM,disM});
                 Offspring2 = NAEMTOperatorDE(Problem,Population2,{CR,F,proM,disM});
+                ValueO1    = InfeasibleSolutionValues(Model,Offspring1);
+                ValueO2    = InfeasibleSolutionValues(Model,Offspring2);
 
                 generation = generation + 1;
                 ArchiveWindow{mod(generation-1,archiveLength)+1} = [Offspring1,Offspring2];
 
-                Population1 = NAEMTMainSelection([Population1,Offspring1,Offspring2],Problem.N,Model,epsilon);
+                [Population1,Value1] = NAEMTMainSelection( ...
+                    [Population1,Offspring1,Offspring2],Problem.N, ...
+                    [Value1;ValueO1;ValueO2],epsilon);
                 Population2 = NAEMTAuxiliarySelection([Population2,Offspring2,Offspring1],Problem.N);
 
                 accuracy = AccuracyOnFeasibleOffspring(Model,[Offspring1,Offspring2]);
                 if ~isnan(accuracy) && accuracy < alpha && ~all(all(Population1.cons<=0,2))
                     Archive = CollectArchive(ArchiveWindow);
                     archiveFeasible = all(Archive.cons<=0,2);
-                    if any(archiveFeasible) && any(~archiveFeasible)
+                    if sum(archiveFeasible) >= sampleQuota && ...
+                            sum(~archiveFeasible) >= sampleQuota
                         [DataX,DataY] = NAEMTUpdateData(DataX,DataY,Archive,N1,sampleQuota);
-                        Model         = NAEMTTrainModel(DataX,DataY);
+                        Model         = NAEMTTrainModel(DataX,DataY,Model);
                     end
                 end
             end
         end
+    end
+end
+
+function Value = InfeasibleSolutionValues(Model,Population)
+% Predict each newly generated infeasible solution once.
+
+    Value      = ones(numel(Population),1);
+    infeasible = ~all(Population.cons<=0,2);
+    if any(infeasible)
+        Value(infeasible) = NAEMTPredict(Model,Population(infeasible).decs);
     end
 end
 

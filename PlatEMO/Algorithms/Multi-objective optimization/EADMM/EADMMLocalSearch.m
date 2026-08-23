@@ -5,7 +5,7 @@ function Checked = EADMMLocalSearch(Problem,Archive,Population)
     ell    = size(PopCon,2);
     if ell < 1
         error('EADMM:MissingConstraints', ...
-            'EADMM requires at least one separately queryable constraint.');
+            'EADMM requires at least one queryable binary constraint signal.');
     end
     gamma  = sum(all(PopCon<=0,2));
     rho    = gamma/numel(Population)*ell;
@@ -18,7 +18,7 @@ function Checked = EADMMLocalSearch(Problem,Archive,Population)
         center  = Archive(i).dec;
         bestDec = ga(@EvaluateCandidate,Problem.D,[],[],[],[], ...
                      Problem.lower,Problem.upper,[],options);
-        solution = Problem.Evaluation(Problem.CalDec(reshape(bestDec,1,[])));
+        solution = Problem.Evaluation(reshape(bestDec,1,[]));
         if isempty(Checked)
             Checked = solution;
         else

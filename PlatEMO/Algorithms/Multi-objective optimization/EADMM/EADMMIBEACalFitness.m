@@ -4,7 +4,6 @@ function [Fitness,I,C] = EADMMIBEACalFitness(PopObj,kappa)
     N      = size(PopObj,1);
     minimum = min(PopObj,[],1);
     range   = max(PopObj,[],1) - minimum;
-    range(range==0) = 1;
     PopObj = (PopObj-repmat(minimum,N,1))./repmat(range,N,1);
     I      = zeros(N);
     for i = 1 : N
@@ -13,6 +12,5 @@ function [Fitness,I,C] = EADMMIBEACalFitness(PopObj,kappa)
         end
     end
     C = max(abs(I),[],1);
-    C(C==0) = 1;
     Fitness = sum(-exp(-I./repmat(C,N,1)./kappa),1) + 1;
 end

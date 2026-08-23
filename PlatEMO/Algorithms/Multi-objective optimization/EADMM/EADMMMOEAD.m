@@ -19,7 +19,15 @@ classdef EADMMMOEAD < ALGORITHM
     methods
         function main(Algorithm,Problem)
             %% Generate shared weight vectors and neighbourhoods
-            [W,Problem.N] = UniformPoint(Problem.N,Problem.M);
+            requestedN = Problem.N;
+            [W,actualN] = UniformPoint(requestedN,Problem.M,'MUD');
+            if actualN ~= requestedN
+                error('EADMMMOEAD:PopulationSizeMismatch', ...
+                    'The weight generator must preserve the requested population size.');
+            end
+            W         = max(W,1e-6);
+            W         = W./sum(W,2);
+            Problem.N = actualN;
             EADMMValidateSetup(Problem);
             T = max(2,ceil(Problem.N/10));
             [~,B] = sort(pdist2(W,W),2);

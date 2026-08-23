@@ -49,6 +49,16 @@ classdef LIRCMOP10_BC < PROBLEM
             Population  = SOLUTION(X,PopObj,PopCon,varargin{2:end});
             obj.FE      = obj.FE + length(Population);
         end
+        %% Calculate the aggregated binary constraint label
+        function PopCon = CalCon(~,X)
+            D       = size(X,2);
+            odd     = 3:2:D;
+            even    = 2:2:D;
+            sum1    = sum((X(:,odd)-sin(X(:,1).*(0.5*odd/D*pi))).^2,2);
+            sum2    = sum((X(:,even)-cos(X(:,1).*(0.5*even/D*pi))).^2,2);
+            PopObj  = [1.7057*X(:,1).*(10*sum1+1),1.7057*(1-X(:,1).^0.5).*(10*sum2+1)];
+            PopCon  = double(any(Constraint(PopObj)>0,2));
+        end
         %% Generate points on the Pareto front
         function R = GetOptimum(obj,N)
             R(:,1) = linspace(0,1,N)';

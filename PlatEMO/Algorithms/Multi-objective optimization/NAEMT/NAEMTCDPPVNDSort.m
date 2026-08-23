@@ -47,7 +47,7 @@ function relation = CDPPVRelation(Obj1,Val1,Obj2,Val2,epsilon)
         relation = 1;
     elseif Val2 >= epsilon && Val1 < epsilon
         relation = -1;
-    elseif Val1 > epsilon && Val2 > epsilon
+    elseif Val1 >= epsilon && Val2 >= epsilon
         relation = ParetoRelation(Obj1,Obj2);
     elseif Val1 < epsilon && Val2 < epsilon
         if Val1 > Val2
@@ -58,8 +58,7 @@ function relation = CDPPVRelation(Obj1,Val1,Obj2,Val2,epsilon)
             relation = 0;
         end
     else
-        % The paper does not define dominance between Val=epsilon and
-        % Val>epsilon, nor between two values both equal to epsilon.
+        % Defensive fallback for nonfinite values.
         relation = 0;
     end
 end

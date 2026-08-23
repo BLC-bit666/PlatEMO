@@ -2,17 +2,18 @@ clc; clear;
 
 %% ===== 正式确认实验 =====
 
-nWorker = 10;
+nWorker = 8;
 popSize = 100;
 maxFE   = 2e5;
-saveNum = 2;
-runs    = 1:10;
-algName = 'CBS_RegionWGAN_GP';
+saveNum = 1;
+runs    = 1:30;
+%% algName = 'DRMCMO';
+
+algName = 'NAEMT';
 
 problemSets = {
     'DASCMOP',  9
     'LIRCMOP', 14
-    'CF',      10
 };
 
 proNames = {};
@@ -65,7 +66,7 @@ parfor t = 1:nTask
     proHandle = str2func(tasks{t,1});
     fprintf('Running %s on %s run %d\n',algName,tasks{t,1},tasks{t,2});
     platemo( ...
-        'algorithm',@CBS_RegionWGAN_GP, ...
+        'algorithm',@NAEMT, ...
         'problem',  proHandle, ...
         'N',        popSize, ...
         'maxFE',    maxFE, ...
