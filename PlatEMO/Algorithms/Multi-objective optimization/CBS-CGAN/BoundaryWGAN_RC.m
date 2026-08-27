@@ -4,6 +4,7 @@ function varargout = BoundaryWGAN_RC(action,varargin)
 %   boundary decisions. The mainline supplies feasible rows at flag 1 and
 %   their paired infeasible rows at flag 0.
 %   SAMPLEBYCONDITION generates full decision vectors for given conditions.
+%   SCOREBYCONDITION evaluates decisions with the matching conditions.
 
 %------------------------------- Copyright --------------------------------
 % Copyright (c) 2026 BIMK Group. You are free to use the PlatEMO for
@@ -23,10 +24,41 @@ function varargout = BoundaryWGAN_RC(action,varargin)
         case "samplebycondition"
             Options = fillOptions(varargin{3});
             varargout{1} = sampleByCondition(varargin{1},varargin{2},Options);
+        case "scorebycondition"
+            varargout{1} = scoreByCondition( ...
+                varargin{1},varargin{2},varargin{3});
         otherwise
             error('CBSRegionWGAN:UnknownGANAction', ...
                 'Unknown mainline WGAN action: %s.',action);
     end
+end
+
+function Score = scoreByCondition(GAN,Dec,Cond)
+%SCOREBYCONDITION Score each decision under its own query condition.
+
+    if isempty(Dec)
+        Score = zeros(0,1);
+        return;
+    end
+    if isempty(GAN) || ~isstruct(GAN) || ~isfield(GAN,'netC')
+        error('CBSRegionWGAN:MissingCritic', ...
+            'A trained critic is required for conditional scoring.');
+    end
+    Dec = double(Dec);
+    Cond = double(Cond);
+    if size(Dec,1) ~= size(Cond,1) || size(Dec,2) ~= GAN.D || ...
+            size(Cond,2) ~= GAN.M
+        error('CBSRegionWGAN:BadCriticInput', ...
+            'Decision and condition rows must match the trained critic.');
+    end
+    span = GAN.upper-GAN.lower;
+    span(span <= eps) = 1;
+    XScaled = 2*(Dec-GAN.lower)./span-1;
+    XScaled = max(-1,min(1,XScaled));
+    dlX = dlarray(single(XScaled'),'CB');
+    dlC = dlarray(single(Cond'),'CB');
+    Score = double(extractdata(forward(GAN.netC,[dlX;dlC])))';
+    Score = reshape(Score,[],1);
 end
 
 function GAN = trainBoundaryWGAN(GAN,TrainX,TrainC,Problem,Options)

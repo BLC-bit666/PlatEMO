@@ -13,12 +13,75 @@ function varargout = RunRegionGAN_RC(action,varargin)
     switch lower(strtrim(string(action)))
         case "regionquerysamples"
             [varargout{1:nargout}] = regionQuerySamples(varargin{:});
+        case "balancedquerysamples"
+            [varargout{1:nargout}] = balancedQuerySamples(varargin{:});
+        case "conditioncriticfilter"
+            [varargout{1:nargout}] = conditionCriticFilter(varargin{:});
         case "trainandsample"
             [varargout{1:nargout}] = trainAndSample(varargin{:});
         otherwise
             error('CBSRegionGAN:BadRunnerAction', ...
                 'Unsupported mainline action: %s.',action);
     end
+end
+
+function [SampleC,SampleRefs] = balancedQuerySamples(W,totalBudget)
+%BALANCEDQUERYSAMPLES Allocate queries across every reference vector.
+
+    W = double(W);
+    totalBudget = max(0,round(double(totalBudget)));
+    refCount = size(W,1);
+    if totalBudget == 0 || refCount == 0
+        SampleRefs = zeros(0,1);
+        SampleC = zeros(0,size(W,2));
+        return;
+    end
+    baseCount = floor(totalBudget/refCount);
+    remainder = mod(totalBudget,refCount);
+    SampleRefs = repelem((1:refCount)',baseCount,1);
+    if remainder > 0
+        extra = randperm(refCount,remainder)';
+        SampleRefs = [SampleRefs;extra];
+    end
+    SampleRefs = SampleRefs(randperm(numel(SampleRefs)));
+    SampleC = W(SampleRefs,:);
+end
+
+function [FilteredDec,FilteredRefs,KeepIdx,Percentile] = ...
+        conditionCriticFilter(RawDec,RawRefs,RawScore,keepCount,W)
+%CONDITIONCRITICFILTER Compare critic scores only within each condition.
+
+    RawDec = double(RawDec);
+    RawRefs = reshape(double(RawRefs),[],1);
+    RawScore = reshape(double(RawScore),[],1);
+    rowCount = size(RawDec,1);
+    if numel(RawRefs) ~= rowCount || numel(RawScore) ~= rowCount
+        error('CBSRegionGAN:CriticFilterShape', ...
+            'Decisions, references, and critic scores need equal rows.');
+    end
+    keepCount = max(0,round(double(keepCount)));
+    Percentile = nan(rowCount,1);
+    valid = all(isfinite(RawDec),2) & isfinite(RawScore) & ...
+        isfinite(RawRefs) & RawRefs == fix(RawRefs) & ...
+        RawRefs >= 1 & RawRefs <= size(W,1);
+    refs = unique(RawRefs(valid),'stable');
+    for r = reshape(refs,1,[])
+        rows = find(valid & RawRefs == r);
+        [~,order] = sortrows([-RawScore(rows),rows],[1 2]);
+        rank = zeros(numel(rows),1);
+        rank(order) = (1:numel(rows))';
+        Percentile(rows) = (numel(rows)-rank+0.5)/numel(rows);
+    end
+    rows = find(valid);
+    if keepCount == 0 || isempty(rows)
+        KeepIdx = zeros(0,1);
+    else
+        [~,order] = sortrows([-Percentile(rows),rows],[1 2]);
+        KeepIdx = rows(order(1:min(keepCount,numel(order))));
+        KeepIdx = sort(KeepIdx,'ascend');
+    end
+    FilteredDec = RawDec(KeepIdx,:);
+    FilteredRefs = RawRefs(KeepIdx);
 end
 
 function [SampleC,SampleRefs] = regionQuerySamples(PopulatedRefs,W,nGen)
@@ -139,18 +202,22 @@ function Refs = validateRefs(Refs,W)
     end
 end
 
-function [GAN,RawDec] = trainAndSample( ...
+function [GAN,RawDec,RawScore] = trainAndSample( ...
         GAN,TrainX,TrainC,SampleC,Problem,Options)
 %TRAINANDSAMPLE Train on pairflag rows, then query feasible conditions.
 
     if size(TrainX,1) < Options.minTrainCount
         RawDec = zeros(0,Problem.D);
+        RawScore = zeros(0,1);
         return;
     end
     GAN = BoundaryWGAN_RC('train',GAN,TrainX,TrainC,Problem,Options);
     if isempty(SampleC)
         RawDec = zeros(0,Problem.D);
+        RawScore = zeros(0,1);
         return;
     end
     RawDec = BoundaryWGAN_RC('samplebycondition',GAN,SampleC,Options);
+    RawScore = BoundaryWGAN_RC( ...
+        'scorebycondition',GAN,RawDec,SampleC);
 end

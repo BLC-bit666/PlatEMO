@@ -7,12 +7,14 @@ popSize = 100;
 maxFE   = 2e5;
 saveNum = 1;
 runs    = 1:15;
-algNames = {'CBS_RegionWGAN_GP_A1','CBS_RegionWGAN_GP_A2'};
+%% algName = 'DRMCMO';
+
+algName = 'CBS_RegionWGAN_GP_A1';
 
 problemSets = {
     'DASCMOP',  9;
     'LIRCMOP', 14
-    };
+};
 
 proNames = {};
 for s = 1:size(problemSets,1)
@@ -26,19 +28,17 @@ cd(rootPath);
 addpath(genpath(rootPath));
 
 %% ===== 任务清单（跳过已完成） =====
-tasks = cell(0,3);
-for a = 1:numel(algNames)
-    for p = 1:numel(proNames)
-        for r = runs
-            tasks(end+1,:) = {algNames{a},proNames{p},r}; %#ok<SAGROW>
-        end
+tasks = cell(0,2);
+for p = 1:numel(proNames)
+    for r = runs
+        tasks(end+1,:) = {proNames{p},r}; %#ok<SAGROW>
     end
 end
+dataDir = fullfile(rootPath,'Data',algName);
 todo = true(size(tasks,1),1);
 for t = 1:size(tasks,1)
-    dataDir = fullfile(rootPath,'Data',tasks{t,1});
     f = dir(fullfile(dataDir,sprintf('%s_%s_M*_D*_%d.mat', ...
-        tasks{t,1},tasks{t,2},tasks{t,3})));
+        algName,tasks{t,1},tasks{t,2})));
     todo(t) = isempty(f);
 end
 tasks = tasks(todo,:);
@@ -60,20 +60,19 @@ end
 parpool("Processes",nWorker);
 pctRunOnAll addpath(genpath(rootPath));
 
-%% ===== 扁平化并行（算法 x 问题 x run 一起排队，吃满 worker） =====
+%% ===== 扁平化并行（问题 x run 一起排队，吃满 worker） =====
 nTask = size(tasks,1);
 parfor t = 1:nTask
-    algHandle = str2func(tasks{t,1});
-    proHandle = str2func(tasks{t,2});
-    fprintf('Running %s on %s run %d\n',tasks{t,1},tasks{t,2},tasks{t,3});
+    proHandle = str2func(tasks{t,1});
+    fprintf('Running %s on %s run %d\n',algName,tasks{t,1},tasks{t,2});
     platemo( ...
-        'algorithm',algHandle, ...
+        'algorithm',@CBS_RegionWGAN_GP_A1, ...
         'problem',  proHandle, ...
         'N',        popSize, ...
         'maxFE',    maxFE, ...
         'save',     saveNum, ...
-        'run',      tasks{t,3} ...
-        );
+        'run',      tasks{t,2} ...
+    );
 end
 
 delete(gcp('nocreate'));

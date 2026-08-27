@@ -12,10 +12,10 @@ function test_CBS_mainline_fingerprint()
 
     assert(Problem.FE == 20000);
     assert(isequal(Problem.CalMetric('IGD',Population), ...
-        1.3468921272381897));
-    assert(isequal(sum(Population.decs,'all'),1729.8887087629678));
-    assert(isequal(sum(Population.objs,'all'),1056.8965815545916));
+        1.3473816458691643));
+    assert(isequal(sum(Population.decs,'all'),1828.5991360038395));
+    assert(isequal(sum(Population.objs,'all'),625.98054078737562));
     assert(isequal(sum(Population.cons,'all'),0));
-    assert(state.State(1) == 281257120);
+    assert(state.State(1) == 274547642);
     fprintf('CBS unique-mainline deterministic fingerprint passed.\n');
 end
