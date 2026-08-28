@@ -1,6 +1,6 @@
 classdef CBS_RegionWGAN_GP_A2 < CBS_RegionWGAN_GP_Experiment
 % <2026> <multi> <real> <constrained>
-% A2: new CGAN generation/screening and local-target utilization
+% A2 generation comparator: new generation with local-target utilization
 
 %------------------------------- Copyright --------------------------------
 % Copyright (c) 2026 BIMK Group. You are free to use PlatEMO for research.

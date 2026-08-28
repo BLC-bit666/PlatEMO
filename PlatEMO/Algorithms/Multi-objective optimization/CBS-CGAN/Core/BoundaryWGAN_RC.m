@@ -104,13 +104,40 @@ function GAN = trainBoundaryWGAN(GAN,TrainX,TrainC,Problem,Options)
     beta2 = 0.9;
     for iter = 1 : iterCount
         for critic = 1 : nCritic
-            idx = randi(trainCount,1,miniBatch);
+            idx = drawBatchIndices(TrainC,miniBatch, ...
+                Options.batchSamplingMode);
             GAN = updateCriticBatch(GAN,XScaledT,TrainCT,idx, ...
                 zDim,gpLambda,lrD,beta1,beta2);
         end
-        idx = randi(trainCount,1,miniBatch);
+        idx = drawBatchIndices(TrainC,miniBatch, ...
+            Options.batchSamplingMode);
         GAN = updateGeneratorBatch(GAN,TrainCT,idx,zDim,lrG,beta1,beta2);
     end
+end
+
+function idx = drawBatchIndices(TrainC,miniBatch,mode)
+%DRAWBATCHINDICES Draw uniform or pairflag-balanced training rows.
+
+    trainCount = size(TrainC,1);
+    mode = string(mode);
+    if mode == "uniform"
+        idx = randi(trainCount,1,miniBatch);
+        return;
+    elseif mode ~= "pairflag_balanced"
+        error('CBSRegionWGAN:BadBatchSamplingMode', ...
+            'Unsupported WGAN mini-batch sampling mode.');
+    end
+    positive = find(TrainC(:,end) >= 0.5);
+    negative = find(TrainC(:,end) < 0.5);
+    if isempty(positive) || isempty(negative)
+        idx = randi(trainCount,1,miniBatch);
+        return;
+    end
+    positiveCount = ceil(miniBatch/2);
+    negativeCount = miniBatch-positiveCount;
+    positiveRows = positive(randi(numel(positive),positiveCount,1));
+    negativeRows = negative(randi(numel(negative),negativeCount,1));
+    idx = [positiveRows;negativeRows]';
 end
 
 function GAN = updateCriticBatch(GAN,XScaledT,TrainCT,idx, ...
@@ -281,6 +308,7 @@ function Options = fillOptions(Options)
     Options = defaultOption(Options,'nCritic',4);
     Options = defaultOption(Options,'generatorHidden',[32 32]);
     Options = defaultOption(Options,'criticHidden',[32 32]);
+    Options = defaultOption(Options,'batchSamplingMode',"uniform");
     Options.zDim = max(1,round(double(Options.zDim)));
     Options.iter = max(0,round(double(Options.iter)));
     Options.miniBatch = max(1,round(double(Options.miniBatch)));
@@ -291,6 +319,13 @@ function Options = fillOptions(Options)
     Options.nCritic = max(1,round(double(Options.nCritic)));
     Options.generatorHidden = hiddenVector(Options.generatorHidden);
     Options.criticHidden = hiddenVector(Options.criticHidden);
+    Options.batchSamplingMode = string(Options.batchSamplingMode);
+    if ~isscalar(Options.batchSamplingMode) || ...
+            ~ismember(Options.batchSamplingMode, ...
+            ["uniform","pairflag_balanced"])
+        error('CBSRegionWGAN:BadBatchSamplingMode', ...
+            'Unsupported WGAN mini-batch sampling mode.');
+    end
 end
 
 function S = defaultOption(S,name,value)

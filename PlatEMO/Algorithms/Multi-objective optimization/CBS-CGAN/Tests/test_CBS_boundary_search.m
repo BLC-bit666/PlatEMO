@@ -1,7 +1,7 @@
 function test_CBS_boundary_search()
 %TEST_CBS_BOUNDARY_SEARCH Verify the always-on calibration primitive.
 
-    repoRoot = fileparts(fileparts(fileparts(fileparts(mfilename('fullpath')))));
+    repoRoot = fileparts(which('platemo'));
     addCBSPaths(repoRoot);
     testBudgetAndEvaluation();
     testRangeNormalizedNearestEndpoint();

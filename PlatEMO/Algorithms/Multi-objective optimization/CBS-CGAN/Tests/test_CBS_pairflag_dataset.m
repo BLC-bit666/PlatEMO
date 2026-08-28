@@ -1,7 +1,7 @@
 function test_CBS_pairflag_dataset()
 %TEST_CBS_PAIRFLAG_DATASET Verify the sole CGAN training-data definition.
 
-    repoRoot = fileparts(fileparts(fileparts(fileparts(mfilename('fullpath')))));
+    repoRoot = fileparts(which('platemo'));
     addCBSPaths(repoRoot);
     testDatasetShape();
     testEmptyMemoryWidth();

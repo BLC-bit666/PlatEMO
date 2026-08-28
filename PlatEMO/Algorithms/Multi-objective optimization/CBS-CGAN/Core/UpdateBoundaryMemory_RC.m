@@ -1,4 +1,4 @@
-function [BMem,RefScale] = UpdateBoundaryMemory_RC(PrevBMem, ...
+function [BMem,RefScale,Trace] = UpdateBoundaryMemory_RC(PrevBMem, ...
         Population1,Offspring1,Population2,Offspring2,W,Options)
 %UPDATEBOUNDARYMEMORY_RC Update the fixed boundary-anchor memory.
 %   The memory pairs nondominated feasible anchors with nearby infeasible
@@ -15,6 +15,7 @@ function [BMem,RefScale] = UpdateBoundaryMemory_RC(PrevBMem, ...
 % Computational Intelligence Magazine, 2017, 12(4): 73-87".
 %--------------------------------------------------------------------------
 
+    Trace = emptyMemoryTrace();
     %% Collect and validate current evaluated solutions
     Samples = [Population1,Offspring1,Population2,Offspring2];
     [D,M] = inferDimensions(Samples,PrevBMem);
@@ -46,43 +47,88 @@ function [BMem,RefScale] = UpdateBoundaryMemory_RC(PrevBMem, ...
     %% Associate solutions with reference vectors and harvest pairs
     feasible = sum(max(0,C),2) <= 0;
     [Ref,RefScale,Yn] = AssignReferenceVectors_CBS(Y,W);
-    BMem = harvestCloud(X,Y,Yn,feasible,Ref,W,Options, ...
+    [BMem,Trace] = harvestCloud(X,Y,Yn,feasible,Ref,W,Options, ...
         pairableInfeasible,D,M);
-    BMem = filterGapCap(BMem,Options);
+    [BMem,Trace.madDropped] = filterGapCap(BMem,Options);
+    Trace.paired = sum(all(isfinite(BMem.x_i),2));
+    Trace.unpaired = size(BMem.x_b,1)-Trace.paired;
+    Trace.retained = size(BMem.x_b,1);
+    [Trace.previousUnpaired,Trace.previousUnpairedPaired] = ...
+        previousUnpairedConversion(PrevBMem,BMem,D,M);
 end
 
-function Cloud = harvestCloud(X,Y,Yn,Feasible,Ref,W,Options, ...
+function [Cloud,Trace] = harvestCloud(X,Y,Yn,Feasible,Ref,W,Options, ...
         PairableInfeasible,D,M)
 %HARVESTCLOUD Pair feasible anchors with nearby infeasible solutions.
 
+    Trace = emptyMemoryTrace();
     Cloud = emptyBMem(0,D,M);
     if isempty(Y) || isempty(W)
         return;
     end
     frontDepth = optionInteger(Options,'frontDepth',2,1);
-    radius = optionInteger(Options,'pairNeighborRefRadius',2,0);
+    pairRefCount = pairReferenceCount(Options);
     mainFeasible = false(size(Feasible));
     feasibleRows = find(Feasible);
+    Trace.trueFeasible = numel(feasibleRows);
     if ~isempty(feasibleRows)
-        rank = paretoRankLimited(Y(feasibleRows,:),frontDepth);
-        mainFeasible(feasibleRows(rank <= frontDepth)) = true;
+        if isfinite(frontDepth)
+            rank = paretoRankLimited(Y(feasibleRows,:),frontDepth);
+            mainFeasible(feasibleRows(rank <= frontDepth)) = true;
+        else
+            mainFeasible(feasibleRows) = true;
+        end
     end
-    mainFeasible = capAnchorsPerRef(mainFeasible,Y,Ref,Options);
+    Trace.afterFront = nnz(mainFeasible);
+    Trace.frontDropped = Trace.trueFeasible-Trace.afterFront;
+    allFeasibleRefs = unique(Ref(Feasible),'stable');
+    frontRefs = unique(Ref(mainFeasible),'stable');
+    Trace.frontOpportunityRefs = numel(setdiff(allFeasibleRefs,frontRefs));
+    [mainFeasible,Trace.capDropped] = ...
+        capAnchorsPerRef(mainFeasible,Y,Ref,Options);
+    Trace.afterCap = nnz(mainFeasible);
     Cloud = emptyBMem(nnz(mainFeasible),D,M);
     row = 0;
-    Neighborhoods = referenceNeighborhoods(W,radius);
+    Neighborhoods = referenceNeighborhoods(W,pairRefCount);
+    allInfeasible = find(~Feasible & PairableInfeasible);
+    keepUnpaired = optionLogical(Options,'keepUnpairedAnchors',false);
+    pairGaps = zeros(0,1);
+    pairRanks = zeros(0,1);
+    pairAngles = zeros(0,1);
 
     for r = 1 : size(W,1)
         neighborhood = Neighborhoods{r};
         feasibleIdx = find(mainFeasible & Ref == r);
         infeasibleIdx = find(~Feasible & PairableInfeasible & ...
             ismember(Ref,neighborhood));
-        if isempty(feasibleIdx) || isempty(infeasibleIdx)
+        if isempty(feasibleIdx)
             continue;
         end
         distance = pairDistance(Yn(feasibleIdx,:),Yn(infeasibleIdx,:));
+        [~,refOrder] = sort(sqrt(sum((W-W(r,:)).^2,2)),'ascend');
+        refRank = zeros(size(W,1),1);
+        refRank(refOrder) = 1:numel(refOrder);
         for a = 1 : numel(feasibleIdx)
             f = feasibleIdx(a);
+            if ~isempty(allInfeasible)
+                legalAll = ~feasibleDominatesInfeasible( ...
+                    Y(f,:),Y(allInfeasible,:));
+                legalRanks = refRank(Ref(allInfeasible(legalAll)));
+                Trace.dominanceRejected = Trace.dominanceRejected+ ...
+                    sum(~legalAll);
+                Trace.legalAny = Trace.legalAny+any(legalRanks >= 1);
+                Trace.legalWithin5 = Trace.legalWithin5+any(legalRanks <= 5);
+                Trace.legalWithin10 = Trace.legalWithin10+any(legalRanks <= 10);
+            end
+            if keepUnpaired
+                row = row+1;
+                Cloud.ref(row,1) = r;
+                Cloud.x_b(row,:) = X(f,:);
+                Cloud.y_b(row,:) = Y(f,:);
+            end
+            if isempty(infeasibleIdx)
+                continue;
+            end
             legal = ~feasibleDominatesInfeasible( ...
                 Y(f,:),Y(infeasibleIdx,:));
             if ~any(legal)
@@ -90,22 +136,41 @@ function Cloud = harvestCloud(X,Y,Yn,Feasible,Ref,W,Options, ...
             end
             [minGap,which] = min(distance(a,legal));
             legalIdx = infeasibleIdx(legal);
-            row = row + 1;
+            if ~keepUnpaired
+                row = row + 1;
+                Cloud.ref(row,1) = r;
+                Cloud.x_b(row,:) = X(f,:);
+                Cloud.y_b(row,:) = Y(f,:);
+            end
+            partner = legalIdx(which);
             Cloud.ref(row,1) = r;
             Cloud.gap(row,1) = minGap;
-            Cloud.x_b(row,:) = X(f,:);
-            Cloud.y_b(row,:) = Y(f,:);
-            Cloud.x_i(row,:) = X(legalIdx(which),:);
+            Cloud.x_i(row,:) = X(partner,:);
+            pairGaps(end+1,1) = minGap; %#ok<AGROW>
+            pairRanks(end+1,1) = refRank(Ref(partner)); %#ok<AGROW>
+            pairAngles(end+1,1) = referenceAngle( ...
+                W(r,:),W(Ref(partner),:)); %#ok<AGROW>
         end
     end
     Cloud = subsetMemory(Cloud,1:row);
+    Trace.pairedBeforeMAD = numel(pairGaps);
+    Trace.unpairedBeforeMAD = row-Trace.pairedBeforeMAD;
+    Trace.pairRank1To5 = sum(pairRanks <= 5);
+    Trace.pairRank6To10 = sum(pairRanks > 5 & pairRanks <= 10);
+    Trace.pairRankOver10 = sum(pairRanks > 10);
+    Trace.pairGapMedian = finiteMedian(pairGaps);
+    Trace.pairGapP90 = finitePercentile(pairGaps,0.9);
+    Trace.pairAngleMedian = finiteMedian(pairAngles);
+    Trace.pairAngleP90 = finitePercentile(pairAngles,0.9);
 end
 
-function keep = capAnchorsPerRef(keep,Y,Ref,Options)
+function [keep,dropped] = capAnchorsPerRef(keep,Y,Ref,Options)
 %CAPANCHORSPERREF Limit feasible anchors retained by each reference vector.
 
+    before = nnz(keep);
     maxPerRef = optionInteger(Options,'maxAnchorsPerRef',Inf,1);
     if ~isfinite(maxPerRef)
+        dropped = 0;
         return;
     end
     refs = unique(Ref(keep),'stable');
@@ -121,6 +186,7 @@ function keep = capAnchorsPerRef(keep,Y,Ref,Options)
         end
     end
     keep = capped;
+    dropped = before-nnz(keep);
 end
 
 function [X,Y,C] = appendPreviousAnchors(X,Y,C,PrevBMem,D,M)
@@ -138,9 +204,10 @@ function [X,Y,C] = appendPreviousAnchors(X,Y,C,PrevBMem,D,M)
     C = [C;zeros(count,size(C,2))];
 end
 
-function Cloud = filterGapCap(Cloud,Options)
+function [Cloud,dropped] = filterGapCap(Cloud,Options)
 %FILTERGAPCAP Remove anomalously distant boundary pairs using a MAD cap.
 
+    dropped = 0;
     if isempty(Cloud.y_b)
         return;
     end
@@ -161,12 +228,17 @@ function Cloud = filterGapCap(Cloud,Options)
             cap = med + 3*1.4826*deviation;
         end
     end
-    keep = gaps <= cap + 1e-12;
-    if sum(keep) < minCount
-        [~,order] = sort(gaps,'ascend');
-        keep = false(size(gaps));
-        keep(order(1:min(minCount,numel(order)))) = true;
+    unpaired = ~isfinite(gaps);
+    keepPaired = isfinite(gaps) & gaps <= cap + 1e-12;
+    if sum(keepPaired) < min(minCount,numel(finiteGaps))
+        pairedRows = find(isfinite(gaps));
+        [~,order] = sort(gaps(pairedRows),'ascend');
+        keepPaired = false(size(gaps));
+        rescue = pairedRows(order(1:min(minCount,numel(order))));
+        keepPaired(rescue) = true;
     end
+    keep = unpaired | keepPaired;
+    dropped = sum(isfinite(gaps) & ~keepPaired);
     Cloud = subsetMemory(Cloud,keep);
 end
 
@@ -209,29 +281,29 @@ function yes = feasibleDominatesInfeasible(Yf,Yi)
     yes = all(Yf <= Yi+tolerance,2) & any(Yf < Yi-tolerance,2);
 end
 
-function refs = neighborRefs(W,r,radius)
+function refs = neighborRefs(W,r,count)
 %NEIGHBORREFS Return the local reference-vector neighborhood.
 
-    if radius <= 0
-        refs = r;
+    if isinf(count)
+        refs = (1:size(W,1))';
         return;
     end
     distance = sqrt(sum((W-W(r,:)).^2,2));
     [~,order] = sort(distance,'ascend');
-    refs = order(1:min(numel(order),1+2*radius));
+    refs = order(1:min(numel(order),count));
 end
 
-function Neighborhoods = referenceNeighborhoods(W,radius)
+function Neighborhoods = referenceNeighborhoods(W,count)
 %REFERENCENEIGHBORHOODS Cache fixed neighborhoods across generations.
 
-    persistent cachedW cachedRadius cachedNeighborhoods
+    persistent cachedW cachedCount cachedNeighborhoods
     if isempty(cachedNeighborhoods) || ...
-            ~isequal(W,cachedW) || radius ~= cachedRadius
+            ~isequal(W,cachedW) || count ~= cachedCount
         cachedW = W;
-        cachedRadius = radius;
+        cachedCount = count;
         cachedNeighborhoods = cell(size(W,1),1);
         for r = 1 : size(W,1)
-            cachedNeighborhoods{r} = neighborRefs(W,r,radius);
+            cachedNeighborhoods{r} = neighborRefs(W,r,count);
         end
     end
     Neighborhoods = cachedNeighborhoods;
@@ -291,10 +363,92 @@ function BMem = emptyBMem(N,D,M)
 
     BMem = struct( ...
         'ref',zeros(N,1), ...
-        'gap',zeros(N,1), ...
+        'gap',nan(N,1), ...
         'x_b',nan(N,D), ...
         'y_b',zeros(N,M), ...
         'x_i',nan(N,D));
+end
+
+function count = pairReferenceCount(Options)
+%PAIRREFERENCECOUNT Prefer the explicit count and retain old test support.
+
+    if isstruct(Options) && isfield(Options,'pairNeighborRefCount') && ...
+            ~isempty(Options.pairNeighborRefCount)
+        count = optionInteger(Options,'pairNeighborRefCount',5,1);
+    else
+        radius = optionInteger(Options,'pairNeighborRefRadius',2,0);
+        count = 1+2*radius;
+    end
+end
+
+function value = optionLogical(Options,name,defaultValue)
+    value = defaultValue;
+    if isstruct(Options) && isfield(Options,name) && ...
+            ~isempty(Options.(name))
+        candidate = double(Options.(name));
+        if ~isscalar(candidate) || ~isfinite(candidate) || ...
+                ~ismember(candidate,[0 1])
+            error('CBSRegionGAN:BadMemoryOption', ...
+                '%s must be either 0 or 1.',name);
+        end
+        value = logical(candidate);
+    end
+end
+
+function angle = referenceAngle(a,b)
+    denominator = norm(a)*norm(b);
+    if denominator <= eps
+        angle = NaN;
+    else
+        cosine = max(-1,min(1,dot(a,b)/denominator));
+        angle = acos(cosine)*180/pi;
+    end
+end
+
+function value = finiteMedian(values)
+    values = values(isfinite(values));
+    if isempty(values)
+        value = NaN;
+    else
+        value = median(values);
+    end
+end
+
+function value = finitePercentile(values,fraction)
+    values = sort(values(isfinite(values)));
+    if isempty(values)
+        value = NaN;
+    else
+        value = values(max(1,ceil(fraction*numel(values))));
+    end
+end
+
+function [count,paired] = previousUnpairedConversion(Prev,Current,D,M)
+    Prev = ensureMemoryFields(Prev,D,M);
+    Current = ensureMemoryFields(Current,D,M);
+    previousRows = all(isfinite(Prev.x_b),2) & ...
+        ~all(isfinite(Prev.x_i),2);
+    currentRows = all(isfinite(Current.x_b),2) & ...
+        all(isfinite(Current.x_i),2);
+    count = sum(previousRows);
+    if count == 0 || ~any(currentRows)
+        paired = 0;
+    else
+        paired = sum(ismember(Prev.x_b(previousRows,:), ...
+            Current.x_b(currentRows,:),'rows'));
+    end
+end
+
+function Trace = emptyMemoryTrace()
+    Trace = struct('trueFeasible',0,'afterFront',0,'frontDropped',0, ...
+        'frontOpportunityRefs',0,'afterCap',0,'capDropped',0, ...
+        'retained',0,'pairedBeforeMAD',0,'unpairedBeforeMAD',0, ...
+        'paired',0,'unpaired',0,'madDropped',0, ...
+        'legalWithin5',0,'legalWithin10',0,'legalAny',0, ...
+        'dominanceRejected',0,'pairRank1To5',0,'pairRank6To10',0, ...
+        'pairRankOver10',0,'pairGapMedian',NaN,'pairGapP90',NaN, ...
+        'pairAngleMedian',NaN,'pairAngleP90',NaN, ...
+        'previousUnpaired',0,'previousUnpairedPaired',0);
 end
 
 function value = optionInteger(Options,name,defaultValue,minimum)

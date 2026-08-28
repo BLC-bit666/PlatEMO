@@ -1,8 +1,7 @@
 function test_CBS_boundary_transfer()
 %TEST_CBS_BOUNDARY_TRANSFER Certified boundary-target DE mainline.
 
-    repoRoot = fileparts(fileparts(fileparts(fileparts( ...
-        mfilename('fullpath')))));
+    repoRoot = fileparts(which('platemo'));
     addCBSPaths(repoRoot);
 
     % Disable GAN training only to keep this mechanism regression short.

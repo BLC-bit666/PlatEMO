@@ -1,5 +1,5 @@
 function [Effects,Pairwise] = analyze_CBS_CGAN_factor_experiment(RunSummary)
-%ANALYZE_CBS_CGAN_FACTOR_EXPERIMENT Quantify sequential package effects.
+%ANALYZE_CBS_CGAN_FACTOR_EXPERIMENT Quantify historical package effects.
 %   A1/A0 estimates the generation-and-screening package; A2/A1 estimates
 %   the utilization package; A2/A0 is the end-to-end effect. Lower IGD is
 %   better, so ratios below one favor the numerator arm.

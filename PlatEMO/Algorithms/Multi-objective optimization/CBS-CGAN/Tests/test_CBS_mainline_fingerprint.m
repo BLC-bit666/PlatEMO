@@ -1,7 +1,7 @@
 function test_CBS_mainline_fingerprint()
 %TEST_CBS_MAINLINE_FINGERPRINT Pin the deterministic unique mainline.
 
-    repoRoot = fileparts(fileparts(fileparts(fileparts(mfilename('fullpath')))));
+    repoRoot = fileparts(which('platemo'));
     addCBSPaths(repoRoot);
     rng(4242,'twister');
     Problem = LIRCMOP6_BC('N',100,'D',30,'maxFE',20000);

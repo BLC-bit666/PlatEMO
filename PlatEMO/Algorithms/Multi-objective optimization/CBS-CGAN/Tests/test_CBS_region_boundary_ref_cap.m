@@ -1,7 +1,7 @@
 function test_CBS_region_boundary_ref_cap()
 %TEST_CBS_REGION_BOUNDARY_REF_CAP Verify fixed BMem and TrainX gates.
 
-    repoRoot = fileparts(fileparts(fileparts(fileparts(mfilename('fullpath')))));
+    repoRoot = fileparts(which('platemo'));
     addCBSPaths(repoRoot);
     testAnchorCap();
     testPreviousAnchorCompetition();

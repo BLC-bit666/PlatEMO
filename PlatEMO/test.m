@@ -1,80 +1,82 @@
 clc; clear;
 
-%% ===== 正式确认实验 =====
-
+%% ===== Full-run CGAN comparison =====
 nWorker = 10;
 popSize = 100;
 maxFE   = 2e5;
-saveNum = 1;
-runs    = 1:15;
-algNames = {'CBS_RegionWGAN_GP_A1','CBS_RegionWGAN_GP_A2'};
-
-problemSets = {
-    'DASCMOP',  9;
-    'LIRCMOP', 14
-    };
-
-proNames = {};
-for s = 1:size(problemSets,1)
-    for i = 1:problemSets{s,2}
-        proNames{end+1} = sprintf('%s%d_BC',problemSets{s,1},i); %#ok<SAGROW>
-    end
-end
+saveNum = 2;
+runs    = 1:10;
+algName = 'CBS_RegionWGAN_GP_FullCGAN';
+proNames = {
+    'DASCMOP1_BC','DASCMOP2_BC','DASCMOP4_BC', ...
+    'DASCMOP5_BC','DASCMOP9_BC','LIRCMOP5_BC', ...
+    'LIRCMOP7_BC','LIRCMOP8_BC','LIRCMOP10_BC', ...
+    'LIRCMOP14_BC'};
 
 rootPath = fileparts(mfilename('fullpath'));
 cd(rootPath);
-addpath(genpath(rootPath));
+supportPath = fullfile(rootPath,'Algorithms','Multi-objective optimization', ...
+    'CBS-CGAN','Support');
+addpath(supportPath,'-begin');
+addCBSPaths(rootPath);
 
-%% ===== 任务清单（跳过已完成） =====
-tasks = cell(0,3);
-for a = 1:numel(algNames)
-    for p = 1:numel(proNames)
-        for r = runs
-            tasks(end+1,:) = {algNames{a},proNames{p},r}; %#ok<SAGROW>
-        end
+%% ===== Flatten problem x run tasks and resume completed runs =====
+tasks = cell(0,2);
+for p = 1:numel(proNames)
+    for r = runs
+        tasks(end+1,:) = {proNames{p},r}; %#ok<SAGROW>
     end
 end
+dataDir = fullfile(rootPath,'Data',algName);
 todo = true(size(tasks,1),1);
 for t = 1:size(tasks,1)
-    dataDir = fullfile(rootPath,'Data',tasks{t,1});
-    f = dir(fullfile(dataDir,sprintf('%s_%s_M*_D*_%d.mat', ...
-        tasks{t,1},tasks{t,2},tasks{t,3})));
-    todo(t) = isempty(f);
+    files = dir(fullfile(dataDir,sprintf('%s_%s_M*_D30_%d.mat', ...
+        algName,tasks{t,1},tasks{t,2})));
+    todo(t) = isempty(files);
 end
 tasks = tasks(todo,:);
-fprintf('Confirmation remaining tasks: %d\n',size(tasks,1));
+fprintf('Full-CGAN remaining tasks: %d\n',size(tasks,1));
 if isempty(tasks)
-    disp('ALL CONFIRMATION TASKS DONE');
+    disp('ALL FULL-CGAN TASKS DONE');
     return;
 end
 
-%% ===== 清理旧并行池和旧 Jobs =====
-delete(gcp('nocreate'));
-try
-    c = parcluster('Processes');
-    delete(c.Jobs);
-catch
+pool = gcp('nocreate');
+ownsPool = isempty(pool);
+if ownsPool
+    pool = parpool("Processes",nWorker);
+elseif pool.NumWorkers ~= nWorker
+    error('CBSRegionGAN:WorkerCount', ...
+        'Existing pool must contain exactly %d workers.',nWorker);
 end
+poolCleanup = onCleanup(@()closeOwnedPool(ownsPool));
 
-%% ===== 并行池 =====
-parpool("Processes",nWorker);
-pctRunOnAll addpath(genpath(rootPath));
-
-%% ===== 扁平化并行（算法 x 问题 x run 一起排队，吃满 worker） =====
 nTask = size(tasks,1);
+taskProblems = tasks(:,1);
+taskRuns = cell2mat(tasks(:,2));
 parfor t = 1:nTask
-    algHandle = str2func(tasks{t,1});
-    proHandle = str2func(tasks{t,2});
-    fprintf('Running %s on %s run %d\n',tasks{t,1},tasks{t,2},tasks{t,3});
+    addCBSPaths(rootPath);
+    problem = str2func(taskProblems{t});
+    fprintf('Running %s on %s run %d\n', ...
+        algName,taskProblems{t},taskRuns(t));
     platemo( ...
-        'algorithm',algHandle, ...
-        'problem',  proHandle, ...
-        'N',        popSize, ...
-        'maxFE',    maxFE, ...
-        'save',     saveNum, ...
-        'run',      tasks{t,3} ...
-        );
+        'algorithm',@CBS_RegionWGAN_GP_FullCGAN, ...
+        'problem',problem, ...
+        'N',popSize, ...
+        'D',30, ...
+        'maxFE',maxFE, ...
+        'save',saveNum, ...
+        'run',taskRuns(t), ...
+        'metName',{'IGD','HV'});
 end
 
-delete(gcp('nocreate'));
-disp('ALL CONFIRMATION TASKS DONE');
+disp('ALL FULL-CGAN TASKS DONE');
+
+function closeOwnedPool(ownsPool)
+    if ownsPool
+        pool = gcp('nocreate');
+        if ~isempty(pool)
+            delete(pool);
+        end
+    end
+end

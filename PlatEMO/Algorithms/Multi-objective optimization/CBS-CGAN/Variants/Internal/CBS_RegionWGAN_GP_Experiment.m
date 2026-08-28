@@ -1,6 +1,6 @@
-classdef CBS_RegionWGAN_GP_Experiment < CBS_RegionWGAN_GP
-% <2026> <multi> <real> <constrained>
-% Three-arm attribution experiment for CGAN generation and utilization
+classdef CBS_RegionWGAN_GP_Experiment < CBS_RegionWGAN_GP_Core
+%CBS_REGIONWGAN_GP_EXPERIMENT Frozen historical A0/A1/A2 configurations.
+% Historical three-arm attribution for CGAN generation and utilization
 % arm                 ---   2 --- 0: legacy/legacy, 1: new/legacy, 2: new/new
 % ganIter             --- 100 --- Generator updates per training event
 % minGANTrainCount    ---  32 --- Minimum conditioned rows for training
@@ -15,14 +15,14 @@ classdef CBS_RegionWGAN_GP_Experiment < CBS_RegionWGAN_GP
 
     methods
         function Algorithm = CBS_RegionWGAN_GP_Experiment(varargin)
-            Algorithm@CBS_RegionWGAN_GP(varargin{:});
+            Algorithm@CBS_RegionWGAN_GP_Core(varargin{:});
         end
     end
 
     methods(Access = protected)
         function Config = algorithmConfiguration(Algorithm)
         %ALGORITHMCONFIGURATION Select one frozen sequential-attribution arm.
-            Config = CBS_RegionWGAN_GP.mainlineDefaults();
+            Config = CBS_RegionWGAN_GP_Core.mainlineDefaults();
             [arm,ganIter,minGANTrainCount,rawGuideCount] = ...
                 Algorithm.ParameterSet(2,Config.ganIter, ...
                 Config.minGANTrainCount,Config.rawGuideCount);
