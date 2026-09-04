@@ -1,0 +1,3 @@
+sigma,armCount,decisionWithinRefRMSMedian,objectiveWithinRefRMSMedian,decisionWithinRefRatioMedian,objectiveWithinRefRatioMedian,rawBoundaryMarginMedian,rawInfeasibleRateMedian,candidateValidRateMedian,referenceMatchRateMedian,uniqueRateMedian,assignedCoverageMedian,entropyMedian,fullQuotaRate,guidedCountMedian,guidedFeasibleRateMedian,guidedBoundaryMarginMedian,guidedUsefulPerQuotaMedian
+1,12,0.679727751639395,0.739684576379759,0.909508145532833,0.956233342060433,4.34235169072524,0.086,0.958,0.03,1,0.78,0.865127843322533,1,20,0.925,1.2825139055901,0
+0.5,12,0.408911226824336,0.30639991380316,0.789778675602614,0.874162793083003,2.44150771645985,0.222,0.998,0.025,1,0.652222222222222,0.815920091482849,1,20,0.775,0.808902928560848,0

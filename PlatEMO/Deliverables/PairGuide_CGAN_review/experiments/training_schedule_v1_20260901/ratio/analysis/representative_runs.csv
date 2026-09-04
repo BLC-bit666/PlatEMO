@@ -1,0 +1,7 @@
+stageName,factorName,armName,armValue,problem,run,rankWithinProblem,representativeScore,gAUC,IGD100K,seed,outputFile,snapshotCount
+ratio,nCritic,nCritic=4,4,LIRCMOP5_BC,1,2,0.901405075790459,0.190317427273026,0.0258573395522491,1,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_PairGuide_training_schedule_v1_20260901/ratio/results/LIRCMOP5_BC_nCritic04_run01.mat,10
+ratio,nCritic,nCritic=4,4,LIRCMOP7_BC,2,2,0.998985230024405,0.0372740131976634,0.00876253605880632,2,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_PairGuide_training_schedule_v1_20260901/ratio/results/LIRCMOP7_BC_nCritic04_run02.mat,10
+ratio,nCritic,nCritic=4,4,LIRCMOP8_BC,2,2,0.969808885395346,0.040867285416774,0.00824450274655029,2,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_PairGuide_training_schedule_v1_20260901/ratio/results/LIRCMOP8_BC_nCritic04_run02.mat,10
+ratio,nCritic,nCritic=4,4,LIRCMOP10_BC,1,2,0.969285146742156,0.197060171160594,0.0200257039862796,1,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_PairGuide_training_schedule_v1_20260901/ratio/results/LIRCMOP10_BC_nCritic04_run01.mat,10
+ratio,nCritic,nCritic=4,4,LIRCMOP12_BC,1,2,0.665607367216458,0.182952635522756,0.0342936402058182,1,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_PairGuide_training_schedule_v1_20260901/ratio/results/LIRCMOP12_BC_nCritic04_run01.mat,10
+ratio,nCritic,nCritic=4,4,LIRCMOP14_BC,3,2,0.990660829713026,0.139174277396581,0.0985922973429781,3,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_PairGuide_training_schedule_v1_20260901/ratio/results/LIRCMOP14_BC_nCritic04_run03.mat,10

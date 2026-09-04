@@ -1,0 +1,7 @@
+schemaVersion=CBS-PairGuide-training-schedule-v1
+status=complete
+currentStage=complete
+ratioCompleteTasks=90
+epochCompleteTasks=90
+chosenNCritic=4
+selectedRetrainEpoch=20

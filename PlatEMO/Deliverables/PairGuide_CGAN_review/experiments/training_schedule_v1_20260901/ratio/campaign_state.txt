@@ -1,0 +1,7 @@
+schemaVersion=CBS-PairGuide-training-schedule-v1
+stageName=ratio
+status=complete
+completeTasks=90
+remainingTasks=0
+reusedTasks=0
+attempt=1

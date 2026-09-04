@@ -1,0 +1,4 @@
+armOrder,armLabel,trainingSigma,useSigma,armCount,decisionWithinRefRMSMedian,objectiveWithinRefRMSMedian,rawBoundaryMarginMedian,rawInfeasibleRateMedian,candidateValidRateMedian,referenceMatchRateMedian,uniqueRateMedian,assignedCoverageMedian,entropyMedian,fullQuotaRate,guidedCountMedian,guidedFeasibleRateMedian,guidedBoundaryMarginMedian,guidedUsefulPerQuotaMedian
+1,train1_use1,1,1,12,0.530591168054145,0.361637987781031,2.59745501296707,0.123,0.991,0.034,1,0.7,0.823263094112954,1,20,0.8,0.947002351157926,0
+2,train1_use0p5,1,0.5,12,0.322140920496458,0.186581375068747,3.1945140550978,0.135,1,0.025,1,0.58,0.76547501169761,1,20,0.825,1.00158489730373,0
+3,train0p5_use0p5,0.5,0.5,12,0.408911226824336,0.306399913803161,2.44150771645985,0.222,0.998,0.025,1,0.652222222222222,0.815920091482849,1,20,0.775,0.808902928560848,0

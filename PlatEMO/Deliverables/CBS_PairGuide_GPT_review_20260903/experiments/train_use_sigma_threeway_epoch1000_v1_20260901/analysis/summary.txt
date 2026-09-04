@@ -1,0 +1,7 @@
+PairGuide inference sigma paired analysis
+Epoch: 1000
+Pairs: 12
+Median decision thickness ratio (0.5 / 1): 0.61291
+Median objective thickness ratio (0.5 / 1): 0.48574
+Decision thickness improved pairs: 12 / 12
+Objective thickness improved pairs: 12 / 12

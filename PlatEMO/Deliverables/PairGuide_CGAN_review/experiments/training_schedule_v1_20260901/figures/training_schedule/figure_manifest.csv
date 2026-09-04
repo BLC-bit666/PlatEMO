@@ -1,0 +1,13 @@
+stage,problem,run,armName,armValues,snapshotCount,file
+ratio,LIRCMOP5_BC,1,nCritic,"1,2,4",30,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_PairGuide_training_schedule_v1_20260901/figures/training_schedule/ratio_LIRCMOP5_BC_run01_3x10.png
+epoch,LIRCMOP5_BC,1,retrainEpoch,"5,10,20",30,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_PairGuide_training_schedule_v1_20260901/figures/training_schedule/epoch_LIRCMOP5_BC_run01_3x10.png
+ratio,LIRCMOP7_BC,2,nCritic,"1,2,4",30,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_PairGuide_training_schedule_v1_20260901/figures/training_schedule/ratio_LIRCMOP7_BC_run02_3x10.png
+epoch,LIRCMOP7_BC,2,retrainEpoch,"5,10,20",30,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_PairGuide_training_schedule_v1_20260901/figures/training_schedule/epoch_LIRCMOP7_BC_run02_3x10.png
+ratio,LIRCMOP8_BC,2,nCritic,"1,2,4",30,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_PairGuide_training_schedule_v1_20260901/figures/training_schedule/ratio_LIRCMOP8_BC_run02_3x10.png
+epoch,LIRCMOP8_BC,2,retrainEpoch,"5,10,20",30,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_PairGuide_training_schedule_v1_20260901/figures/training_schedule/epoch_LIRCMOP8_BC_run02_3x10.png
+ratio,LIRCMOP10_BC,1,nCritic,"1,2,4",30,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_PairGuide_training_schedule_v1_20260901/figures/training_schedule/ratio_LIRCMOP10_BC_run01_3x10.png
+epoch,LIRCMOP10_BC,1,retrainEpoch,"5,10,20",30,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_PairGuide_training_schedule_v1_20260901/figures/training_schedule/epoch_LIRCMOP10_BC_run01_3x10.png
+ratio,LIRCMOP12_BC,1,nCritic,"1,2,4",30,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_PairGuide_training_schedule_v1_20260901/figures/training_schedule/ratio_LIRCMOP12_BC_run01_3x10.png
+epoch,LIRCMOP12_BC,1,retrainEpoch,"5,10,20",30,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_PairGuide_training_schedule_v1_20260901/figures/training_schedule/epoch_LIRCMOP12_BC_run01_3x10.png
+ratio,LIRCMOP14_BC,3,nCritic,"1,2,4",30,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_PairGuide_training_schedule_v1_20260901/figures/training_schedule/ratio_LIRCMOP14_BC_run03_3x10.png
+epoch,LIRCMOP14_BC,3,retrainEpoch,"5,10,20",30,/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/CBS_PairGuide_training_schedule_v1_20260901/figures/training_schedule/epoch_LIRCMOP14_BC_run03_3x10.png

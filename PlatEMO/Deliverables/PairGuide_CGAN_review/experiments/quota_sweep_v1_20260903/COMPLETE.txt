@@ -1,0 +1,6 @@
+status=complete
+newTaskCount=180
+baselineTaskCount=60
+pairedObservations=600
+checkpointComparisons=60
+finishedAt=2026-09-03 07:41:51

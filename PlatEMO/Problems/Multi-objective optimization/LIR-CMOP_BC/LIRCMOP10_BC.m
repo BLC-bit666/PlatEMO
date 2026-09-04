@@ -29,8 +29,14 @@ classdef LIRCMOP10_BC < PROBLEM
         end
         %% Calculate objective values and constraint violations
         function Population = Evaluation(obj,varargin)
-            X = varargin{1};
-            X = max(min(X,repmat(obj.upper,size(X,1),1)),repmat(obj.lower,size(X,1),1));
+            X          = obj.CalDec(varargin{1});
+            PopObj     = obj.CalObj(X);
+            PopCon     = obj.CalCon(X);
+            Population = SOLUTION(X,PopObj,PopCon,varargin{2:end});
+            obj.FE     = obj.FE + length(Population);
+        end
+        %% Calculate objective values
+        function PopObj = CalObj(~,X)
             [popsize,variable_length] = size(X);
             sum1 = zeros(popsize,1);
             sum2 = zeros(popsize,1);
@@ -43,20 +49,10 @@ classdef LIRCMOP10_BC < PROBLEM
             end
             PopObj(:,1) = 1.7057*X(:,1).*(10*sum1+1);
             PopObj(:,2) = 1.7057*(1-X(:,1).^0.5).*(10*sum2+1);
-            PopCon      = Constraint(PopObj);
-            
-            PopCon = double(any(PopCon > 0, 2)); % 约束二元化：返回单个0/1标量
-            Population  = SOLUTION(X,PopObj,PopCon,varargin{2:end});
-            obj.FE      = obj.FE + length(Population);
         end
         %% Calculate the aggregated binary constraint label
-        function PopCon = CalCon(~,X)
-            D       = size(X,2);
-            odd     = 3:2:D;
-            even    = 2:2:D;
-            sum1    = sum((X(:,odd)-sin(X(:,1).*(0.5*odd/D*pi))).^2,2);
-            sum2    = sum((X(:,even)-cos(X(:,1).*(0.5*even/D*pi))).^2,2);
-            PopObj  = [1.7057*X(:,1).*(10*sum1+1),1.7057*(1-X(:,1).^0.5).*(10*sum2+1)];
+        function PopCon = CalCon(obj,X)
+            PopObj  = obj.CalObj(X);
             PopCon  = double(any(Constraint(PopObj)>0,2));
         end
         %% Generate points on the Pareto front

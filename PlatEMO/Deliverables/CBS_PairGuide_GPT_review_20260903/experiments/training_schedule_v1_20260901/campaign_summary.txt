@@ -1,0 +1,8 @@
+campaignName=CBS_PairGuide_training_schedule_v1_20260901
+sourceFingerprint=6a3d8e398ba78fd40bda7933e94b62f06b408fb39d617532c771ad441ca61b5c
+chosenNCritic=4
+selectedRetrainEpoch=20
+ratioTaskCount=90
+epochExecutedTaskCount=60
+epochReusedTaskCount=30
+figureCount=12

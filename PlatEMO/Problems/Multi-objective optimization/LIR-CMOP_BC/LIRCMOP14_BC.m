@@ -29,8 +29,14 @@ classdef LIRCMOP14_BC < PROBLEM
         end
         %% Calculate objective values and constraint violations
         function Population = Evaluation(obj,varargin)
-            X = varargin{1};
-            X = max(min(X,repmat(obj.upper,size(X,1),1)),repmat(obj.lower,size(X,1),1));
+            X          = obj.CalDec(varargin{1});
+            PopObj     = obj.CalObj(X);
+            PopCon     = obj.CalCon(X);
+            Population = SOLUTION(X,PopObj,PopCon,varargin{2:end});
+            obj.FE     = obj.FE + length(Population);
+        end
+        %% Calculate objective values
+        function PopObj = CalObj(~,X)
             [popsize,variable_length] = size(X);
             sum1 = zeros(popsize,1);
             for j = 3 : variable_length
@@ -39,26 +45,15 @@ classdef LIRCMOP14_BC < PROBLEM
             PopObj(:,1) = (1.7057+sum1).*cos(0.5*pi*X(:,1)).*cos(0.5*pi*X(:,2));
             PopObj(:,2) = (1.7057+sum1).*cos(0.5*pi*X(:,1)).*sin(0.5*pi*X(:,2));
             PopObj(:,3) = (1.7057+sum1).*sin(0.5*pi*X(:,1));
-            gx          = PopObj(:,1).^2+PopObj(:,2).^2+PopObj(:,3).^2;
+        end
+        %% Calculate the aggregated binary constraint label
+        function PopCon = CalCon(obj,X)
+            PopObj      = obj.CalObj(X);
+            gx          = sum(PopObj.^2,2);
             PopCon(:,1) = (gx-9).*(4-gx);
             PopCon(:,2) = (gx-3.61).*(3.24-gx);
             PopCon(:,3) = (gx-3.0625).*(2.56-gx);
-            
-            PopCon = double(any(PopCon > 0, 2)); % 约束二元化：返回单个0/1标量
-            Population  = SOLUTION(X,PopObj,PopCon,varargin{2:end});
-            obj.FE      = obj.FE + length(Population);
-        end
-        %% Calculate the aggregated binary constraint label
-        function PopCon = CalCon(~,X)
-            sum1         = 10*sum((X(:,3:end)-0.5).^2,2);
-            PopObj(:,1)  = (1.7057+sum1).*cos(0.5*pi*X(:,1)).*cos(0.5*pi*X(:,2));
-            PopObj(:,2)  = (1.7057+sum1).*cos(0.5*pi*X(:,1)).*sin(0.5*pi*X(:,2));
-            PopObj(:,3)  = (1.7057+sum1).*sin(0.5*pi*X(:,1));
-            gx            = sum(PopObj.^2,2);
-            PopCon(:,1)  = (gx-9).*(4-gx);
-            PopCon(:,2)  = (gx-3.61).*(3.24-gx);
-            PopCon(:,3)  = (gx-3.0625).*(2.56-gx);
-            PopCon       = double(any(PopCon>0,2));
+            PopCon      = double(any(PopCon>0,2));
         end
         %% Generate points on the Pareto front
         function R = GetOptimum(obj,N)

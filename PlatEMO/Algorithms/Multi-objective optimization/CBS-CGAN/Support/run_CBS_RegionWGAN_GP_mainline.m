@@ -1,6 +1,6 @@
 function [Summary,outDir] = run_CBS_RegionWGAN_GP_mainline( ...
         outDir,workerCount,problemNames,N,D,maxFE,runIds,Options)
-%RUN_CBS_REGIONWGAN_GP_MAINLINE Run the unique 200K-FE mainline.
+%RUN_CBS_REGIONWGAN_GP_MAINLINE Run the previous 200K-FE mainline.
 %   Native PlatEMO files contain only result and metric. The experiment
 %   summary exposes the two values used by this project: IGD near 100K FE
 %   (the first save=2 snapshot) and IGD at exactly 200K FE.

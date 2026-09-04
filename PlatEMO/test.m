@@ -1,17 +1,15 @@
 clc; clear;
 
-%% ===== Full-run CGAN comparison =====
+%% ===== PairGuide mainline campaign: five LIRCMOP problems x five runs =====
 nWorker = 10;
 popSize = 100;
 maxFE   = 2e5;
 saveNum = 2;
-runs    = 1:10;
-algName = 'CBS_RegionWGAN_GP_FullCGAN';
+runs    = 1:5;
+algName = 'PairGuide';
 proNames = {
-    'DASCMOP1_BC','DASCMOP2_BC','DASCMOP4_BC', ...
-    'DASCMOP5_BC','DASCMOP9_BC','LIRCMOP5_BC', ...
-    'LIRCMOP7_BC','LIRCMOP8_BC','LIRCMOP10_BC', ...
-    'LIRCMOP14_BC'};
+    'LIRCMOP5_BC','LIRCMOP7_BC','LIRCMOP8_BC', ...
+    'LIRCMOP10_BC','LIRCMOP14_BC'};
 
 rootPath = fileparts(mfilename('fullpath'));
 cd(rootPath);
@@ -28,6 +26,7 @@ for p = 1:numel(proNames)
     end
 end
 dataDir = fullfile(rootPath,'Data',algName);
+[~,~] = mkdir(dataDir);
 todo = true(size(tasks,1),1);
 for t = 1:size(tasks,1)
     files = dir(fullfile(dataDir,sprintf('%s_%s_M*_D30_%d.mat', ...
@@ -35,9 +34,9 @@ for t = 1:size(tasks,1)
     todo(t) = isempty(files);
 end
 tasks = tasks(todo,:);
-fprintf('Full-CGAN remaining tasks: %d\n',size(tasks,1));
+fprintf('PairGuide remaining tasks: %d\n',size(tasks,1));
 if isempty(tasks)
-    disp('ALL FULL-CGAN TASKS DONE');
+    disp('ALL PAIR-GUIDE TASKS DONE');
     return;
 end
 
@@ -56,21 +55,23 @@ taskProblems = tasks(:,1);
 taskRuns = cell2mat(tasks(:,2));
 parfor t = 1:nTask
     addCBSPaths(rootPath);
+    cd(rootPath);
+    rng(taskRuns(t),'twister');
     problem = str2func(taskProblems{t});
     fprintf('Running %s on %s run %d\n', ...
         algName,taskProblems{t},taskRuns(t));
-    platemo( ...
-        'algorithm',@CBS_RegionWGAN_GP_FullCGAN, ...
-        'problem',problem, ...
-        'N',popSize, ...
-        'D',30, ...
-        'maxFE',maxFE, ...
-        'save',saveNum, ...
-        'run',taskRuns(t), ...
-        'metName',{'IGD','HV'});
+    Problem = problem('N',popSize,'D',30,'maxFE',maxFE);
+    Algorithm = PairGuide( ...
+        'save',-saveNum,'run',taskRuns(t), ...
+        'metName',{'IGD','HV','Feasible_rate'});
+    Algorithm.Solve(Problem);
+    Algorithm.CalMetric('IGD');
+    Algorithm.CalMetric('HV');
+    Algorithm.CalMetric('Feasible_rate');
+    savePairGuideResult(dataDir,Algorithm,Problem,taskRuns(t));
 end
 
-disp('ALL FULL-CGAN TASKS DONE');
+disp('ALL PAIR-GUIDE TASKS DONE');
 
 function closeOwnedPool(ownsPool)
     if ownsPool
@@ -79,4 +80,14 @@ function closeOwnedPool(ownsPool)
             delete(pool);
         end
     end
+end
+
+function savePairGuideResult(dataDir,Algorithm,Problem,run)
+%SAVEPAIRGUIDERESULT Save PairGuide results under its own name.
+
+    result = Algorithm.result;
+    metric = Algorithm.metric;
+    file = fullfile(dataDir,sprintf('%s_%s_M%d_D%d_%d.mat', ...
+        class(Algorithm),class(Problem),Problem.M,Problem.D,run));
+    save(file,'result','metric');
 end

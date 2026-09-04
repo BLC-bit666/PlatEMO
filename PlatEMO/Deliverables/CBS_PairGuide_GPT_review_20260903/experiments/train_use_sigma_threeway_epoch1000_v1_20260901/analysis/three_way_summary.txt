@@ -1,0 +1,8 @@
+PairGuide three-way train/use sigma analysis
+Epoch: 1000
+Training-effect pairs: 12
+Comparison: train0.5/use0.5 versus train1/use0.5
+Median decision thickness ratio: 1.3212
+Median objective thickness ratio: 1.3104
+Decision thickness improved pairs: 4 / 12
+Objective thickness improved pairs: 3 / 12

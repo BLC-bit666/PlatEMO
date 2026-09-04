@@ -1,0 +1,4 @@
+PairGuide first-use epoch analysis
+Recommended epoch: 700
+Best median-quality epoch: 1000
+Rule: smallest epoch within 0.03 quality and 0.05 full-20 rate of best

@@ -1,0 +1,5 @@
+status=complete
+taskCount=120
+pairedObservations=600
+checkpointComparisons=60
+finishedAt=2026-09-02 19:37:47

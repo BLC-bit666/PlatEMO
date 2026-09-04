@@ -1,0 +1,603 @@
+function Summary = run_CBS_PairGuide_mainline_vs_DE20_ablation(rootPath,nWorker)
+%RUN_CBS_PAIRGUIDE_MAINLINE_VS_DE20_ABLATION Run the paired IGD campaign.
+
+    if nargin < 1 || isempty(rootPath)
+        rootPath = fileparts(which('platemo'));
+    end
+    if nargin < 2 || isempty(nWorker)
+        nWorker = 10;
+    end
+    rootPath = char(rootPath);
+    addCBSPaths(rootPath);
+    Campaign = campaignProtocol(rootPath,nWorker);
+    validateCampaign(Campaign);
+
+    campaignDir = fullfile(rootPath,'Data',Campaign.campaignName);
+    resultDir = fullfile(campaignDir,'results');
+    failureDir = fullfile(campaignDir,'failures');
+    ensureFolder(campaignDir);
+    ensureFolder(resultDir);
+    ensureFolder(failureDir);
+    Tasks = buildTasks(Campaign,resultDir);
+    freezeManifest(fullfile(campaignDir,'campaign_manifest.mat'), ...
+        Campaign,Tasks);
+
+    State = struct('schemaVersion',Campaign.schemaVersion, ...
+        'status',"running",'startedAt',string(datetime('now')), ...
+        'finishedAt',"",'attempt',0,'totalTasks',numel(Tasks), ...
+        'completeTasks',nnz(tasksComplete(Tasks,Campaign)), ...
+        'remainingTasks',0,'error',"");
+    State.remainingTasks = State.totalTasks-State.completeTasks;
+    saveState(State,campaignDir);
+    writeRunningMarker(Campaign,State,campaignDir);
+
+    try
+        smokeTest(Campaign);
+        assertSourceFingerprint(rootPath,Campaign.sourceFingerprint);
+        setSingleThreadLibraries();
+        [pool,ownsPool] = exactProcessPool(Campaign.nWorker);
+        poolCleanup = onCleanup(@()closeOwnedPool(pool,ownsPool));
+
+        pending = Tasks(~tasksComplete(Tasks,Campaign));
+        for attempt = 1 : Campaign.maxAttempts
+            if isempty(pending)
+                break;
+            end
+            State.attempt = attempt;
+            saveState(State,campaignDir);
+            fprintf(['PairGuide mainline-vs-DE20: %d pending tasks, ', ...
+                'attempt %d/%d.\n'],numel(pending),attempt, ...
+                Campaign.maxAttempts);
+            parfor i = 1 : numel(pending)
+                Task = pending(i);
+                try
+                    runOne(Task,Campaign);
+                catch err
+                    writeFailure(failureDir,Task,attempt,err);
+                end
+            end
+            pending = pending(~tasksComplete(pending,Campaign));
+            State.completeTasks = nnz(tasksComplete(Tasks,Campaign));
+            State.remainingTasks = State.totalTasks-State.completeTasks;
+            saveState(State,campaignDir);
+        end
+        clear poolCleanup;
+        if ~isempty(pending)
+            error('CBSPairGuide:PairedAblationTasksFailed', ...
+                '%d tasks failed after %d attempts.',numel(pending), ...
+                Campaign.maxAttempts);
+        end
+
+        assertSourceFingerprint(rootPath,Campaign.sourceFingerprint);
+        Summary = summarizeResults(campaignDir,Tasks,Campaign);
+        save(fullfile(campaignDir,'summary.mat'),'Summary','-v7.3');
+        State.status = "complete";
+        State.finishedAt = string(datetime('now'));
+        State.completeTasks = State.totalTasks;
+        State.remainingTasks = 0;
+        saveState(State,campaignDir);
+        writelines(["status=complete"; ...
+            "taskCount="+State.totalTasks; ...
+            "pairedObservations="+height(Summary.PairedTrajectory); ...
+            "checkpointComparisons="+height(Summary.CheckpointComparison); ...
+            "finishedAt="+State.finishedAt], ...
+            fullfile(campaignDir,'COMPLETE.txt'));
+        removeMarker(fullfile(campaignDir,'RUNNING.txt'));
+    catch err
+        State.status = "failed";
+        State.finishedAt = string(datetime('now'));
+        State.completeTasks = nnz(tasksComplete(Tasks,Campaign));
+        State.remainingTasks = State.totalTasks-State.completeTasks;
+        State.error = string(getReport(err,'extended','hyperlinks','off'));
+        saveState(State,campaignDir);
+        writelines(State.error,fullfile(campaignDir,'FAILED.txt'));
+        removeMarker(fullfile(campaignDir,'RUNNING.txt'));
+        rethrow(err);
+    end
+end
+
+function Campaign = campaignProtocol(rootPath,nWorker)
+    Campaign = struct( ...
+        'schemaVersion',"CBS-PairGuide-mainline-vs-DE20-v1", ...
+        'campaignName',"CBS_PairGuide_mainline_vs_DE20_v1_20260902", ...
+        'rootPath',string(rootPath), ...
+        'problems',["LIRCMOP5_BC","LIRCMOP7_BC","LIRCMOP8_BC", ...
+            "LIRCMOP10_BC","LIRCMOP12_BC","LIRCMOP14_BC"], ...
+        'runs',1:10,'arms',["mainline","de20"], ...
+        'algorithms',["CBS_RegionWGAN_GP_PairGuide", ...
+            "CBS_RegionWGAN_GP_PairGuide_DE20"], ...
+        'N',100,'D',30,'maxFE',100000,'save',10, ...
+        'expectedFE',10000:10000:100000,'metric',"IGD", ...
+        'initialEpoch',500,'retrainEpoch',10,'nCritic',5, ...
+        'quotaPerGeneration',20,'guideGenerationCount',499, ...
+        'expectedQuotaRequested',20*499, ...
+        'nWorker',double(nWorker),'maxAttempts',3, ...
+        'sourceFingerprint',sourceFingerprint(rootPath));
+end
+
+function validateCampaign(C)
+    if numel(C.problems) ~= 6 || ~isequal(C.runs,1:10) || ...
+            ~isequal(C.arms,["mainline","de20"]) || ...
+            C.N ~= 100 || C.D ~= 30 || C.maxFE ~= 100000 || ...
+            C.save ~= 10 || ~isequal(C.expectedFE,10000:10000:100000) || ...
+            C.metric ~= "IGD" || C.initialEpoch ~= 500 || ...
+            C.retrainEpoch ~= 10 || C.nCritic ~= 5 || ...
+            C.quotaPerGeneration ~= 20 || ...
+            C.guideGenerationCount ~= 499 || ...
+            C.expectedQuotaRequested ~= 9980 || ...
+            C.nWorker < 1 || C.nWorker > 10 || C.maxAttempts ~= 3
+        error('CBSPairGuide:BadPairedAblationProtocol', ...
+            'The locked paired ablation protocol was changed.');
+    end
+end
+
+function Tasks = buildTasks(C,resultDir)
+    template = struct('problem',"",'run',0,'seed',0,'arm',"", ...
+        'algorithm',"",'outputFile',"");
+    count = numel(C.problems)*numel(C.runs)*numel(C.arms);
+    Tasks = repmat(template,count,1);
+    row = 0;
+    for problem = C.problems
+        for run = C.runs
+            for arm = 1 : numel(C.arms)
+                row = row+1;
+                Tasks(row).problem = problem;
+                Tasks(row).run = run;
+                Tasks(row).seed = run;
+                Tasks(row).arm = C.arms(arm);
+                Tasks(row).algorithm = C.algorithms(arm);
+                Tasks(row).outputFile = string(fullfile(resultDir, ...
+                    sprintf('%s_%s_run%02d.mat',problem,C.arms(arm),run)));
+            end
+        end
+    end
+end
+
+function freezeManifest(file,Campaign,Tasks)
+    if isfile(file)
+        Existing = load(file,'Campaign','Tasks');
+        if ~isequaln(Existing.Campaign,Campaign) || ...
+                ~isequaln(Existing.Tasks,Tasks)
+            error('CBSPairGuide:PairedAblationManifestConflict', ...
+                'Existing campaign manifest uses another protocol.');
+        end
+    else
+        save(file,'Campaign','Tasks','-v7.3');
+    end
+end
+
+function runOne(Task,C)
+    if resultComplete(Task,C)
+        return;
+    end
+    if isfile(Task.outputFile)
+        error('CBSPairGuide:InvalidPairedAblationResult', ...
+            'Refusing to overwrite an invalid result: %s',Task.outputFile);
+    end
+
+    rng(Task.seed,'twister');
+    problemConstructor = str2func(char(Task.problem));
+    Problem = problemConstructor('N',C.N,'D',C.D,'maxFE',C.maxFE, ...
+        'maxRuntime',Inf);
+    algorithmConstructor = str2func(char(Task.algorithm));
+    Algorithm = algorithmConstructor('save',C.save,'run',Task.run, ...
+        'outputFcn',@(varargin)[]);
+    startedAt = string(datetime('now'));
+    timer = tic;
+    Algorithm.Solve(Problem);
+    wallClockSeconds = toc(timer);
+    FE = reshape(double(cell2mat(Algorithm.result(:,1))),[],1);
+    IGD = reshape(double(Algorithm.CalMetric('IGD')),[],1);
+    Audit = Algorithm.guideExperimentSnapshot();
+    validateRun(Task,C,Problem,FE,IGD,Audit);
+
+    Record = struct( ...
+        'schemaVersion',C.schemaVersion,'sourceFingerprint', ...
+            C.sourceFingerprint.combinedSHA256, ...
+        'arm',Task.arm,'algorithm',Task.algorithm, ...
+        'problem',Task.problem,'run',Task.run,'seed',Task.seed, ...
+        'N',C.N,'D',C.D,'maxFE',C.maxFE, ...
+        'finalFE',double(Problem.FE),'save',C.save,'metric',C.metric, ...
+        'initialEpoch',C.initialEpoch,'retrainEpoch',C.retrainEpoch, ...
+        'nCritic',C.nCritic,'quotaPerGeneration',C.quotaPerGeneration, ...
+        'guideGenerationCount',C.guideGenerationCount, ...
+        'guideGenerationMode',string(Audit.generationMode), ...
+        'guideUseMode',string(Audit.useMode), ...
+        'pairTrainingEvents',double(Audit.pairTrainingEvents), ...
+        'rawCandidates',double(Audit.rawCandidates), ...
+        'quotaRequested',double(Audit.guidedRequested), ...
+        'quotaSelected',double(Audit.guidedSelected), ...
+        'quotaFallback',double(Audit.guidedFallback), ...
+        'startedAt',startedAt,'finishedAt',string(datetime('now')), ...
+        'wallClockSeconds',double(wallClockSeconds), ...
+        'algorithmRuntimeSeconds',double(Algorithm.metric.runtime));
+    partial = char(Task.outputFile+".partial.mat");
+    save(partial,'Record','FE','IGD','-v7.3');
+    [ok,message] = movefile(partial,Task.outputFile,'f');
+    if ~ok
+        error('CBSPairGuide:PairedAblationMoveFailed','%s',message);
+    end
+end
+
+function validateRun(Task,C,Problem,FE,IGD,A)
+    required = {'generationMode','useMode','nCritic','pairInitialEpoch', ...
+        'pairRetrainEpoch','pairTrainingEvents','rawCandidates', ...
+        'guidedRequested','guidedSelected','guidedFallback'};
+    if ~all(isfield(A,required)) || Problem.FE ~= C.maxFE || ...
+            ~isequal(reshape(FE,1,[]),C.expectedFE) || ...
+            numel(IGD) ~= numel(C.expectedFE) || any(~isfinite(IGD)) || ...
+            double(A.nCritic) ~= C.nCritic || ...
+            double(A.pairInitialEpoch) ~= C.initialEpoch || ...
+            double(A.pairRetrainEpoch) ~= C.retrainEpoch || ...
+            double(A.guidedRequested) ~= C.expectedQuotaRequested || ...
+            double(A.guidedSelected)+double(A.guidedFallback) ~= ...
+                C.expectedQuotaRequested
+        error('CBSPairGuide:BadPairedAblationRun', ...
+            'Run violated its FE, IGD, configuration, or quota contract.');
+    end
+    if Task.arm == "mainline"
+        validArm = string(A.generationMode) == "pair_guide" && ...
+            string(A.useMode) == "pair_guide";
+    else
+        validArm = string(A.generationMode) == "traditional_de" && ...
+            string(A.useMode) == "traditional_de" && ...
+            double(A.rawCandidates) == 0 && ...
+            double(A.pairTrainingEvents) == 0 && ...
+            double(A.guidedSelected) == C.expectedQuotaRequested && ...
+            double(A.guidedFallback) == 0;
+    end
+    if ~validArm
+        error('CBSPairGuide:BadPairedAblationArm', ...
+            'The requested algorithm arm was not actually executed.');
+    end
+end
+
+function complete = tasksComplete(Tasks,C)
+    complete = false(size(Tasks));
+    for i = 1 : numel(Tasks)
+        complete(i) = resultComplete(Tasks(i),C);
+    end
+end
+
+function complete = resultComplete(Task,C)
+    complete = false;
+    if ~isfile(Task.outputFile)
+        return;
+    end
+    try
+        Data = load(Task.outputFile,'Record','FE','IGD');
+        R = Data.Record;
+        complete = string(R.schemaVersion) == C.schemaVersion && ...
+            string(R.sourceFingerprint) == ...
+                C.sourceFingerprint.combinedSHA256 && ...
+            string(R.arm) == Task.arm && ...
+            string(R.algorithm) == Task.algorithm && ...
+            string(R.problem) == Task.problem && R.run == Task.run && ...
+            R.seed == Task.seed && R.N == C.N && R.D == C.D && ...
+            R.maxFE == C.maxFE && R.finalFE == C.maxFE && ...
+            R.save == C.save && string(R.metric) == C.metric && ...
+            R.initialEpoch == C.initialEpoch && ...
+            R.retrainEpoch == C.retrainEpoch && ...
+            R.nCritic == C.nCritic && ...
+            R.quotaRequested == C.expectedQuotaRequested && ...
+            R.quotaSelected+R.quotaFallback == ...
+                C.expectedQuotaRequested && ...
+            isequal(reshape(double(Data.FE),1,[]),C.expectedFE) && ...
+            numel(Data.IGD) == numel(C.expectedFE) && ...
+            all(isfinite(double(Data.IGD(:))));
+        if complete && Task.arm == "mainline"
+            complete = string(R.guideGenerationMode) == "pair_guide" && ...
+                string(R.guideUseMode) == "pair_guide";
+        elseif complete
+            complete = string(R.guideGenerationMode) == ...
+                "traditional_de" && ...
+                string(R.guideUseMode) == "traditional_de" && ...
+                R.pairTrainingEvents == 0 && R.rawCandidates == 0 && ...
+                R.quotaSelected == C.expectedQuotaRequested && ...
+                R.quotaFallback == 0;
+        end
+    catch
+        complete = false;
+    end
+end
+
+function Summary = summarizeResults(campaignDir,Tasks,C)
+    armTemplate = struct('problem',"",'run',0,'seed',0,'arm',"", ...
+        'FE',0,'IGD',NaN);
+    armRows = repmat(armTemplate,numel(Tasks)*numel(C.expectedFE),1);
+    row = 0;
+    for i = 1 : numel(Tasks)
+        Data = load(Tasks(i).outputFile,'IGD');
+        for checkpoint = 1 : numel(C.expectedFE)
+            row = row+1;
+            armRows(row).problem = Tasks(i).problem;
+            armRows(row).run = Tasks(i).run;
+            armRows(row).seed = Tasks(i).seed;
+            armRows(row).arm = Tasks(i).arm;
+            armRows(row).FE = C.expectedFE(checkpoint);
+            armRows(row).IGD = double(Data.IGD(checkpoint));
+        end
+    end
+    ArmTrajectory = struct2table(armRows);
+
+    pairTemplate = struct('problem',"",'run',0,'seed',0,'FE',0, ...
+        'mainlineIGD',NaN,'DE20IGD',NaN, ...
+        'deltaDE20MinusMainline',NaN);
+    pairRows = repmat(pairTemplate,numel(C.problems)*numel(C.runs)* ...
+        numel(C.expectedFE),1);
+    row = 0;
+    for problem = C.problems
+        for run = C.runs
+            mainKeep = ArmTrajectory.problem == problem & ...
+                ArmTrajectory.run == run & ArmTrajectory.arm == "mainline";
+            deKeep = ArmTrajectory.problem == problem & ...
+                ArmTrajectory.run == run & ArmTrajectory.arm == "de20";
+            mainIGD = ArmTrajectory.IGD(mainKeep);
+            deIGD = ArmTrajectory.IGD(deKeep);
+            if numel(mainIGD) ~= numel(C.expectedFE) || ...
+                    numel(deIGD) ~= numel(C.expectedFE)
+                error('CBSPairGuide:IncompletePairedTrajectory', ...
+                    'Each problem/run must contain both ten-point arms.');
+            end
+            for checkpoint = 1 : numel(C.expectedFE)
+                row = row+1;
+                pairRows(row).problem = problem;
+                pairRows(row).run = run;
+                pairRows(row).seed = run;
+                pairRows(row).FE = C.expectedFE(checkpoint);
+                pairRows(row).mainlineIGD = mainIGD(checkpoint);
+                pairRows(row).DE20IGD = deIGD(checkpoint);
+                pairRows(row).deltaDE20MinusMainline = ...
+                    deIGD(checkpoint)-mainIGD(checkpoint);
+            end
+        end
+    end
+    PairedTrajectory = struct2table(pairRows);
+    CheckpointComparison = groupedComparison(PairedTrajectory,C);
+    FinalComparison = CheckpointComparison( ...
+        CheckpointComparison.FE == C.maxFE,:);
+    writetable(ArmTrajectory, ...
+        fullfile(campaignDir,'arm_igd_trajectory.csv'));
+    writetable(PairedTrajectory, ...
+        fullfile(campaignDir,'paired_igd_trajectory.csv'));
+    writetable(CheckpointComparison, ...
+        fullfile(campaignDir,'problem_checkpoint_comparison.csv'));
+    writetable(FinalComparison, ...
+        fullfile(campaignDir,'problem_final_comparison.csv'));
+    Summary = struct('schemaVersion',C.schemaVersion, ...
+        'campaignDir',string(campaignDir), ...
+        'sourceFingerprint',C.sourceFingerprint.combinedSHA256, ...
+        'deltaDefinition',"DE20 IGD - mainline IGD; positive favors mainline", ...
+        'ArmTrajectory',ArmTrajectory, ...
+        'PairedTrajectory',PairedTrajectory, ...
+        'CheckpointComparison',CheckpointComparison, ...
+        'FinalComparison',FinalComparison);
+end
+
+function Table = groupedComparison(Paired,C)
+    template = struct('problem',"",'FE',0,'pairedRuns',0, ...
+        'mainlineMean',NaN,'mainlineStd',NaN,'mainlineMedian',NaN, ...
+        'DE20Mean',NaN,'DE20Std',NaN,'DE20Median',NaN, ...
+        'meanDeltaDE20MinusMainline',NaN, ...
+        'medianDeltaDE20MinusMainline',NaN, ...
+        'mainlineWins',0,'DE20Wins',0,'ties',0,'signTestP',NaN);
+    rows = repmat(template,numel(C.problems)*numel(C.expectedFE),1);
+    row = 0;
+    for problem = C.problems
+        for fe = C.expectedFE
+            row = row+1;
+            keep = Paired.problem == problem & Paired.FE == fe;
+            main = Paired.mainlineIGD(keep);
+            de = Paired.DE20IGD(keep);
+            delta = de-main;
+            if numel(delta) ~= numel(C.runs)
+                error('CBSPairGuide:BadCheckpointPairCount', ...
+                    'Every problem/checkpoint requires ten paired runs.');
+            end
+            rows(row).problem = problem;
+            rows(row).FE = fe;
+            rows(row).pairedRuns = numel(delta);
+            rows(row).mainlineMean = mean(main);
+            rows(row).mainlineStd = std(main);
+            rows(row).mainlineMedian = median(main);
+            rows(row).DE20Mean = mean(de);
+            rows(row).DE20Std = std(de);
+            rows(row).DE20Median = median(de);
+            rows(row).meanDeltaDE20MinusMainline = mean(delta);
+            rows(row).medianDeltaDE20MinusMainline = median(delta);
+            rows(row).mainlineWins = nnz(delta > 0);
+            rows(row).DE20Wins = nnz(delta < 0);
+            rows(row).ties = nnz(delta == 0);
+            rows(row).signTestP = exactSignTest(delta);
+        end
+    end
+    Table = struct2table(rows);
+end
+
+function p = exactSignTest(delta)
+    positive = nnz(delta > 0);
+    negative = nnz(delta < 0);
+    n = positive+negative;
+    if n == 0
+        p = 1;
+        return;
+    end
+    k = min(positive,negative);
+    tail = 0;
+    for j = 0 : k
+        tail = tail+nchoosek(n,j);
+    end
+    p = min(1,2*tail/(2^n));
+end
+
+function smokeTest(C)
+    rng(1,'twister');
+    Mainline = CBS_RegionWGAN_GP_PairGuide( ...
+        'save',1,'outputFcn',@(varargin)[]);
+    MainProblem = DASCMOP1_BC('N',10,'D',5,'maxFE',40);
+    Mainline.Solve(MainProblem);
+    M = Mainline.guideExperimentSnapshot();
+    assert(M.generationMode == "pair_guide" && ...
+        M.useMode == "pair_guide" && M.pairInitialEpoch == C.initialEpoch && ...
+        M.pairRetrainEpoch == C.retrainEpoch && M.nCritic == C.nCritic && ...
+        M.guidedRequested == 2 && M.guidedSelected+M.guidedFallback == 2);
+
+    rng(1,'twister');
+    Ablation = CBS_RegionWGAN_GP_PairGuide_DE20( ...
+        'save',1,'outputFcn',@(varargin)[]);
+    AblationProblem = DASCMOP1_BC('N',10,'D',5,'maxFE',40);
+    Ablation.Solve(AblationProblem);
+    A = Ablation.guideExperimentSnapshot();
+    assert(A.generationMode == "traditional_de" && ...
+        A.useMode == "traditional_de" && ...
+        A.pairInitialEpoch == C.initialEpoch && ...
+        A.pairRetrainEpoch == C.retrainEpoch && A.nCritic == C.nCritic && ...
+        A.guidedRequested == 2 && A.guidedSelected == 2 && ...
+        A.guidedFallback == 0 && A.rawCandidates == 0 && ...
+        A.pairTrainingEvents == 0);
+end
+
+function [pool,ownsPool] = exactProcessPool(nWorker)
+    pool = gcp('nocreate');
+    ownsPool = isempty(pool);
+    if ownsPool
+        pool = parpool("Processes",nWorker);
+    elseif pool.NumWorkers ~= nWorker || contains(class(pool),'ThreadPool')
+        error('CBSPairGuide:BadPairedAblationPool', ...
+            'Experiment requires exactly %d process workers.',nWorker);
+    end
+end
+
+function closeOwnedPool(pool,ownsPool)
+    if ownsPool && ~isempty(pool) && isvalid(pool)
+        delete(pool);
+    end
+end
+
+function setSingleThreadLibraries()
+    names = {'OMP_NUM_THREADS','OPENBLAS_NUM_THREADS', ...
+        'MKL_NUM_THREADS','VECLIB_MAXIMUM_THREADS'};
+    for i = 1 : numel(names)
+        setenv(names{i},'1');
+    end
+end
+
+function writeFailure(failureDir,Task,attempt,err)
+    Failure = struct('problem',Task.problem,'run',Task.run, ...
+        'seed',Task.seed,'arm',Task.arm,'algorithm',Task.algorithm, ...
+        'attempt',attempt,'failedAt',string(datetime('now')), ...
+        'identifier',string(err.identifier), ...
+        'report',string(getReport(err,'extended','hyperlinks','off')));
+    file = fullfile(failureDir,sprintf('%s_%s_run%02d_attempt%02d.mat', ...
+        Task.problem,Task.arm,Task.run,attempt));
+    save(file,'Failure','-v7.3');
+end
+
+function saveState(State,campaignDir)
+    file = fullfile(campaignDir,'campaign_state.mat');
+    partial = char(string(file)+".partial.mat");
+    save(partial,'State','-v7.3');
+    [ok,message] = movefile(partial,file,'f');
+    if ~ok
+        error('CBSPairGuide:PairedAblationStateMoveFailed','%s',message);
+    end
+end
+
+function writeRunningMarker(C,State,campaignDir)
+    writelines(["status=running";"startedAt="+State.startedAt; ...
+        "totalTasks="+State.totalTasks;"workers="+C.nWorker; ...
+        "problems="+strjoin(C.problems,",");"runs=1:10"; ...
+        "maxFE=100000";"save=10"; ...
+        "sourceFingerprint="+C.sourceFingerprint.combinedSHA256], ...
+        fullfile(campaignDir,'RUNNING.txt'));
+end
+
+function ensureFolder(folder)
+    if ~isfolder(folder)
+        mkdir(folder);
+    end
+end
+
+function removeMarker(file)
+    if isfile(file)
+        delete(file);
+    end
+end
+
+function Fingerprint = sourceFingerprint(rootPath)
+    relativeFiles = [ ...
+        "Algorithms/Multi-objective optimization/CBS-CGAN/Core/"+ ...
+            "CBS_RegionWGAN_GP_Core.m"; ...
+        "Algorithms/Multi-objective optimization/CBS-CGAN/Core/"+ ...
+            "PairBoundaryWGAN_RC.m"; ...
+        "Algorithms/Multi-objective optimization/CBS-CGAN/Core/"+ ...
+            "PairBoundaryArchive_RC.m"; ...
+        "Algorithms/Multi-objective optimization/CBS-CGAN-PairGuide/"+ ...
+            "CBS_RegionWGAN_GP_PairGuide.m"; ...
+        "Algorithms/Multi-objective optimization/CBS-CGAN-PairGuide/"+ ...
+            "CBS_RegionWGAN_GP_PairGuide_DE20.m"; ...
+        "Algorithms/Multi-objective optimization/CBS-CGAN/Support/"+ ...
+            "run_CBS_PairGuide_mainline_vs_DE20_ablation.m"; ...
+        "Metrics/IGD.m"; ...
+        "Problems/Multi-objective optimization/LIR-CMOP_BC/LIRCMOP5_BC.m"; ...
+        "Problems/Multi-objective optimization/LIR-CMOP_BC/LIRCMOP7_BC.m"; ...
+        "Problems/Multi-objective optimization/LIR-CMOP_BC/LIRCMOP8_BC.m"; ...
+        "Problems/Multi-objective optimization/LIR-CMOP_BC/LIRCMOP10_BC.m"; ...
+        "Problems/Multi-objective optimization/LIR-CMOP_BC/LIRCMOP12_BC.m"; ...
+        "Problems/Multi-objective optimization/LIR-CMOP_BC/LIRCMOP14_BC.m"];
+    Files = repmat(struct('relativePath',"",'sha256',""), ...
+        numel(relativeFiles),1);
+    canonical = "";
+    for i = 1 : numel(relativeFiles)
+        file = fullfile(rootPath,char(relativeFiles(i)));
+        if ~isfile(file)
+            error('CBSPairGuide:MissingPairedAblationSource', ...
+                'Cannot fingerprint missing source: %s',file);
+        end
+        digest = sha256File(file);
+        Files(i).relativePath = relativeFiles(i);
+        Files(i).sha256 = digest;
+        canonical = canonical+relativeFiles(i)+"|"+digest+newline;
+    end
+    Fingerprint = struct('algorithm',"SHA-256",'files',Files, ...
+        'combinedSHA256',sha256Bytes( ...
+            unicode2native(char(canonical),'UTF-8')));
+end
+
+function assertSourceFingerprint(rootPath,expected)
+    current = sourceFingerprint(rootPath);
+    if ~isequaln(current,expected)
+        error('CBSPairGuide:PairedAblationSourceChanged', ...
+            'Campaign source changed after the manifest was frozen.');
+    end
+end
+
+function digest = sha256File(file)
+    engine = java.security.MessageDigest.getInstance('SHA-256');
+    fid = fopen(file,'rb');
+    if fid < 0
+        error('CBSPairGuide:PairedAblationFingerprintReadFailed', ...
+            'Cannot read source for hashing: %s',file);
+    end
+    cleanup = onCleanup(@()fclose(fid));
+    while true
+        bytes = fread(fid,1024*1024,'*uint8');
+        if isempty(bytes)
+            break;
+        end
+        engine.update(typecast(bytes(:),'int8'));
+    end
+    clear cleanup;
+    digest = digestHex(engine.digest());
+end
+
+function digest = sha256Bytes(bytes)
+    engine = java.security.MessageDigest.getInstance('SHA-256');
+    engine.update(typecast(uint8(bytes(:)),'int8'));
+    digest = digestHex(engine.digest());
+end
+
+function digest = digestHex(bytes)
+    bytes = typecast(bytes,'uint8');
+    digest = string(lower(reshape(dec2hex(bytes,2).',1,[])));
+end

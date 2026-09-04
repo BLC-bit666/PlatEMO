@@ -1,0 +1,4 @@
+status=complete
+taskCount=30
+saveCount=10
+finishedAt=2026-09-02 16:20:25

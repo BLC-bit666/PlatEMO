@@ -1,0 +1,20 @@
+PairGuide training-schedule analysis
+Stage: epoch
+Factor: retrainEpoch
+Paired blocks: 30
+Numerical-best arm: 20
+Recommended arm: 20
+Recommended gAUC median ratio: 1
+Recommended IGD100K median ratio: 1
+Numerical-best paired score: 1.03556
+Gate: both overall median ratios <= 1.05
+Gate: both five-run problem median ratios <= 1.10
+Decision: smallest arm passing both gates
+Training diagnostics: descriptive only; selection gate unchanged
+IGD penalty: replace nonfinite IGD with 10 times that problem's maximum finite IGD
+Penalty LIRCMOP5_BC: 249.901721 (nonfinite values=0)
+Penalty LIRCMOP7_BC: 243.105401 (nonfinite values=0)
+Penalty LIRCMOP8_BC: 246.08627 (nonfinite values=0)
+Penalty LIRCMOP10_BC: 166.725621 (nonfinite values=0)
+Penalty LIRCMOP12_BC: 250.806447 (nonfinite values=0)
+Penalty LIRCMOP14_BC: 148.060495 (nonfinite values=0)

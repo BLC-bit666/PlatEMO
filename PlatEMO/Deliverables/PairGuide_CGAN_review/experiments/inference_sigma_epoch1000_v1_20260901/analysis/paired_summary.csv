@@ -1,0 +1,2 @@
+pairCount,decisionThicknessRatioMedian,objectiveThicknessRatioMedian,decisionThicknessImproved,objectiveThicknessImproved,rawBoundaryMarginRatioMedian,rawInfeasibleRateDeltaMedian,candidateValidRateDeltaMedian,referenceMatchRateDeltaMedian,uniqueRateDeltaMedian,assignedCoverageDeltaMedian,entropyDeltaMedian,guidedCountDeltaMedian,guidedFeasibleRateDeltaMedian,guidedBoundaryMarginRatioMedian,guidedUsefulPerQuotaDeltaMedian
+12,0.602933266132262,0.597313842722073,12,11,0.592104219147881,0.023,0.001,-0.004,0,-0.14,-0.128422893831718,0,-0.05,0.709857622394335,0

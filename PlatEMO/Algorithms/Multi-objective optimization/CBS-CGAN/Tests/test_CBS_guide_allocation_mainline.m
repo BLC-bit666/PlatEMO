@@ -1,5 +1,5 @@
 function test_CBS_guide_allocation_mainline()
-%TEST_CBS_GUIDE_ALLOCATION_MAINLINE Verify legacy and critic pool queries.
+%TEST_CBS_GUIDE_ALLOCATION_MAINLINE Verify retained legacy critic utilities.
 
     repoRoot = fileparts(which('platemo'));
     addCBSPaths(repoRoot);
@@ -35,5 +35,5 @@ function test_CBS_guide_allocation_mainline()
         isequal(filteredDec,rawDec(keepIdx,:)) && ...
         isequal(filteredRefs,rawRefs(keepIdx)) && ...
         all(percentile(keepIdx) >= 0.625));
-    fprintf('CBS legacy and production critic allocations passed.\n');
+    fprintf('CBS retained legacy critic utility regressions passed.\n');
 end
