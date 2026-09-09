@@ -1,8 +1,8 @@
 function varargout = PairBoundaryWGAN_RC(action,varargin)
-%PAIRBOUNDARYWGAN_RC Absolute endpoint pair CGAN with geometric anchoring.
+%PAIRBOUNDARYWGAN_RC Single-point conditional WGAN on real boundary endpoints.
 %   Conditions are [reference-vector, side]. Pair IDs are metadata only.
-%   Training uses every active complete pair in shuffled, no-replacement
-%   epochs. A triggered update is adopted immediately and used directly.
+%   Deduplicated endpoints are balanced across labels and directions. Generator
+%   update budgets and content/generation triggers are independent of service.
 
 %------------------------------- Copyright --------------------------------
 % Copyright (c) 2026 BIMK Group. You are free to use PlatEMO for research.
@@ -20,52 +20,94 @@ function varargout = PairBoundaryWGAN_RC(action,varargin)
 end
 
 function [Model,Status] = trainIfNeeded(Model,Data,Gate,Problem,Options)
-%TRAINIFNEEDED Gate, trigger, continue training, and use the result.
+%TRAINIFNEEDED Independent training and service gates; content-based updates.
 
     Options = fillOptions(Options);
     Model = normalizeModelMetadata(Model);
-    Status = emptyStatus(Model.ready,Options.trainingSigma);
-    firstTraining = ~Model.ready;
-    if firstTraining
-        epochCount = Options.initialEpoch;
-        Status.trainingKind = "initial";
-    else
-        epochCount = Options.retrainEpoch;
+    if Model.ready && ~isfield(Model,'singlePoint')
+        Model = normalizeModelMetadata([]); % Old paired models have different semantics.
+    end
+    Status = emptyStatus(Model.ready && Data.count > 0,Options.trainingSigma);
+    Status.generation = Options.generation;
+    Status.requestedUpdates = Options.initialEpoch;
+    Status.trainingKind = "initial";
+    if Model.ready
+        Status.requestedUpdates = Options.retrainEpoch;
         Status.trainingKind = "retrain";
     end
-    Status.requestedEpochs = epochCount;
+    Status.requestedEpochs = Status.requestedUpdates; % Legacy field, update units.
     Status.nCritic = Options.nCritic;
-    if ~Gate.eligible || Data.count < Options.pairMinPairs
+    if Data.count < Options.pairMinPairs || ~Gate.eligible
+        Status.reason = "insufficient_pairs";
         return;
     end
-    if epochCount == 0
+    [delta,changedRows,newRegions] = changesSince(Data,Model.lastData,Problem.D);
+    Status.contentChange = delta;
+    Status.changedPairs = nnz(changedRows);
+    Status.newRegions = newRegions;
+    due = Options.generation-Model.lastTrainGeneration >= Options.retrainGenerations;
+    if Model.ready && delta < Options.retrainChange && ~due
+        Status.reason = "current";
+        return;
+    end
+    if Model.lastAttemptGeneration == Options.generation
+        Status.reason = "already_attempted";
+        return;
+    end
+    if Status.requestedUpdates == 0
         Status.reason = "disabled";
         return;
     end
-
-    [changed,newRegions,changedRows] = changesSince(Data,Model.lastPairIds, ...
-        Model.lastPairFE,Model.lastRefs);
-    Status.changedPairs = changed;
-    Status.newRegions = newRegions;
-    needsUpdate = ~Model.ready || ...
-        changed >= Options.pairRetrainChanges || ...
-        newRegions >= Options.pairNewRegionChanges;
-    if ~needsUpdate
-        Status.reason = "current";
-        Status.useModel = Model.ready;
-        return;
+    if ~Model.ready
+        Status.trigger = "initial";
+    elseif delta >= Options.retrainChange
+        Status.trigger = "content";
+    else
+        Status.trigger = "generation";
     end
-
-    if Options.collectDiagnostics
-        Status.preDiagnostics = pairModelDiagnostics( ...
-            Model,Data,changedRows,Options);
+    Previous = Model;
+    Model.lastAttemptGeneration = Options.generation;
+    Candidate = prepareState(Model,Problem.D,size(Data.cF,2),Options);
+    [Candidate,TrainingData] = modelTrainingData(Candidate,Data,Options);
+    diagnosticTimer = tic;
+    Status.preDiagnostics = pairModelDiagnostics(Candidate,TrainingData,changedRows,Options);
+    Status.diagnosticGeneratorRows = 18*Data.count;
+    Status.diagnosticCriticRows = 4*Data.count;
+    Status.diagnosticSeconds = toc(diagnosticTimer);
+    trainingTimer = tic;
+    try
+        Candidate = trainModel(Candidate,TrainingData,Options,Status.requestedUpdates);
+        Status.generatorForwardRows = Candidate.eventGeneratorRows;
+        Status.criticForwardRows = Candidate.eventCriticRows;
+        finiteWeights = all(cellfun(@(x)all(isfinite(extractdata(x)),'all'), ...
+            Candidate.netG.Learnables.Value)) && ...
+            all(cellfun(@(x)all(isfinite(extractdata(x)),'all'), ...
+            Candidate.netC.Learnables.Value));
+        if ~finiteWeights || Candidate.eventFailed
+            error('CBSPairGuide:NonfiniteTraining','Nonfinite model parameters.');
+        end
+    catch err
+        Status.trainingSeconds = toc(trainingTimer);
+        if strcmp(err.identifier,'CBSPairGuide:NonfiniteTraining')
+            Model = Previous;
+            Model.lastAttemptGeneration = Options.generation;
+            Status.reason = "numerical_failure";
+            return;
+        end
+        rethrow(err);
     end
-    Model = prepareState(Model,Problem.D,size(Data.cF,2),Options);
-    Model = trainModel(Model,Data,Options,epochCount);
+    Status.trainingSeconds = toc(trainingTimer);
+    Model = Candidate;
     Model.ready = true;
-    Model.lastPairIds = reshape(double(Data.id),[],1);
-    Model.lastPairFE = reshape(double(Data.lastFE),[],1);
-    Model.lastRefs = unique(double(Data.ref),'stable');
+    Model.lastData = Data;
+    Model.lastTrainingData = TrainingData;
+    Status.conditionScale = TrainingData.referenceScale;
+    Status.actualCF = networkConditions(TrainingData.cF,Model);
+    Status.actualCI = networkConditions(TrainingData.cI,Model);
+    Status.useSideCondition = Model.useSideCondition;
+    Model.lastTrainGeneration = Options.generation;
+    Model.lastAttemptGeneration = Options.generation;
+    Model.version = Previous.version+1;
     Status.trained = true;
     Status.useModel = true;
     Status.epochs = Model.eventEpochs;
@@ -74,110 +116,144 @@ function [Model,Status] = trainIfNeeded(Model,Data,Gate,Problem,Options)
     Status.trainingPairs = Data.count;
     Status.batchesPerEpoch = Model.eventBatchesPerEpoch;
     Status.criticUpdates = Options.nCritic*Model.eventUpdates;
+    Status.mismatchFraction = Options.mismatchFraction;
+    Status.mismatchRows = Model.eventMismatchRows;
     Status.criticPairVisits = Options.nCritic*Model.eventPairVisits;
-    if Options.collectDiagnostics
-        Status.postDiagnostics = pairModelDiagnostics( ...
-            Model,Data,changedRows,Options);
-    end
+    Status.endpointVisits = Model.eventEndpointVisits;
+    Status.trainingSamples = Model.eventTrainingSamples;
+    Status.generatorForwardRows = Model.eventGeneratorRows;
+    Status.criticForwardRows = Model.eventCriticRows;
+    Status.diagnosticGeneratorRows = 36*Data.count;
+    Status.diagnosticCriticRows = 8*Data.count;
+    diagnosticTimer = tic;
+    Status.postDiagnostics = pairModelDiagnostics(Model,TrainingData,changedRows,Options);
+    Status.diagnosticSeconds = Status.diagnosticSeconds+toc(diagnosticTimer);
     Status.reason = "trained";
 end
 
 function [Dec,Info] = sampleByCondition(Model,QueryC,Problem,Options)
-%SAMPLEBYCONDITION Generate absolute infeasible-side candidates from sigma Z.
-
-    Options = fillOptions(Options);
-    QueryC = double(QueryC);
-    Dec = zeros(0,Problem.D);
-    Info = struct('projectionRate',zeros(0,1), ...
-        'normalized',zeros(0,Problem.D), ...
-        'sampleSigma',Options.sampleSigma);
-    if isempty(QueryC) || isempty(Model) || ~isstruct(Model) || ...
-            ~isfield(Model,'ready') || ~Model.ready
-        return;
+%SAMPLEBYCONDITION One native candidate per (reference, binary side) request.
+    Options = fillOptions(Options); Dec = zeros(0,Problem.D);
+    Info = struct('normalized',Dec,'sampleSigma',Options.sampleSigma, ...
+        'z',zeros(0,Options.zDim),'conditions',QueryC,'sides',zeros(0,1), ...
+        'endpointForwardRows',0,'forwardSeconds',0);
+    if isempty(QueryC) || isempty(Model) || ~Model.ready; return; end
+    if size(QueryC,2) ~= Model.C || any(~isfinite(QueryC),'all') || ...
+            any(~ismember(QueryC(:,end),[0 1]))
+        error('CBSPairGuide:BadQueryCondition','Expected finite [w, binary side] conditions.');
     end
-    if size(QueryC,2) ~= Model.C
-        error('CBSPairGuide:BadQueryCondition', ...
-            'Pair-guide query width does not match the model.');
+    timer = tic; count = size(QueryC,1);
+    Z = gaussianNoise(count,Model.zDim,Options.sampleSigma);
+    normalized = (generateScaled(Model,Z,QueryC)+1)/2;
+    Dec = double(Problem.lower)+normalized.*(double(Problem.upper)-double(Problem.lower));
+    Info.normalized = normalized; Info.z = Z; Info.sides = QueryC(:,end);
+    Info.conditions = networkConditions(QueryC,Model);
+    Info.useSideCondition = ~isfield(Model,'useSideCondition') || Model.useSideCondition;
+    if isfield(Options,'referenceScale')
+        Info.conditionScale = Options.referenceScale;
+    else
+        Info.conditionScale = Model.lastData.referenceScale;
     end
-    Z = randn(size(QueryC,1),Model.zDim);
-    if Options.sampleSigma ~= 1
-        Z = Options.sampleSigma*Z;
+    if isfield(Model,'stableConditionSpan') && Model.stableConditionSpan
+        Info.conditionScale.span = Model.conditionSpan;
     end
-    scaled = generateScaled(Model,Z,QueryC);
-    normalized = (scaled+1)/2;
-    normalized = max(0,min(1,normalized));
-    lower = double(Problem.lower);
-    span = double(Problem.upper)-lower;
-    span(span <= eps) = 1;
-    Dec = lower+normalized.*span;
-    Info.projectionRate = zeros(size(QueryC,1),1);
-    Info.normalized = normalized;
+    Info.endpointForwardRows = count; Info.forwardSeconds = toc(timer);
 end
 
-function Model = trainModel(Model,Data,Options,epochCount)
-%TRAINMODEL Traverse every complete training pair once per epoch.
-
-    pairBatch = max(1,min(Data.count,floor(Options.miniBatch/2)));
-    batchesPerEpoch = ceil(Data.count/pairBatch);
-    Model.eventEpochs = 0;
-    Model.eventUpdates = 0;
-    Model.eventPairVisits = 0;
-    Model.eventBatchesPerEpoch = batchesPerEpoch;
+function Model = trainModel(Model,Data,Options,updateBudget)
+%TRAINMODEL Independent endpoints; equal label mass and balanced directions.
     Training = prepareTrainingArrays(Data);
-    for epoch = 1 : epochCount
-        order = balancedPairEpochOrder(Data.ref);
-        if numel(order) ~= Data.count || numel(unique(order)) ~= Data.count
-            error('CBSPairGuide:IncompleteEpoch', ...
-                'Every training pair must occur exactly once per epoch.');
+    Training.conditions = single(networkConditions(double(Training.conditions'),Model)');
+    batch = max(2,2*floor(min(Options.miniBatch,Training.count)/2));
+    Model.eventEpochs = 0; Model.eventUpdates = 0; Model.eventPairVisits = 0;
+    Model.eventEndpointVisits = 0; Model.eventTrainingSamples = Training.count;
+    Model.eventGeneratorRows = 0; Model.eventCriticRows = 0; Model.eventFailed = false;
+    Model.eventMismatchRows = 0;
+    Model.eventBatchesPerEpoch = ceil(Training.count/batch);
+    for update = 1:updateBudget
+        if isfield(Options,'diagnosticBatchIndices')
+            idx = Options.diagnosticBatchIndices(update,:);
+            assert(numel(idx)==batch && all(idx>=1 & idx<=Training.count & idx==fix(idx)), ...
+                'CBSPairGuide:BadDiagnosticBatch','Invalid fixed diagnostic sample schedule.');
+        else
+            idx = balancedEndpointBatch(Training,batch);
         end
-        for first = 1 : pairBatch : Data.count
-            idx = order(first:min(first+pairBatch-1,Data.count));
-            for critic = 1 : Options.nCritic
-                Model = updateCritic(Model,Training,idx,Options);
-            end
-            Model = updateGenerator(Model,Training,idx,Options);
-            Model.eventUpdates = Model.eventUpdates+1;
-            Model.eventPairVisits = Model.eventPairVisits+numel(idx);
+        for critic = 1:Options.nCritic
+            Model = updateCritic(Model,Training,idx,Options);
+            Model.eventGeneratorRows = Model.eventGeneratorRows+batch;
+            Model.eventCriticRows = Model.eventCriticRows+3*batch;
         end
-        Model.eventEpochs = epoch;
+        Model = updateGenerator(Model,Training,idx,Options);
+        Model.eventGeneratorRows = Model.eventGeneratorRows+batch;
+        Model.eventCriticRows = Model.eventCriticRows+batch;
+        Model.eventUpdates = update;
+        Model.eventEndpointVisits = Model.eventEndpointVisits+batch;
+    end
+    Model.eventEpochs = Model.eventEndpointVisits/Training.count;
+end
+
+function T = prepareTrainingArrays(Data)
+%PREPARETRAININGARRAYS Sharing an infeasible endpoint never duplicates its mass.
+    X = [Data.xF;Data.xI]; C = [Data.cF;Data.cI];
+    [~,keep] = unique([X,C(:,end)],'rows','stable'); X = X(keep,:); C = C(keep,:);
+    [~,~,groups] = unique(C,'rows');
+    T = struct('real',single(2*X'-1),'conditions',single(C'), ...
+        'side',C(:,end),'groups',groups,'count',numel(keep));
+end
+
+function idx = balancedEndpointBatch(T,count)
+%BALANCEDENDPOINTBATCH Equal sides, uniform direction groups within each side.
+    idx = zeros(1,count); half = count/2;
+    for side = 0:1
+        groups = unique(T.groups(T.side == side));
+        order = zeros(0,1);
+        while numel(order) < half
+            order = [order;groups(randperm(numel(groups)))]; %#ok<AGROW>
+        end
+        for k = 1:half
+            rows = find(T.groups == order(k));
+            idx(side*half+k) = rows(randi(numel(rows)));
+        end
     end
 end
 
-function Training = prepareTrainingArrays(Data)
-%PREPARETRAININGARRAYS Convert invariant batch data once per train event.
-
-    count = Data.count;
-    real = single(2*[Data.xF;Data.xI]'-1);
-    conditions = single([Data.cF;Data.cI]');
-    Training = struct( ...
-        'realF',real(:,1:count), ...
-        'realI',real(:,count+1:end), ...
-        'cF',conditions(:,1:count), ...
-        'cI',conditions(:,count+1:end), ...
-        'targetF',single(Data.xF'), ...
-        'targetI',single(Data.xI'));
+function Model = updateCritic(Model,T,idx,O)
+%UPDATECRITIC Conditional Wasserstein difference and decision gradient penalty.
+    Real = T.real(:,idx); Cond = T.conditions(:,idx); n = numel(idx);
+    Z = single(gaussianNoise(Model.zDim,n,O.trainingSigma));
+    dlCond = dlarray(Cond,'CB');
+    fake = extractdata(generatorForward(Model.netG,dlarray(Z,'CB'),dlCond));
+    [negative,mismatchRows] = directionNegatives(Real,Cond,fake,O.mismatchFraction,Model.iterC);
+    Model.eventMismatchRows = Model.eventMismatchRows+mismatchRows;
+    epsilon = rand(1,n,'single'); hat = epsilon.*Real+(1-epsilon).*negative;
+    gradients = dlfeval(@criticGradients,Model.netC,dlarray(Real,'CB'),dlCond, ...
+        negative,dlarray(hat,'CB'),single(O.gpLambda));
+    if ~all(cellfun(@(x)all(isfinite(extractdata(x)),'all'),gradients.Value))
+        error('CBSPairGuide:NonfiniteTraining','Nonfinite critic gradients.');
+    end
+    Model.iterC = Model.iterC+1;
+    [Model.netC,Model.avgC,Model.avgSqC] = adamupdate(Model.netC,gradients, ...
+        Model.avgC,Model.avgSqC,Model.iterC,O.lrD,0,0.9);
 end
 
-function Model = updateCritic(Model,Training,idx,Options)
-%UPDATECRITIC One conditional WGAN-GP update on one complete-pair batch.
-
-    Real = [Training.realF(:,idx),Training.realI(:,idx)];
-    Cond = [Training.cF(:,idx),Training.cI(:,idx)];
-    batchCount = size(Real,2);
-    Z = single(gaussianNoise( ...
-        Model.zDim,batchCount,Options.trainingSigma));
-    dlReal = dlarray(Real,'CB');
-    dlCond = dlarray(Cond,'CB');
-    dlZ = dlarray(Z,'CB');
-    fake = extractdata(generatorForward(Model.netG,dlZ,dlCond));
-    epsilon = rand(1,batchCount,'single');
-    hat = epsilon.*Real+(1-epsilon).*fake;
-    gradients = dlfeval(@criticGradients,Model.netC,dlReal,dlCond, ...
-        fake,dlarray(hat,'CB'),single(Options.gpLambda));
-    Model.iterC = Model.iterC+1;
-    [Model.netC,Model.avgC,Model.avgSqC] = adamupdate( ...
-        Model.netC,gradients,Model.avgC,Model.avgSqC,Model.iterC, ...
-        Options.lrD,0,0.9);
+function [negative,count] = directionNegatives(Real,Cond,fake,fraction,iteration)
+%DIRECTIONNEGATIVES Mix real endpoints with wrong directions, retaining side.
+% A sorted half-rotation spreads mismatch donors within each side. Repeated
+% directions that remain identical keep their generated negative instead.
+    negative=fake; count=0;
+    if fraction==0; return; end
+    n=size(Real,2); permutation=1:n;
+    for side=unique(Cond(end,:))
+        rows=find(Cond(end,:)==side);
+        [~,order]=sortrows(double(Cond(1:end-1,rows)'));
+        rows=rows(order); permutation(rows)=circshift(rows,floor(numel(rows)/2));
+    end
+    phase=mod(iteration*fraction,1);
+    wanted=floor((1:n)*fraction+phase)>floor((0:n-1)*fraction+phase);
+    different=any(Cond(1:end-1,:)~=Cond(1:end-1,permutation),1);
+    use=wanted & different;
+    assert(all(Cond(end,use)==Cond(end,permutation(use))));
+    negative(:,use)=Real(:,permutation(use)); count=nnz(use);
 end
 
 function gradients = criticGradients(netC,dlReal,dlCond,fake,dlHat,gpLambda)
@@ -196,44 +272,23 @@ function gradients = criticGradients(netC,dlReal,dlCond,fake,dlHat,gpLambda)
         'EnableHigherDerivatives',false);
 end
 
-function Model = updateGenerator(Model,Training,idx,Options)
-%UPDATEGENERATOR Adversarial plus endpoint-anchor and pair-direction loss.
-
-    cF = dlarray(Training.cF(:,idx),'CB');
-    cI = dlarray(Training.cI(:,idx),'CB');
-    targetF = dlarray(Training.targetF(:,idx),'CB');
-    targetI = dlarray(Training.targetI(:,idx),'CB');
-    pairCount = numel(idx);
-    zAdv = dlarray(single(gaussianNoise( ...
-        Model.zDim,2*pairCount,Options.trainingSigma)),'CB');
-    zPair = dlarray(single(gaussianNoise( ...
-        Model.zDim,pairCount,Options.trainingSigma)),'CB');
-    gradients = dlfeval(@generatorGradients,Model.netG,Model.netC, ...
-        cF,cI,targetF,targetI,zAdv,zPair, ...
-        single(Options.pairGeometryWeight));
+function Model = updateGenerator(Model,T,idx,O)
+%UPDATEGENERATOR Adversarial distribution learning without endpoint regression.
+    C = dlarray(T.conditions(:,idx),'CB');
+    Z = dlarray(single(gaussianNoise(Model.zDim,numel(idx),O.trainingSigma)),'CB');
+    gradients = dlfeval(@generatorGradients,Model.netG,Model.netC,C,Z);
+    if ~all(cellfun(@(x)all(isfinite(extractdata(x)),'all'),gradients.Value))
+        error('CBSPairGuide:NonfiniteTraining','Nonfinite generator gradients.');
+    end
     Model.iterG = Model.iterG+1;
-    [Model.netG,Model.avgG,Model.avgSqG] = adamupdate( ...
-        Model.netG,gradients,Model.avgG,Model.avgSqG,Model.iterG, ...
-        Options.lrG,0,0.9);
+    [Model.netG,Model.avgG,Model.avgSqG] = adamupdate(Model.netG,gradients, ...
+        Model.avgG,Model.avgSqG,Model.iterG,O.lrG,0,0.9);
 end
 
-function gradients = generatorGradients(netG,netC,cF,cI,targetF,targetI, ...
-        zAdv,zPair,lambdaGeometry)
-%GENERATORGRADIENTS Anchor both same-noise endpoints and their direction.
-
-    cBoth = [cF,cI];
-    advOutput = generatorForward(netG,zAdv,cBoth);
-    adversarial = -mean(forward(netC,[advOutput;cBoth]),'all');
-
-    generatedF = (generatorForward(netG,zPair,cF)+1)/2;
-    generatedI = (generatorForward(netG,zPair,cI)+1)/2;
-    anchor = 0.5*(mean((generatedF-targetF).^2,'all')+ ...
-        mean((generatedI-targetI).^2,'all'));
-    pairDirection = mean(((generatedI-generatedF)- ...
-        (targetI-targetF)).^2,'all');
-    loss = adversarial+lambdaGeometry*(anchor+pairDirection);
-    gradients = dlgradient(loss,netG.Learnables, ...
-        'EnableHigherDerivatives',false);
+function gradients = generatorGradients(netG,netC,C,Z)
+    output = generatorForward(netG,Z,C);
+    loss = -mean(forward(netC,[output;C]),'all');
+    gradients = dlgradient(loss,netG.Learnables,'EnableHigherDerivatives',false);
 end
 
 function output = generatorForward(netG,dlZ,dlC)
@@ -254,59 +309,72 @@ end
 function output = generateScaled(Model,Z,C)
 %GENERATESCALED Forward double rows through the tanh generator.
 
+    C = networkConditions(C,Model);
     dlZ = dlarray(single(double(Z)'),'CB');
     dlC = dlarray(single(double(C)'),'CB');
     output = double(extractdata(generatorForward(Model.netG,dlZ,dlC)))';
 end
 
-function order = balancedPairEpochOrder(refs)
-%BALANCEDPAIREPOCHORDER Interleave refs in one shuffled no-replacement pass.
-
-    refs = reshape(double(refs),[],1);
-    values = unique(refs,'stable');
-    groups = cell(numel(values),1);
-    cursor = ones(numel(values),1);
-    for group = 1 : numel(values)
-        rows = find(refs == values(group));
-        groups{group} = rows(randperm(numel(rows)));
+function [Model,Actual] = modelTrainingData(Model,Data,Options)
+%MODELTRAININGDATA Keep the archive/gate frame separate from network labels.
+    Actual = Data;
+    Model.useSideCondition = logical(Options.useSideCondition);
+    Model.stableConditionSpan = logical(Options.stableConditionSpan);
+    if ~Model.stableConditionSpan; return; end
+    assert(all(isfield(Data,{'yF','yI','W','referenceScale'})), ...
+        'CBSPairGuide:MissingConditionObjectives','Stable span needs cached objectives and W.');
+    if ~isfield(Model,'conditionSpan') || isempty(Model.conditionSpan)
+        Model.conditionSpan = Data.referenceScale.span;
     end
-    order = zeros(numel(refs),1);
-    next = 0;
-    while next < numel(refs)
-        groupOrder = randperm(numel(values));
-        for group = groupOrder
-            if cursor(group) <= numel(groups{group})
-                next = next+1;
-                order(next) = groups{group}(cursor(group));
-                cursor(group) = cursor(group)+1;
-            end
-        end
+    Actual.referenceScale.span = Model.conditionSpan;
+    rF = AssignReferenceVectors_CBS(Data.yF,Data.W,Actual.referenceScale);
+    rI = AssignReferenceVectors_CBS(Data.yI,Data.W,Actual.referenceScale);
+    Actual.cF = [Data.W(rF,:),ones(Data.count,1)];
+    Actual.cI = [Data.W(rI,:),zeros(Data.count,1)];
+end
+
+function C = networkConditions(C,Model)
+%NETWORKCONDITIONS Constant side ablation preserves shape and sample weights.
+    if isfield(Model,'useSideCondition') && ~Model.useSideCondition
+        C(:,end) = 0;
     end
 end
 
-function [changed,newRegions,changedRows] = changesSince(Data,ids,lastFE,refs)
-%CHANGESSINCE Count training-set membership/endpoint changes and new refs.
+function [delta,changedRows,newRegions] = changesSince(Data,Previous,D)
+%CHANGESSINCE Content change over the union of reference directions.
 
-    changed = 0;
-    changedRows = false(Data.count,1);
-    ids = reshape(double(ids),[],1);
-    lastFE = reshape(double(lastFE),[],1);
-    for row = 1 : Data.count
-        previous = find(ids == Data.id(row),1);
-        if isempty(previous) || previous > numel(lastFE) || ...
-                Data.lastFE(row) > lastFE(previous)+1e-12
-            changed = changed+1;
-            changedRows(row) = true;
-        end
+    changedRows = true(Data.count,1);
+    if isempty(Previous) || ~isstruct(Previous) || ~isfield(Previous,'ref')
+        delta = 1;
+        newRegions = Data.count;
+        return;
     end
-    changed = changed+nnz(~ismember(ids,double(Data.id)));
-    newRegions = numel(setdiff(unique(double(Data.ref)),double(refs)));
+    refs = union(Data.ref,Previous.ref);
+    changes = ones(numel(refs),1);
+    for k = 1:numel(refs)
+        now = find(Data.ref == refs(k),1);
+        old = find(Previous.ref == refs(k),1);
+        if isempty(now) || isempty(old)
+            continue;
+        end
+        oldGap = norm(Previous.xI(old,:)-Previous.xF(old,:));
+        movement = max(norm(Data.xF(now,:)-Previous.xF(old,:)), ...
+            norm(Data.xI(now,:)-Previous.xI(old,:)));
+        changes(k) = min(1,movement/max(oldGap,1e-3*sqrt(D)));
+        if any(abs(Data.cF(now,:)-Previous.cF(old,:)) > 1e-12) || ...
+                any(abs(Data.cI(now,:)-Previous.cI(old,:)) > 1e-12)
+            changes(k) = 1; % The actual input condition also changed.
+        end
+        changedRows(now) = changes(k) > 0;
+    end
+    delta = sum(changes)/max(1,numel(refs));
+    newRegions = numel(setdiff(Data.ref,Previous.ref));
 end
 
 function Model = prepareState(Model,D,C,Options)
 %PREPARESTATE Warm-start compatible weights or initialize networks.
 
-    required = {'netG','netC','D','C','zDim', ...
+    required = {'singlePoint','netG','netC','D','C','zDim', ...
         'generatorHidden','criticHidden'};
     compatible = all(isfield(Model,required)) && ...
         Model.D == D && Model.C == C && Model.zDim == Options.zDim && ...
@@ -316,6 +384,7 @@ function Model = prepareState(Model,D,C,Options)
         return;
     end
     Model = normalizeModelMetadata([]);
+    Model.singlePoint = true;
     Model.D = D;
     Model.C = C;
     Model.zDim = Options.zDim;
@@ -331,8 +400,8 @@ function Model = normalizeModelMetadata(Model)
     if isempty(Model) || ~isstruct(Model)
         Model = struct();
     end
-    defaults = struct('ready',false,'lastPairIds',zeros(0,1), ...
-        'lastPairFE',zeros(0,1),'lastRefs',zeros(0,1), ...
+    defaults = struct('ready',false,'lastData',[], ...
+        'lastTrainGeneration',-Inf,'lastAttemptGeneration',-Inf,'version',0, ...
         'avgG',[],'avgSqG',[],'avgC',[],'avgSqC',[], ...
         'iterG',0,'iterC',0,'eventEpochs',0,'eventUpdates',0, ...
         'eventPairVisits',0,'eventBatchesPerEpoch',0);
@@ -380,7 +449,7 @@ function Diagnostics = pairModelDiagnostics(Model,Data,changedRows,Options)
 
     Diagnostics = emptyModelDiagnostics();
     if isempty(Model) || ~isstruct(Model) || ~isfield(Model,'ready') || ...
-            ~Model.ready || ~all(isfield(Model,{'netG','netC'})) || ...
+            ~all(isfield(Model,{'netG','netC'})) || ...
             Data.count < 1
         return;
     end
@@ -388,8 +457,8 @@ function Diagnostics = pairModelDiagnostics(Model,Data,changedRows,Options)
     cleanup = onCleanup(@()rng(savedRNG));
     rng(24681357,'twister');
     count = Data.count;
-    cF = single(Data.cF');
-    cI = single(Data.cI');
+    cF = single(networkConditions(Data.cF,Model)');
+    cI = single(networkConditions(Data.cI,Model)');
     Z = single(gaussianNoise(Model.zDim,count,Options.trainingSigma));
     generatedF = extractdata(generatorForward( ...
         Model.netG,dlarray(Z,'CB'),dlarray(cF,'CB')));
@@ -399,19 +468,19 @@ function Diagnostics = pairModelDiagnostics(Model,Data,changedRows,Options)
     generatedINorm = double((generatedI'+1)/2);
     squaredF = mean((generatedFNorm-double(Data.xF)).^2,2);
     squaredI = mean((generatedINorm-double(Data.xI)).^2,2);
+    Diagnostics.feasibleEndpointRMSE = sqrt(mean(squaredF));
+    Diagnostics.infeasibleEndpointRMSE = sqrt(mean(squaredI));
     Diagnostics.allEndpointRMSE = sqrt(mean([squaredF;squaredI]));
     changedRows = reshape(logical(changedRows),[],1);
     if numel(changedRows) == count && any(changedRows)
         Diagnostics.changedEndpointRMSE = sqrt(mean([ ...
             squaredF(changedRows);squaredI(changedRows)]));
     end
-    generatedDelta = generatedINorm-generatedFNorm;
-    Diagnostics.pairDifferenceRMSE = sqrt(mean( ...
-        (generatedDelta-double(Data.delta)).^2,'all'));
+    % Pair differences are not a training target for this single-point model.
 
     real = single(2*[Data.xF;Data.xI]'-1);
     fake = single([generatedF,generatedI]);
-    conditions = single([Data.cF;Data.cI]');
+    conditions = single(networkConditions([Data.cF;Data.cI],Model)');
     realScore = extractdata(forward(Model.netC, ...
         dlarray([real;conditions],'CB')));
     fakeScore = extractdata(forward(Model.netC, ...
@@ -423,7 +492,8 @@ function Diagnostics = pairModelDiagnostics(Model,Data,changedRows,Options)
     allConditions = double([Data.cF;Data.cI]);
     repeatedConditions = repelem(allConditions,repeatCount,1);
     repeatedNoise = gaussianNoise(Model.zDim, ...
-        size(repeatedConditions,1),Options.trainingSigma)';
+        count*repeatCount,Options.trainingSigma)';
+    repeatedNoise = [repeatedNoise;repeatedNoise];
     repeatedGenerated = (generateScaled(Model,repeatedNoise, ...
         repeatedConditions)+1)/2;
     withinSquared = zeros(size(allConditions,1),1);
@@ -433,15 +503,22 @@ function Diagnostics = pairModelDiagnostics(Model,Data,changedRows,Options)
         withinSquared(i) = mean((values-mean(values,1)).^2,'all');
     end
     Diagnostics.sameConditionThickness = sqrt(mean(withinSquared));
+    gaps = max(sqrt(sum(Data.delta.^2,2)),1e-3*sqrt(size(Data.xF,2)));
+    Diagnostics.relativeEndpointError = mean(sqrt(0.5*size(Data.xF,2)* ...
+        (squaredF+squaredI))./gaps);
+    Diagnostics.relativeThickness = mean(sqrt(size(Data.xF,2)* ...
+        0.5*(withinSquared(1:count)+withinSquared(count+1:end)))./gaps);
     clear cleanup;
 end
 
 function Diagnostics = emptyModelDiagnostics()
 %EMPTYMODELDIAGNOSTICS Default unavailable fixed-probe measurements.
 
-    Diagnostics = struct('allEndpointRMSE',NaN, ...
+    Diagnostics = struct('feasibleEndpointRMSE',NaN, ...
+        'infeasibleEndpointRMSE',NaN,'allEndpointRMSE',NaN, ...
         'changedEndpointRMSE',NaN,'pairDifferenceRMSE',NaN, ...
-        'sameConditionThickness',NaN,'criticGap',NaN);
+        'sameConditionThickness',NaN,'criticGap',NaN, ...
+        'relativeEndpointError',NaN,'relativeThickness',NaN);
 end
 
 function Status = emptyStatus(useModel,trainingSigma)
@@ -449,10 +526,14 @@ function Status = emptyStatus(useModel,trainingSigma)
 
     Status = struct('trained',false,'useModel',logical(useModel), ...
         'trainingKind',"",'requestedEpochs',0,'nCritic',0,'epochs',0, ...
-        'updates',0,'pairVisits',0,'trainingPairs',0, ...
+        'updates',0,'pairVisits',0,'endpointVisits',0,'trainingSamples',0,'trainingPairs',0, ...
         'criticUpdates',0,'criticPairVisits',0, ...
-        'batchesPerEpoch',0,'trainingSigma',double(trainingSigma), ...
-        'reason',"gate",'changedPairs',0,'newRegions',0, ...
+        'batchesPerEpoch',0,'trainingSeconds',0, ...
+        'trainingSigma',double(trainingSigma), ...
+        'reason',"gate",'trigger',"",'generation',0,'contentChange',0, ...
+        'requestedUpdates',0,'diagnosticSeconds',0,'changedPairs',0,'newRegions',0, ...
+        'generatorForwardRows',0,'criticForwardRows',0, ...
+        'diagnosticGeneratorRows',0,'diagnosticCriticRows',0, ...
         'preDiagnostics',emptyModelDiagnostics(), ...
         'postDiagnostics',emptyModelDiagnostics());
 end
@@ -461,23 +542,33 @@ function Options = fillOptions(Options)
 %FILLOPTIONS Locked PairGuide training values.
 
     Options = defaultOption(Options,'zDim',6);
-    Options = defaultOption(Options,'epochs',100);
+    Options = defaultOption(Options,'epochs',1000);
     Options = defaultOption(Options,'initialEpoch',Options.epochs);
-    Options = defaultOption(Options,'retrainEpoch',Options.epochs);
-    Options = defaultOption(Options,'miniBatch',64);
-    Options = defaultOption(Options,'lrD',1e-4);
-    Options = defaultOption(Options,'lrG',1e-4);
+    Options = defaultOption(Options,'retrainEpoch',20);
+    Options = defaultOption(Options,'miniBatch',32);
+    Options = defaultOption(Options,'lrD',1e-3);
+    Options = defaultOption(Options,'lrG',1e-3);
     Options = defaultOption(Options,'gpLambda',10);
     Options = defaultOption(Options,'nCritic',5);
+    Options = defaultOption(Options,'mismatchFraction',0);
+    assert(isnumeric(Options.mismatchFraction) && isscalar(Options.mismatchFraction) && ...
+        isfinite(Options.mismatchFraction) && Options.mismatchFraction>=0 && Options.mismatchFraction<1, ...
+        'CBSPairGuide:BadMismatchFraction','mismatchFraction must be in [0,1).');
     Options = defaultOption(Options,'collectDiagnostics',false);
-    Options = defaultOption(Options,'trainingSigma',1);
-    Options = defaultOption(Options,'sampleSigma',1);
+    Options = defaultOption(Options,'trainingSigma',0.1);
+    Options = defaultOption(Options,'sampleSigma',0.1);
     Options = defaultOption(Options,'generatorHidden',[32 32]);
     Options = defaultOption(Options,'criticHidden',[32 32]);
-    Options = defaultOption(Options,'pairMinPairs',32);
-    Options = defaultOption(Options,'pairRetrainChanges',8);
-    Options = defaultOption(Options,'pairNewRegionChanges',2);
-    Options = defaultOption(Options,'pairGeometryWeight',1);
+    Options = defaultOption(Options,'pairMinPairs',8);
+    Options = defaultOption(Options,'retrainChange',0.2);
+    Options = defaultOption(Options,'retrainGenerations',10);
+    Options = defaultOption(Options,'generation',0);
+    Options = defaultOption(Options,'stableConditionSpan',false);
+    Options = defaultOption(Options,'useSideCondition',true);
+    for name = ["stableConditionSpan","useSideCondition"]
+        assert(isscalar(Options.(name)) && ismember(double(Options.(name)),[0 1]), ...
+            'CBSPairGuide:BadConditionOption','Condition options must be logical scalars.');
+    end
     Options.zDim = max(1,round(double(Options.zDim)));
     Options.epochs = max(0,round(double(Options.epochs)));
     Options.initialEpoch = max(0,round(double(Options.initialEpoch)));
@@ -494,29 +585,26 @@ function Options = fillOptions(Options)
     Options.collectDiagnostics = logical(Options.collectDiagnostics);
     Options.trainingSigma = double(Options.trainingSigma);
     if ~isscalar(Options.trainingSigma) || ...
-            ~isfinite(Options.trainingSigma) || Options.trainingSigma < 0
+            ~isfinite(Options.trainingSigma) || Options.trainingSigma <= 0
         error('CBSPairGuide:BadTrainingSigma', ...
-            'trainingSigma must be one finite nonnegative scalar.');
+            'trainingSigma must be one finite positive scalar.');
     end
     Options.sampleSigma = double(Options.sampleSigma);
     if ~isscalar(Options.sampleSigma) || ~isfinite(Options.sampleSigma) || ...
-            Options.sampleSigma < 0
+            Options.sampleSigma <= 0
         error('CBSPairGuide:BadSampleSigma', ...
-            'sampleSigma must be one finite nonnegative scalar.');
+            'sampleSigma must be one finite positive scalar.');
     end
     Options.lrD = double(Options.lrD);
     Options.lrG = double(Options.lrG);
     Options.gpLambda = max(0,double(Options.gpLambda));
     Options.generatorHidden = hiddenVector(Options.generatorHidden);
     Options.criticHidden = hiddenVector(Options.criticHidden);
-    numeric = {'pairMinPairs','pairRetrainChanges', ...
-        'pairNewRegionChanges'};
+    numeric = {'pairMinPairs','retrainGenerations'};
     for i = 1 : numel(numeric)
         name = numeric{i};
         Options.(name) = max(1,round(double(Options.(name))));
     end
-    Options.pairGeometryWeight = max(0,double( ...
-        Options.pairGeometryWeight));
 end
 
 function S = defaultOption(S,name,value)

@@ -1,0 +1,62 @@
+{
+  "newTrueFE": 888800,
+  "newCalObjRows": 1777600,
+  "newCalConRows": 888800,
+  "components": [
+    {
+      "name": "unchanged full-search capture",
+      "cases": 4,
+      "FE": 400000,
+      "GUpdates": 33140,
+      "DUpdates": 165700
+    },
+    {
+      "name": "unique frozen baselines",
+      "cases": 20,
+      "FE": 4000
+    },
+    {
+      "name": "72 primary cases,three nonzero geometry checkpoints",
+      "cases": 216,
+      "FE": 43200,
+      "GUpdates": 144000,
+      "DUpdates": 720000
+    },
+    {
+      "name": "36 lower-G-LR cases,three nonzero geometry checkpoints",
+      "cases": 108,
+      "FE": 21600,
+      "GUpdates": 72000,
+      "DUpdates": 360000
+    },
+    {
+      "name": "one-batch search suffixes",
+      "cases": 84,
+      "FE": 420000
+    },
+    {
+      "name": "two20-step native/probe identity comparisons",
+      "FE": 0,
+      "GUpdates": 80,
+      "DUpdates": 400
+    },
+    {
+      "name": "36 actual-Adam one-step probes",
+      "FE": 0,
+      "GUpdates": 36,
+      "DUpdates": 180
+    }
+  ],
+  "totalNewGParameterUpdates": 249256,
+  "totalNewDParameterUpdates": 1246280,
+  "failedSuffixAttempts": 44,
+  "failedSuffixFE": 0,
+  "accountingNotes": [
+    "Zero-step samples reused across arms; only20 baseline evaluations counted.",
+    "Static gradients,geometry decomposition,audits and plots use cached data and add no oracle FE.",
+    "BC Evaluation calls CalObj twice including its constraint path; these rows are counted.",
+    "Offline oracle results never feed training or online search.",
+    "Gradient diagnostic overhead remains in measured wall time; matched gradient norm is not matched computational cost.",
+    "Copied-state coordinate/gradient computations are not additional parameter updates."
+  ]
+}

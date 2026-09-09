@@ -1,0 +1,27 @@
+{
+  "selected": "stable_no_side",
+  "seeds": [
+    11,
+    12,
+    13,
+    14,
+    15
+  ],
+  "problems": [
+    5,
+    6,
+    7,
+    8
+  ],
+  "arms": [
+    "original",
+    "fallback_only",
+    "pair_only",
+    "stable_no_side"
+  ],
+  "maxFE": 100000,
+  "runs": 80,
+  "plannedFullFE": 8000000,
+  "noRetuning": true,
+  "sourceHashesUnchanged": true
+}

@@ -1,0 +1,121 @@
+function Model = updateGenerator(Model,T,idx,O)
+% Diagnostic clone: identical native D/batches/Adam; only G gradient can change.
+    C=dlarray(T.conditions(:,idx),'CB');
+    Z=dlarray(single(gaussianNoise(Model.zDim,numel(idx),O.trainingSigma)),'CB');
+    Real=dlarray(T.real(:,idx),'CB');
+    [adv,distance]=dlfeval(@probeBatchGradients,Model.netG,Model.netC,C,Z,Real);
+    a=gradientVector(adv); d=gradientVector(distance);
+    gradients=adv; lossKind='adversarial';
+    if isfield(O,'probeLoss'); lossKind=char(O.probeLoss); end
+    if strcmp(lossKind,'distance')
+        factor=norm(a)/max(norm(d),1e-12); gradients=distance;
+        for k=1:height(gradients); gradients.Value{k}=gradients.Value{k}*single(factor); end
+    else
+        assert(strcmp(lossKind,'adversarial'));
+    end
+    offset=0; if isfield(O,'probeBase'); offset=O.probeBase; end
+    step=Model.iterG-offset+1;
+    observe=step<=5 || mod(step,20)==0;
+    if observe
+        weights=endpointWeights(T);
+        [starBefore,full]=dlfeval(@probeFullDistance,Model.netG,T,weights,Model.zDim);
+        f=gradientVector(full); thetaBefore=gradientVector(Model.netG.Learnables);
+        starBeforeValue=probeDistanceValue(Model.netG,T,weights,Model.zDim);
+    end
+    assert(all(isfinite(gradientVector(gradients))));
+    Model.iterG=Model.iterG+1;
+    [Model.netG,Model.avgG,Model.avgSqG]=adamupdate(Model.netG,gradients, ...
+        Model.avgG,Model.avgSqG,Model.iterG,O.lrG,0,0.9);
+    if observe
+        starAfter=probeDistanceValue(Model.netG,T,weights,Model.zDim);
+        delta=gradientVector(Model.netG.Learnables)-thetaBefore;
+        used=gradientVector(gradients);
+        R=struct('addedUpdates',step,'distanceBefore',starBeforeValue, ...
+            'distanceAfter',starAfter,'distanceChange',starAfter-starBeforeValue, ...
+            'fullVsAdversarialCosine',dot(f,a)/max(norm(f)*norm(a),1e-30), ...
+            'fullVsUsedCosine',dot(f,used)/max(norm(f)*norm(used),1e-30), ...
+            'adamDirectionalDerivative',dot(f,delta),'adamStepNorm',norm(delta), ...
+            'adversarialGradientNorm',norm(a),'distanceGradientNorm',norm(d), ...
+            'usedGradientNorm',norm(used));
+        if ~isfield(Model,'probeRecords') || isempty(Model.probeRecords); Model.probeRecords=R;
+        else; Model.probeRecords(end+1)=R; end
+    end
+end
+
+function [adv,distance] = probeBatchGradients(netG,netC,C,Z,Real)
+    output=generatorForward(netG,Z,C);
+    loss=-mean(forward(netC,[output;C]),'all');
+    exact=mean(sqrt(sum((output-Real).^2,1)+single(1e-12)),'all');
+    adv=dlgradient(loss,netG.Learnables,'RetainData',true);
+    distance=dlgradient(exact,netG.Learnables);
+end
+
+function weights=endpointWeights(T)
+    weights=zeros(1,T.count);
+    for side=0:1
+        groups=unique(T.groups(T.side==side));
+        for g=reshape(groups,1,[])
+            rows=T.groups==g; weights(rows)=.5/numel(groups)/nnz(rows);
+        end
+    end
+    assert(abs(sum(weights)-1)<1e-12);
+end
+
+function [loss,gradients]=probeFullDistance(netG,T,weights,zDim)
+    C=dlarray(T.conditions,'CB'); Real=dlarray(T.real,'CB');
+    output=generatorForward(netG,dlarray(zeros(zDim,T.count,'single'),'CB'),C);
+    loss=sum(sqrt(sum((output-Real).^2,1)+single(1e-12)).*single(weights),'all');
+    gradients=dlgradient(loss,netG.Learnables);
+end
+
+function value=probeDistanceValue(netG,T,weights,zDim)
+    output=extractdata(forward(netG,dlarray([zeros(zDim,T.count,'single');T.conditions],'CB')));
+    value=sum(sqrt(sum((double(output)-double(T.real)).^2,1)+1e-12).*weights);
+end
+
+function v=gradientVector(table)
+    values=cellfun(@(x)double(extractdata(x(:))),table.Value,'UniformOutput',false);
+    v=vertcat(values{:});
+end
+
+function [R,Extra]=gradientAudit(Model,Data)
+    T=prepareTrainingArrays(Data); T.conditions=single(networkConditions(double(T.conditions'),Model)');
+    weights=endpointWeights(T);
+    [star,gstar]=dlfeval(@probeFullDistance,Model.netG,T,weights,Model.zDim);
+    [adv,gadv]=dlfeval(@probeFullAdversarial,Model.netG,Model.netC,T,weights,Model.zDim);
+    a=gradientVector(gadv); d=gradientVector(gstar);
+    R=struct('distance',double(extractdata(star)),'adversarialLoss',double(extractdata(adv)), ...
+        'gradientCosine',dot(a,d)/max(norm(a)*norm(d),1e-30), ...
+        'starAlongAdversarialDescent',-dot(a,d)/max(norm(a),1e-30), ...
+        'starGradientNorm',norm(d),'adversarialGradientNorm',norm(a));
+    direction=gadv;
+    for k=1:height(direction); direction.Value{k}=-direction.Value{k}/single(max(norm(a),1e-30)); end
+    h=.001; plus=Model.netG; minus=Model.netG;
+    for k=1:height(direction)
+        plus.Learnables.Value{k}=plus.Learnables.Value{k}+single(h)*direction.Value{k};
+        minus.Learnables.Value{k}=minus.Learnables.Value{k}-single(h)*direction.Value{k};
+    end
+    R.finiteDifference=(probeDistanceValue(plus,T,weights,Model.zDim)-probeDistanceValue(minus,T,weights,Model.zDim))/(2*h);
+    X=(double(T.real')+1)/2; C=double(T.conditions');
+    Y=double(extractdata(forward(Model.netG,dlarray([zeros(Model.zDim,T.count,'single');T.conditions],'CB'))))'; Y=(Y+1)/2;
+    [~,~,groups]=unique(C,'rows'); means=zeros(size(X)); variance=0;
+    for g=reshape(unique(groups),1,[])
+        ix=groups==g; w=weights(ix)'/sum(weights(ix)); mu=sum(X(ix,:).*w,1);
+        means(ix,:)=repmat(mu,nnz(ix),1);
+        variance=variance+sum(mean((X(ix,:)-mu).^2,2).*weights(ix)');
+    end
+    mse=sum(mean((Y-X).^2,2).*weights'); bias=sum(mean((Y-means).^2,2).*weights');
+    assert(abs(mse-variance-bias)<1e-10);
+    R.weightedDecisionMSE=mse; R.conditionalVariance=variance; R.varianceFraction=variance/max(mse,eps);
+    R.conditionalBiasMSE=bias; R.trainingEndpoints=T.count;
+    R.observedConditions=numel(unique(groups)); counts=accumarray(groups,1);
+    R.singletonConditions=nnz(counts==1);
+    Extra=struct('X',X,'generatedX',Y,'conditions',C,'weights',weights','group',groups,'counts',counts);
+end
+
+function [loss,gradients]=probeFullAdversarial(netG,netC,T,weights,zDim)
+    C=dlarray(T.conditions,'CB');
+    output=forward(netG,dlarray([zeros(zDim,T.count,'single');T.conditions],'CB'));
+    loss=-sum(forward(netC,[output;C]).*single(weights),'all');
+    gradients=dlgradient(loss,netG.Learnables);
+end

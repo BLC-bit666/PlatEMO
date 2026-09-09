@@ -1,0 +1,14 @@
+{
+  "status": "passed",
+  "production_source_hashes_verified": 8,
+  "numeric_records_exactly_verified": 88,
+  "unmodified_png_files": 149,
+  "current_two_round_png_files": 135,
+  "primary_document_local_links_verified": 77,
+  "mat_files": 0,
+  "new_training_runs_for_packaging": 0,
+  "new_oracle_calls_for_packaging": 0,
+  "zip_format": "standard DEFLATE",
+  "zip_limit_bytes": 50000000,
+  "note": "Packaging checks, not a new execution of all experiment scripts. MANIFEST excludes itself and this validation record to avoid self hashes. ZIP CRC, byte size and SHA-256 are verified after writing."
+}

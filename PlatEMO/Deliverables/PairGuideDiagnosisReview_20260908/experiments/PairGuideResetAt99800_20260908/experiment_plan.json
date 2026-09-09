@@ -1,0 +1,66 @@
+{
+  "status": "complete",
+  "packaging": "paused at user request; no new ZIP has been built",
+  "question": "At the exact FE99800 panels, does resetting all G/D weights and Adam remove the abnormal generated curves?",
+  "scope": {
+    "problems": [
+      7,
+      8
+    ],
+    "sourceSeed": 1,
+    "arms": [
+      "original",
+      "stable_side",
+      "stable_no_side"
+    ],
+    "warmReplicates": 1,
+    "freshInitializations": [
+      600001,
+      600002,
+      600003
+    ],
+    "generatorUpdateCheckpoints": [
+      0,
+      1000,
+      2000,
+      5000,
+      10000
+    ],
+    "cases": 24
+  },
+  "fixed": [
+    "real training endpoints",
+    "actual direction and side conditions",
+    "reference frame",
+    "native production batch sampler",
+    "network architecture",
+    "WGAN-GP loss",
+    "lr and nCritic",
+    "sigma=0"
+  ],
+  "randomness": "Same explicit twister seed per panel/event for warm and all fresh models; full RNG end states saved for comparison. Only fresh initial weights differ.",
+  "freshState": "new G/D weights; all Adam moments and counters zero; retain only architecture/condition-frame and gate metadata to keep the frozen task identical",
+  "evaluation": "Offline, separately billed; no search/population/archive updates. Compare same-axis images, objective distance/coverage, known vs unobserved conditions, and endpoint RMSE as a diagnostic only.",
+  "limits": "A maximum of 10000 updates is a budget, not proof of convergence; only these six exact late datasets tested.",
+  "createdAt": "2026-09-08T05:21:51.577087+00:00",
+  "exploratorySecondary": {
+    "addedAt": "2026-09-08T05:32:46.707414+00:00",
+    "trigger": "Original warm/fresh checkpoints through 5000 still show persistent objective deviations; exact conditional centroids have much smaller gaps.",
+    "test": "Same G and fresh initialization 600001; full-batch MSE on fixed observed-condition centroids, checkpoints 0/1000/5000/10000, six panels.",
+    "purpose": "Assess representability, not a controlled loss-only ablation; no new network architecture or online changes."
+  },
+  "exploratoryWidthCheck": {
+    "addedAt": "2026-09-08T05:39:08.838917+00:00",
+    "trigger": "Same-G full-batch centroid fitting remains inaccurate even at 10000 updates.",
+    "scope": "Original LIRCMOP7/8 exact frozen datasets only; change G hidden widths from [32,32] to [128,128], same fixed centroid targets, optimizer and 10000-update budget.",
+    "purpose": "Check whether fitting improves with capacity; no production or adversarial algorithm change."
+  },
+  "criticMismatchIntervention": {
+    "addedAt": "2026-09-08T06:08:04.158136+00:00",
+    "trigger": "All completed models give higher mean scores to mismatched real endpoint/direction pairs; issue also observed for approximately 5-degree condition changes.",
+    "scope": "Original7/8 frozen FE99800, fresh init600001, same 10000 G update budget and native RNG traces as reset1.",
+    "onlyTrainingChange": "D negative batch mixes 50% generated samples and 50% within-side direction-mismatched real endpoints; gradient penalty uses that same mixture. G objective and both architectures unchanged. Permutations deterministic, no extra RNG draws or oracle calls.",
+    "role": "Two-case causal intervention, no tuning or production changes; improvement alone is not evidence of full-search usefulness."
+  },
+  "report": "REPORT.md"
+}

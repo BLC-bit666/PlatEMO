@@ -1,0 +1,1 @@
+LIRCMOP5_BC seed=3 mode=fallback_only FE=100000/100000

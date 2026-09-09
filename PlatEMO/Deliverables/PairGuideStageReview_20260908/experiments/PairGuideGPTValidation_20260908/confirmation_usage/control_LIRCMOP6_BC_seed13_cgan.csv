@@ -1,0 +1,2 @@
+problem,seed,arm,lateSelected,lateFeasible,lateRetainedP1,lateRetainedP2,lateRetainedEither,lateRetainedNeither,lateGenerations,lateFullyFeasibleP1Generations
+LIRCMOP6_BC,13,original,3820,813,0,0,0,3820,250,250

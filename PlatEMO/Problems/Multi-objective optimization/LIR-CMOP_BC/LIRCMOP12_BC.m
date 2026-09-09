@@ -36,7 +36,10 @@ classdef LIRCMOP12_BC < PROBLEM
             obj.FE     = obj.FE + length(Population);
         end
         %% Calculate objective values
-        function PopObj = CalObj(~,X)
+        function PopObj = CalObj(obj,X)
+            if exist('PairGuideCost_RC','file') == 2
+                cost = PairGuideCost_RC('enter',obj,'CalObj',size(X,1)); %#ok<NASGU>
+            end
             [popsize,variable_length] = size(X);
             sum1 = zeros(popsize,1);
             sum2 = zeros(popsize,1);
@@ -52,6 +55,9 @@ classdef LIRCMOP12_BC < PROBLEM
         end
         %% Calculate the aggregated binary constraint label
         function PopCon = CalCon(obj,X)
+            if exist('PairGuideCost_RC','file') == 2
+                cost = PairGuideCost_RC('enter',obj,'CalCon',size(X,1)); %#ok<NASGU>
+            end
             PopObj  = obj.CalObj(X);
             PopCon  = double(any(Constraint(PopObj)>0,2));
         end

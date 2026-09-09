@@ -1,0 +1,7 @@
+case,sameInitialModelAdam,sameBatchIDs,sameTrueEndpoints,addedGUpdatesPerArm,offlineFullFE
+LIRCMOP7_BC_seed01,1,1,1,2000,2000
+LIRCMOP7_BC_seed02,1,1,1,2000,2000
+LIRCMOP7_BC_seed03,1,1,1,2000,2000
+LIRCMOP8_BC_seed01,1,1,1,2000,2000
+LIRCMOP8_BC_seed02,1,1,1,2000,2000
+LIRCMOP8_BC_seed03,1,1,1,2000,2000

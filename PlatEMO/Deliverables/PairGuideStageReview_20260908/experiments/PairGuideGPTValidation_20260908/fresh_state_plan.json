@@ -1,0 +1,27 @@
+{
+  "purpose": "Separate historical parameter/optimizer state from ability to learn fixed late data",
+  "problems": [
+    7,
+    8
+  ],
+  "seeds": [
+    1,
+    2,
+    3
+  ],
+  "cases": 6,
+  "newNetworkArchitecture": false,
+  "sameFactoriesSHA256": {
+    "createGenerator": "27c0eb67b81ca4e42ee1e7282ffad2cd005cc02236c6156c4e8cfa95d2139da9",
+    "createCritic": "5ce1dd8ddbd7aaf2d8d34f5f1ab105937bd08d89fa57b4d98c8ef07862918c97"
+  },
+  "data": "same late fixtures",
+  "weights": "new random initialization seed300000+seed",
+  "Adam": "zero initial moments",
+  "trainingBatches": "exact same2000x32 schedule as warm fixed-data arm",
+  "trainingRNG": "same per-event seeds as warm",
+  "updates": 2000,
+  "onlineReset": false,
+  "offlineFullFE": 6000,
+  "notUsedToTuneConfirmation": true
+}

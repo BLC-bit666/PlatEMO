@@ -1,9 +1,11 @@
 function varargout = PairBoundaryArchive_RC(action,varargin)
-%PAIRBOUNDARYARCHIVE_RC Maintain one legal endpoint pair per reference.
+%PAIRBOUNDARYARCHIVE_RC Retain at most 500 admissible real boundary pairs.
 %   Conditions are always (w,1) for a truly evaluated feasible endpoint
 %   and (w,0) for a truly evaluated infeasible endpoint. Pair IDs are
 %   attribution metadata only and never enter the generator condition.
-%   resumeEligible distinguishes a legal pause from invalidated history.
+%   Screen the complete feasible pool before matching. Infeasible endpoints
+%   dominated by any feasible candidate cannot enter or remain in a pair.
+%   Unqualified history is deleted; 1000 endpoint slots is only an upper bound.
 
 %------------------------------- Copyright --------------------------------
 % Copyright (c) 2026 BIMK Group. You are free to use PlatEMO for research.
@@ -26,160 +28,302 @@ function varargout = PairBoundaryArchive_RC(action,varargin)
     end
 end
 
-function [Archive,RefScale,Trace] = updateArchive(Archive,Population1, ...
+function [Archive,RefScale,Trace] = updateArchive(Archive,P1, ...
         Evaluated,W,Problem,Options,Feedback,currentFE)
-%UPDATEARCHIVE Refresh legal pairs from all truly evaluated information.
+%UPDATEARCHIVE Preserve real evidence; update original pairs before selection.
 
     Options = fillOptions(Options);
+    span = decisionSpan(Problem);
+    neighbors = referenceNeighborhoods(W);
     Archive = ensureArchive(Archive,Problem.D,Problem.M);
-    Trace = emptyMemoryTrace();
-    oldCount = numel(Archive.id);
     Historical = Archive;
-
-    [EliteX,EliteY,EliteFitness,Trace] = currentElites( ...
-        Population1,Problem,Trace);
-    [FeedbackX,FeedbackY,FeedbackC,FeedbackIds] = ...
-        validFeedbackRows(Feedback,Problem);
-    [FeasX,FeasY,InfX,InfY] = evaluatedRows( ...
-        Evaluated,FeedbackX,Problem,Options);
-    feedbackInfeasible = constraintViolation(FeedbackC) > 0;
-    scaleObjectives = [EliteY;InfY;FeedbackY(feedbackInfeasible,:); ...
-        Historical.yi];
-    [~,RefScale] = AssignReferenceVectors_CBS( ...
-        finiteObjectiveRows(scaleObjectives,Problem.M),W);
-    EliteRef = AssignReferenceVectors_CBS(EliteY,W,RefScale);
-
-    % General candidates exclude attributed children in this generation.
-    % Those children may update only their persistent matched pair first.
-    [ItX,ItY,ItRef,Trace.dominanceRejected] = legalInfeasiblePool( ...
-        [InfX;Historical.xi],[InfY;Historical.yi],EliteY,W, ...
-        RefScale,Problem,Options);
-
-    Archive = refreshPairMetadata( ...
-        Archive,EliteY,EliteFitness,W,RefScale,Problem);
-    initiallyLegal = legalPairRows( ...
-        Archive,EliteY,W,RefScale,Problem,Options);
-    % A changed condition or lost legality breaks lifecycle continuity.
-    sameReference = Archive.ref == Historical.ref;
-    Archive.resumeEligible = Archive.resumeEligible & ...
-        initiallyLegal & sameReference;
-    continuable = Archive.resumeEligible;
-    [Archive,feedbackTrace,activated,forcedInactive,NewPairs] = ...
-        applyGuidedFeedback(Archive,FeedbackX,FeedbackY,FeedbackC, ...
-        FeedbackIds,continuable,ItX,ItY,ItRef,EliteY,W, ...
-        RefScale,Problem,currentFE,Options);
-    [Archive,evaluatedTrace,evaluatedActivated] = ...
-        tightenRetainedPairs(Archive,FeasX,FeasY,InfX,InfY, ...
-        EliteY,W,RefScale,Problem,currentFE,Options, ...
-        continuable & ~forcedInactive);
-    activated = activated | evaluatedActivated;
-    Archive.resumeEligible(forcedInactive) = false;
-    Trace.tightenedFeasible = feedbackTrace.tightenedFeasible+ ...
-        evaluatedTrace.tightenedFeasible;
-    Trace.tightenedInfeasible = feedbackTrace.tightenedInfeasible+ ...
-        evaluatedTrace.tightenedInfeasible;
-
-    Archive = refreshPairMetadata( ...
-        Archive,EliteY,EliteFitness,W,RefScale,Problem);
-    currentlyLegal = legalPairRows( ...
-        Archive,EliteY,W,RefScale,Problem,Options);
-    forcedInactive = forcedInactive(1:min(numel(forcedInactive), ...
-        numel(currentlyLegal)));
-    if numel(forcedInactive) < numel(currentlyLegal)
-        forcedInactive(end+1:numel(currentlyLegal),1) = false;
+    Trace = emptyMemoryTrace();
+    Trace.evaluatedInputPoints = numel(Evaluated);
+    Trace.candidateInputPoints = 2*numel(Historical.id)+numel(Evaluated);
+    Trace.events = struct('pairId',{},'source',{},'sourceRow',{}, ...
+        'originalPair',{},'feasible',{},'beforeGap',{},'afterGap',{}, ...
+        'decision',{},'objectives',{},'fe',{});
+    [fx,fy,ix,iy] = evaluatedRows(Evaluated,zeros(0,Problem.D),Problem,Options);
+    [gx,gy,gc,ids] = validFeedbackRows(Feedback,Problem);
+    if isempty(gx)
+        ofx = fx; ofy = fy; oix = ix; oiy = iy;
+    else
+        [ofx,ofy,oix,oiy] = evaluatedRows(Evaluated,gx,Problem,Options);
     end
-    Archive.resumeEligible = Archive.resumeEligible & ...
-        currentlyLegal & ~forcedInactive;
-    supported = locallySupportedPairs(Archive,EliteX,Problem,Options);
-    Archive.active = currentlyLegal & ~forcedInactive & ...
-        (activated | (supported & Archive.resumeEligible));
-    Archive.age(Archive.active) = 0;
-    Archive.age(~Archive.active) = Archive.age(~Archive.active)+1;
-
-    % A supported old pair is already present as a candidate, so selecting
-    % the canonical pair below cannot worsen its gap without a better pair.
-    for row = 1 : size(NewPairs.xf,1)
-        [Archive,added] = addOrActivatePair(Archive, ...
-            NewPairs.xf(row,:),NewPairs.xi(row,:), ...
-            NewPairs.yf(row,:),NewPairs.yi(row,:), ...
-            NewPairs.ref(row),NewPairs.fitness(row),W,RefScale, ...
-            Problem,currentFE,Options);
-        Trace.added = Trace.added+added;
+    objectives = [fy;iy;Archive.yf;Archive.yi];
+    [~,RefScale] = AssignReferenceVectors_CBS(objectives,W);
+    Archive = refreshPairMetadata(Archive,[],[],W,RefScale,Problem);
+    oldRefs = Historical.ref;
+    ordinaryX = [ofx;oix;Historical.xf;Historical.xi];
+    ordinaryY = [ofy;oiy;Historical.yf;Historical.yi];
+    ordinaryFeasible = [true(size(ofx,1),1);false(size(oix,1),1); ...
+        true(size(Historical.xf,1),1);false(size(Historical.xi,1),1)];
+    ordinaryIds = zeros(size(ordinaryX,1),1);
+    % Without guided feedback the ordinary shadow equals the actual update.
+    if ~isempty(ids)
+        Shadow = tightenRows(Archive,ordinaryX,ordinaryY,ordinaryFeasible, ...
+            ordinaryIds,"ordinary",W,RefScale,span,neighbors,Options,currentFE,Trace.events);
+        shadowGap = Shadow.gap;
+        clear Shadow;
     end
-    for elite = 1 : size(EliteX,1)
-        [candidate,rank] = nearestLegalXi(EliteX(elite,:), ...
-            EliteY(elite,:),EliteRef(elite),ItX,ItY,ItRef,W, ...
-            RefScale,Problem,Options);
-        if candidate == 0
-            continue;
+    for k = 1:numel(ids)
+        row = find(Archive.id == ids(k),1);
+        if ~isempty(row)
+            [Archive,event] = replaceEndpoint(Archive,row,gx(k,:),gy(k,:), ...
+                constraintViolation(gc(k,:)) <= 0,span,Options, ...
+                "guided",k,true,currentFE);
+            if ~isempty(event); Trace.events(end+1,1) = event; end
         end
-        [Archive,added] = addOrActivatePair(Archive, ...
-            EliteX(elite,:),ItX(candidate,:),EliteY(elite,:), ...
-            ItY(candidate,:),EliteRef(elite),EliteFitness(elite), ...
-            W,RefScale,Problem,currentFE,Options,rank);
-        Trace.added = Trace.added+added;
     end
-
-    Archive = refreshPairMetadata( ...
-        Archive,EliteY,EliteFitness,W,RefScale,Problem);
-    legal = legalPairRows(Archive,EliteY,W,RefScale,Problem,Options);
-    Archive.resumeEligible = Archive.resumeEligible & legal;
-    Archive.active = Archive.active & legal;
-    beforePrune = numel(Archive.id);
-    Archive = pruneArchive(Archive,Options,size(W,1),Problem);
-    Trace.removed = max(0,beforePrune-numel(Archive.id));
-    active = Archive.active;
-    Trace.afterCap = nnz(active);
-    Trace.capDropped = Trace.removed;
+    % The same evaluated children may subsequently improve other local pairs.
+    [Archive,Trace.events] = tightenRows(Archive,gx,gy, ...
+        constraintViolation(gc) <= 0,ids,"guided",W,RefScale, ...
+        span,neighbors,Options,currentFE,Trace.events);
+    [Archive,Trace.events] = tightenRows(Archive,ordinaryX,ordinaryY,ordinaryFeasible, ...
+        ordinaryIds,"ordinary",W,RefScale,span,neighbors,Options,currentFE,Trace.events);
+    if isempty(ids); shadowGap = Archive.gap; end
+    Trace.netGapReduction = sum(shadowGap-Archive.gap);
+    Trace.netGapById = [Archive.id,shadowGap,Archive.gap];
+    Archive = refreshPairMetadata(Archive,[],[],W,RefScale,Problem);
+    Trace.migrated = nnz(Archive.ref ~= oldRefs);
+    % Both retained sides participate in the same local re-pairing pool.
+    fx = [fx;Historical.xf]; fy = [fy;Historical.yf];
+    ix = [ix;Historical.xi]; iy = [iy;Historical.yi];
+    [fx,uniqueRows] = unique(fx,'rows','stable'); fy = fy(uniqueRows,:);
+    [ix,uniqueRows] = unique(ix,'rows','stable'); iy = iy(uniqueRows,:);
+    % Classify complete pools before nearest-neighbor matching. An inadmissible
+    % nearer endpoint must never hide an admissible farther one.
+    fronts = zeros(0,1);
+    if ~isempty(fy); fronts = reshape(NDSort(fy,inf),[],1); end
+    p1Objs = zeros(0,Problem.M);
+    if ~isempty(P1)
+        feasible = all(P1.cons <= 0,2) & all(isfinite(P1.objs),2);
+        p1Objs = double(P1(feasible).objs);
+    end
+    if Options.archiveFrontDepth > 0
+        feasibleEligible = fronts <= Options.archiveFrontDepth;
+    else
+        feasibleEligible = ~dominatedByAny(fy,p1Objs,RefScale,1e-12);
+    end
+    infeasibleEligible = ~dominatedByAny(iy,fy(fronts == 1,:),RefScale,1e-12);
+    Trace.feasiblePool = size(fx,1);
+    Trace.feasiblePoolEligible = nnz(feasibleEligible);
+    Trace.infeasiblePool = size(ix,1);
+    Trace.infeasiblePoolEligible = nnz(infeasibleEligible);
+    frefs = AssignReferenceVectors_CBS(fy,W,RefScale);
+    irefs = AssignReferenceVectors_CBS(iy,W,RefScale);
+    Candidate = emptyArchive(Problem.D,Problem.M);
+    % At most one nearest opposite endpoint per feasible candidate.
+    Candidate.ref = zeros(size(fx,1),1);
+    Candidate.xf = zeros(size(fx)); Candidate.yf = zeros(size(fy));
+    Candidate.xi = zeros(size(fx)); Candidate.yi = zeros(size(fy));
+    Candidate.gap = zeros(size(fx,1),1);
+    count = 0;
+    for ref = reshape(unique(frefs(feasibleEligible)),1,[])
+        candidates = find(frefs == ref & feasibleEligible);
+        local = find(neighbors(ref,irefs)' & infeasibleEligible);
+        for f = reshape(candidates,1,[])
+            gaps = sqrt(sum(((ix(local,:)-fx(f,:))./span).^2,2));
+            admissible = gaps > Options.pairImprovementTolerance;
+            eligible = local(admissible);
+            gaps = gaps(admissible);
+            if isempty(eligible); continue; end
+            [gap,j] = min(gaps);
+            count = count+1;
+            Candidate.ref(count) = ref;
+            Candidate.xf(count,:) = fx(f,:); Candidate.yf(count,:) = fy(f,:);
+            Candidate.xi(count,:) = ix(eligible(j),:); Candidate.yi(count,:) = iy(eligible(j),:);
+            Candidate.gap(count) = gap;
+        end
+    end
+    % Provisional ordering keys only. Allocate IDs to retained new pairs below.
+    firstNewId = Archive.nextId;
+    Candidate.id = firstNewId+(0:size(fx,1)-1)';
+    Candidate.active = false(size(fx,1),1);
+    Candidate = subsetArchive(Candidate,(1:count)');
+    fields = {'id','ref','xf','yf','xi','yi','gap','active'};
+    for k = 1:numel(fields)
+        Archive.(fields{k}) = [Archive.(fields{k});Candidate.(fields{k})];
+    end
+    Archive = refreshPairMetadata(Archive,[],[],W,RefScale,Problem);
+    valid = validArchiveRows(Archive,size(W,1),Problem);
+    Trace.invalidRemoved = nnz(~valid);
+    Archive = subsetArchive(Archive,find(valid));
+    % Identical endpoint pairs retain the oldest surviving lineage ID.
+    [~,byId] = sort(Archive.id);
+    [~,distinct] = unique([Archive.ref(byId),Archive.xf(byId,:),Archive.xi(byId,:)],'rows','stable');
+    Trace.duplicateRemoved = numel(Archive.id)-numel(distinct);
+    Archive = subsetArchive(Archive,sort(byId(distinct)));
+    % Tightening can merge distinct lineages into the same pair. The original
+    % legal pairs are already represented by Historical's 1000 input slots;
+    % keep them as alternatives so an occupied slot is not lost by merging.
+    Trace.restoredCapacity = 0;
+    minimumRetained = min(Options.pairArchiveCapacity,numel(Historical.id));
+    if numel(Archive.id) < minimumRetained
+        Reserve = refreshPairMetadata(Historical,[],[],W,RefScale,Problem);
+        valid = validArchiveRows(Reserve,size(W,1),Problem);
+        Reserve = subsetArchive(Reserve,find(valid));
+        [~,distinct] = unique([Reserve.ref,Reserve.xf,Reserve.xi],'rows','stable');
+        Reserve = subsetArchive(Reserve,distinct);
+        duplicate = ismember([Reserve.ref,Reserve.xf,Reserve.xi], ...
+            [Archive.ref,Archive.xf,Archive.xi],'rows');
+        Reserve = subsetArchive(Reserve,find(~duplicate));
+        Trace.restoredCapacity = numel(Reserve.id);
+        Reserve.id = firstNewId+numel(Candidate.id)+(0:numel(Reserve.id)-1)';
+        Reserve.active(:) = false;
+        for k = 1:numel(fields)
+            Archive.(fields{k}) = [Archive.(fields{k});Reserve.(fields{k})];
+        end
+    end
+    p1Dominated = dominatedByAny(Archive.yf,p1Objs,RefScale,1e-12);
+    [foundF,whereF] = ismember(Archive.xf,fx,'rows');
+    [foundI,whereI] = ismember(Archive.xi,ix,'rows');
+    assert(all(foundF & foundI),'CBSPairGuide:FrontPool', ...
+        'An archive endpoint is missing from the complete evaluated pool.');
+    frontRanks = fronts(whereF);
+    eligibleF = feasibleEligible(whereF);
+    eligibleI = infeasibleEligible(whereI);
+    eligible = eligibleF & eligibleI;
+    Trace.frontRejectedPairs = nnz(~eligibleF);
+    Trace.infeasibleDominatedPairs = nnz(~eligibleI);
+    Trace.eligibilityRemoved = nnz(~eligible);
+    % Apply the same rule to tightened history and capacity reserves. Do not
+    % resurrect a rejected pair just to occupy an otherwise empty slot.
+    Archive = subsetArchive(Archive,find(eligible));
+    p1Dominated = p1Dominated(eligible);
+    frontRanks = frontRanks(eligible);
+    eligible = true(numel(Archive.id),1);
+    [Archive,Trace.capDropped,kept] = ...
+        retainArchive(Archive,W,RefScale,Options.pairArchiveCapacity,eligible);
+    Trace.p1DominatedPairs = nnz(p1Dominated(kept));
+    Trace.archiveFrontDepth = Options.archiveFrontDepth;
+    Trace.retainedFrontRanks = frontRanks(kept);
+    Trace.eligiblePairs = nnz(eligible(kept));
+    Trace.eligibilityRejectedPairs = nnz(~eligible(kept));
+    new = Archive.id >= firstNewId;
+    Trace.added = nnz(new);
+    Archive.id(new) = firstNewId+(0:Trace.added-1)';
+    Archive.nextId = firstNewId+Trace.added;
+    Trace.removedIds = Historical.id(~ismember(Historical.id,Archive.id));
+    Trace.removed = numel(Trace.removedIds);
+    Trace.restored = nnz(ismember(Archive.id(Archive.active), ...
+        Historical.id(~Historical.active)));
+    events = Trace.events;
+    if ~isempty(events)
+        guided = [events.source] == "guided";
+        feasible = [events.feasible];
+        Trace.guidedTightenedFeasible = nnz(guided & feasible);
+        Trace.guidedTightenedInfeasible = nnz(guided & ~feasible);
+        Trace.ordinaryTightenedFeasible = nnz(~guided & feasible);
+        Trace.ordinaryTightenedInfeasible = nnz(~guided & ~feasible);
+    end
+    Trace.tightenedFeasible = Trace.guidedTightenedFeasible+Trace.ordinaryTightenedFeasible;
+    Trace.tightenedInfeasible = Trace.guidedTightenedInfeasible+Trace.ordinaryTightenedInfeasible;
+    Trace.active = nnz(Archive.active);
+    Trace.inactive = nnz(~Archive.active);
     Trace.retained = numel(Archive.id);
-    Trace.paired = nnz(active);
-    Trace.active = nnz(active);
-    Trace.inactive = nnz(~active);
-    Trace.strong = Trace.active;
-    Trace.weak = Trace.inactive;
-    Trace.pairedBeforeMAD = Trace.paired;
-    Trace.trueFeasible = size(EliteX,1);
-    Trace.afterFront = size(EliteX,1);
-    Trace.pairGapMedian = finitePercentile(Archive.gap(active),0.5);
-    Trace.pairGapP90 = finitePercentile(Archive.gap(active),0.9);
-    Trace.archiveChanged = Trace.added+Trace.tightenedFeasible+ ...
-        Trace.tightenedInfeasible+Trace.removed;
-    Trace.previousCount = oldCount;
+    Trace.afterCap = Trace.retained; Trace.paired = Trace.active;
+    Trace.strong = Trace.active; Trace.weak = Trace.inactive;
+    Trace.trueFeasible = size(fx,1); Trace.afterFront = nnz(feasibleEligible);
+    Trace.pairGapMedian = finitePercentile(Archive.gap(Archive.active),0.5);
+    Trace.pairGapP90 = finitePercentile(Archive.gap(Archive.active),0.9);
+    Trace.archiveChanged = Trace.added+numel(events)+Trace.removed;
+    Trace.previousCount = numel(Historical.id);
 end
 
-function [EliteX,EliteY,EliteFitness,Trace] = currentElites( ...
-        Population,Problem,Trace)
-%CURRENTELITES Return current P1 feasible rows with Fitness strictly < 1.
+function [Archive,dropped,keep] = retainArchive(Archive,W,Scale,capacity,eligible)
+%RETAINARCHIVE Direction champions first, then ranked alternatives in rounds.
+%   Eligibility is computed once against the full current comparison pool.
+%   Only qualified pairs reach capacity competition; no age/TTL is used.
+    Archive.active(:) = false;
+    keep = (1:numel(Archive.id))';
+    rank = zeros(numel(Archive.id),1);
+    for ref = reshape(unique(Archive.ref),1,[])
+        rows = find(Archive.ref == ref);
+        quality = directionQuality(Archive.yf(rows,:),W(ref,:),Scale);
+        [~,order] = sortrows([~eligible(rows),quality,Archive.gap(rows),Archive.id(rows)]);
+        rank(rows(order)) = (1:numel(rows))';
+        Archive.active(rows(order(1))) = eligible(rows(order(1)));
+    end
+    dropped = max(0,numel(Archive.id)-capacity);
+    if dropped > 0
+        [~,order] = sortrows([~Archive.active,rank,Archive.ref,Archive.id]);
+        keep = sort(order(1:capacity));
+        Archive = subsetArchive(Archive,keep);
+    end
+end
 
-    EliteX = zeros(0,Problem.D);
-    EliteY = zeros(0,Problem.M);
-    EliteFitness = zeros(0,1);
-    if isempty(Population)
+function q = directionQuality(y,w,Scale)
+%DIRECTIONQUALITY Current-frame weighted Chebyshev value.
+    q = max(normalizeObjectives(y,Scale)./(double(w)+1e-12),[],2);
+end
+
+function [Archive,events] = tightenRows(Archive,X,Y,feasible,matchedIds, ...
+        source,W,Scale,span,neighbors,Options,currentFE,events)
+%TIGHTENROWS Every real row may improve pairs only in the five-ref neighborhood.
+    if isempty(X) || isempty(Archive.id); return; end
+    refs = AssignReferenceVectors_CBS(Y,W,Scale);
+    localRows = cell(size(W,1),1);
+    for ref = reshape(unique(refs),1,[])
+        localRows{ref} = find(neighbors(ref,Archive.ref)');
+    end
+    recordEvents = nargout > 1;
+    for k = 1:size(X,1)
+        % Search outward from this evaluated point's reference. The inverse
+        % relation can include more than five references near angular edges.
+        local = localRows{refs(k)};
+        local = local(Archive.id(local) ~= matchedIds(k));
+        if feasible(k)
+            gap = sqrt(sum(((X(k,:)-Archive.xi(local,:))./span).^2,2));
+        else
+            gap = sqrt(sum(((Archive.xf(local,:)-X(k,:))./span).^2,2));
+        end
+        before = Archive.gap(local);
+        accepted = ~(gap <= 0 | gap >= before-Options.pairImprovementTolerance);
+        rows = local(accepted); gap = gap(accepted); before = before(accepted);
+        if feasible(k)
+            Archive.xf(rows,:) = repmat(X(k,:),numel(rows),1);
+            Archive.yf(rows,:) = repmat(Y(k,:),numel(rows),1);
+        else
+            Archive.xi(rows,:) = repmat(X(k,:),numel(rows),1);
+            Archive.yi(rows,:) = repmat(Y(k,:),numel(rows),1);
+        end
+        Archive.gap(rows) = gap;
+        if recordEvents
+            for j = 1:numel(rows)
+                events(end+1,1) = struct('pairId',Archive.id(rows(j)),'source',source, ...
+                    'sourceRow',k,'originalPair',false,'feasible',feasible(k), ...
+                    'beforeGap',before(j),'afterGap',gap(j),'decision',X(k,:), ...
+                    'objectives',Y(k,:),'fe',currentFE); %#ok<AGROW>
+            end
+        end
+    end
+end
+
+function [Archive,event] = replaceEndpoint(Archive,row,x,y,feasible, ...
+        span,Options,source,sourceRow,original,currentFE)
+%REPLACEENDPOINT Any real improvement beyond tolerance is accepted.
+    event = struct('pairId',{},'source',{},'sourceRow',{}, ...
+        'originalPair',{},'feasible',{},'beforeGap',{},'afterGap',{}, ...
+        'decision',{},'objectives',{},'fe',{});
+    oldGap = Archive.gap(row);
+    if feasible
+        newGap = sqrt(sum(((x-Archive.xi(row,:))./span).^2,2));
+    else
+        newGap = sqrt(sum(((Archive.xf(row,:)-x)./span).^2,2));
+    end
+    if newGap <= 0 || newGap >= oldGap-Options.pairImprovementTolerance
         return;
     end
-    X = double(Population.decs);
-    Y = double(Population.objs);
-    C = double(Population.cons);
-    valid = all(isfinite(X),2) & all(isfinite(Y),2) & ...
-        all(isfinite(C),2);
-    feasible = valid & constraintViolation(C) <= 0;
-    Trace.trueFeasible = nnz(feasible);
-    if ~any(feasible)
-        return;
+    if feasible
+        Archive.xf(row,:) = x; Archive.yf(row,:) = y;
+    else
+        Archive.xi(row,:) = x; Archive.yi(row,:) = y;
     end
-    Fitness = reshape(double(CalFitness_CBS(Y,C)),[],1);
-    elite = feasible & Fitness < 1;
-    if ~any(elite)
-        return;
-    end
-    EliteX = X(elite,:);
-    EliteY = Y(elite,:);
-    EliteFitness = Fitness(elite);
-    [~,rows] = unique(EliteX,'rows','stable');
-    rows = sort(rows);
-    EliteX = EliteX(rows,:);
-    EliteY = EliteY(rows,:);
-    EliteFitness = EliteFitness(rows);
+    Archive.gap(row) = newGap;
+    event = struct('pairId',Archive.id(row),'source',source, ...
+        'sourceRow',sourceRow,'originalPair',original,'feasible',feasible, ...
+        'beforeGap',oldGap,'afterGap',newGap,'decision',x,'objectives',y,'fe',currentFE);
 end
 
 function [X,Y,C,ids] = validFeedbackRows(Feedback,Problem)
@@ -210,7 +354,7 @@ function [X,Y,C,ids] = validFeedbackRows(Feedback,Problem)
     upper = double(Problem.upper);
     valid = all(isfinite(allX),2) & all(isfinite(allY),2) & ...
         all(isfinite(allC),2) & isfinite(allIds) & ...
-        allIds == fix(allIds) & allIds > 0 & ...
+        allIds == fix(allIds) & allIds >= 0 & ...
         all(allX >= lower-1e-12,2) & all(allX <= upper+1e-12,2);
     X = allX(valid,:);
     Y = allY(valid,:);
@@ -219,7 +363,7 @@ function [X,Y,C,ids] = validFeedbackRows(Feedback,Problem)
 end
 
 function [FeasX,FeasY,InfX,InfY] = evaluatedRows( ...
-        Population,Excluded,Problem,Options)
+        Population,Excluded,Problem,~)
 %EVALUATEDROWS Split all ordinary Union rows by true feasibility.
 
     FeasX = zeros(0,Problem.D);
@@ -238,8 +382,7 @@ function [FeasX,FeasY,InfX,InfY] = evaluatedRows( ...
         all(isfinite(C),2) & all(X >= lower-1e-12,2) & ...
         all(X <= upper+1e-12,2);
     if ~isempty(Excluded)
-        valid = valid & minimumNormalizedDistance( ...
-            X,Excluded,Problem) > Options.pairDuplicateTolerance;
+        valid = valid & ~ismember(X,double(Excluded),'rows');
     end
     X = X(valid,:);
     Y = Y(valid,:);
@@ -257,362 +400,11 @@ function [FeasX,FeasY,InfX,InfY] = evaluatedRows( ...
     InfY = Y(~feasible,:);
 end
 
-function [ItX,ItY,ItRef,dominanceRejected] = legalInfeasiblePool( ...
-        X,Y,EliteY,W,RefScale,Problem,Options)
-%LEGALINFEASIBLEPOOL Merge current and historical globally legal xi rows.
-
-    ItX = zeros(0,Problem.D);
-    ItY = zeros(0,Problem.M);
-    ItRef = zeros(0,1);
-    dominanceRejected = 0;
-    if isempty(X)
-        return;
-    end
-    X = double(X);
-    Y = double(Y);
-    lower = double(Problem.lower);
-    upper = double(Problem.upper);
-    valid = all(isfinite(X),2) & all(isfinite(Y),2) & ...
-        all(X >= lower-1e-12,2) & all(X <= upper+1e-12,2);
-    X = X(valid,:);
-    Y = Y(valid,:);
-    if isempty(X)
-        return;
-    end
-    legal = ~dominatedByAny(Y,EliteY,RefScale,1e-12);
-    dominanceRejected = nnz(~legal);
-    X = X(legal,:);
-    Y = Y(legal,:);
-    if isempty(X)
-        return;
-    end
-    signature = round(((X-lower)./decisionSpan(Problem))/ ...
-        Options.pairDuplicateTolerance);
-    [~,rows] = unique(signature,'rows','stable');
-    rows = sort(rows);
-    ItX = X(rows,:);
-    ItY = Y(rows,:);
-    ItRef = AssignReferenceVectors_CBS(ItY,W,RefScale);
-end
-
-function [Archive,Trace,activated,forcedInactive,NewPairs] = ...
-        applyGuidedFeedback(Archive,X,Y,C,ids,initiallyLegal, ...
-        ItX,ItY,ItRef,EliteY,W,RefScale,Problem,currentFE,Options)
-%APPLYGUIDEDFEEDBACK A child can modify only its attributed original pair.
-
-    Trace = struct('tightenedFeasible',0,'tightenedInfeasible',0);
-    activated = false(numel(Archive.id),1);
-    forcedInactive = false(numel(Archive.id),1);
-    NewPairs = emptyPairCandidates(Problem.D,Problem.M);
-    for item = 1 : numel(ids)
-        row = find(Archive.id == ids(item),1);
-        if isempty(row)
-            continue;
-        end
-        isFeasible = constraintViolation(C(item,:)) <= 0;
-        if isFeasible
-            newRef = AssignReferenceVectors_CBS(Y(item,:),W,RefScale);
-            invalidOldXi = pairDominatesRows( ...
-                Y(item,:),Archive.yi(row,:),RefScale,1e-12);
-            if invalidOldXi || ~initiallyLegal(row)
-                forcedInactive(row) = true;
-                [candidate,rank] = nearestLegalXi(X(item,:),Y(item,:), ...
-                    newRef,ItX,ItY,ItRef,W,RefScale,Problem,Options);
-                if candidate > 0
-                    NewPairs = appendPairCandidate(NewPairs,X(item,:), ...
-                        ItX(candidate,:),Y(item,:),ItY(candidate,:), ...
-                        newRef,pairFitness(Y(item,:),EliteY),rank);
-                end
-                continue;
-            end
-            gap = normalizedDistance(X(item,:),Archive.xi(row,:),Problem);
-            xiRef = AssignReferenceVectors_CBS( ...
-                Archive.yi(row,:),W,RefScale);
-            legal = gap+Options.pairImprovementTolerance < ...
-                Archive.gap(row) && ~invalidOldXi && ...
-                ismember(xiRef,neighborRefs( ...
-                W,newRef,Options.pairNeighborRefCount));
-            if legal
-                Archive.xf(row,:) = X(item,:);
-                Archive.yf(row,:) = Y(item,:);
-                Archive.ref(row) = newRef;
-                Archive.gap(row) = gap;
-                Archive.lastFE(row) = double(currentFE);
-                Archive.fitness(row) = pairFitness(Y(item,:),EliteY);
-                Archive.rank(row) = referenceRank(W,newRef,xiRef);
-                activated(row) = true;
-                Trace.tightenedFeasible = Trace.tightenedFeasible+1;
-            end
-        else
-            if ~initiallyLegal(row) || ...
-                    dominatedByAny(Y(item,:),EliteY,RefScale,1e-12) || ...
-                    pairDominatesRows(Archive.yf(row,:),Y(item,:), ...
-                    RefScale,1e-12)
-                continue;
-            end
-            newXiRef = AssignReferenceVectors_CBS(Y(item,:),W,RefScale);
-            gap = normalizedDistance(Archive.xf(row,:),X(item,:),Problem);
-            legal = gap+Options.pairImprovementTolerance < ...
-                Archive.gap(row) && ismember(newXiRef,neighborRefs( ...
-                W,Archive.ref(row),Options.pairNeighborRefCount));
-            if legal
-                Archive.xi(row,:) = X(item,:);
-                Archive.yi(row,:) = Y(item,:);
-                Archive.gap(row) = gap;
-                Archive.lastFE(row) = double(currentFE);
-                Archive.rank(row) = referenceRank( ...
-                    W,Archive.ref(row),newXiRef);
-                activated(row) = true;
-                Trace.tightenedInfeasible = ...
-                    Trace.tightenedInfeasible+1;
-            end
-        end
-    end
-end
-
-function [Archive,Trace,activated] = tightenRetainedPairs(Archive, ...
-        FeasX,FeasY,InfX,InfY,EliteY,W,RefScale,Problem,currentFE, ...
-        Options,eligibleRows)
-%TIGHTENRETAINEDPAIRS Let every ordinary local row try every legal pair.
-
-    Trace = struct('tightenedFeasible',0,'tightenedInfeasible',0);
-    activated = false(numel(Archive.id),1);
-    if isempty(Archive.id)
-        return;
-    end
-    FeasRef = AssignReferenceVectors_CBS(FeasY,W,RefScale);
-    legalInf = ~dominatedByAny(InfY,EliteY,RefScale,1e-12);
-    InfX = InfX(legalInf,:);
-    InfY = InfY(legalInf,:);
-    InfRef = AssignReferenceVectors_CBS(InfY,W,RefScale);
-    maxPasses = max(1,2*(size(FeasX,1)+size(InfX,1))+2);
-    for row = reshape(find(eligibleRows),1,[])
-        pass = 0;
-        changed = true;
-        while changed && pass < maxPasses
-            pass = pass+1;
-            changed = false;
-            if ~isempty(FeasX)
-                xiRef = AssignReferenceVectors_CBS( ...
-                    Archive.yi(row,:),W,RefScale);
-                gaps = normalizedDistances(FeasX,Archive.xi(row,:),Problem);
-                legal = gaps+Options.pairImprovementTolerance < ...
-                    Archive.gap(row) & ~pairDominatesRows(FeasY, ...
-                    repmat(Archive.yi(row,:),size(FeasY,1),1), ...
-                    RefScale,1e-12);
-                for i = reshape(find(legal),1,[])
-                    legal(i) = ismember(xiRef,neighborRefs( ...
-                        W,FeasRef(i),Options.pairNeighborRefCount));
-                end
-                ranks = arrayfun(@(r)referenceRank(W,r,xiRef),FeasRef);
-                candidate = bestGapCandidate(gaps,legal,ranks);
-                if candidate > 0
-                    Archive.xf(row,:) = FeasX(candidate,:);
-                    Archive.yf(row,:) = FeasY(candidate,:);
-                    Archive.ref(row) = FeasRef(candidate);
-                    Archive.gap(row) = gaps(candidate);
-                    Archive.lastFE(row) = double(currentFE);
-                    Archive.fitness(row) = pairFitness( ...
-                        FeasY(candidate,:),EliteY);
-                    Archive.rank(row) = referenceRank( ...
-                        W,Archive.ref(row),xiRef);
-                    activated(row) = true;
-                    Trace.tightenedFeasible = ...
-                        Trace.tightenedFeasible+1;
-                    changed = true;
-                end
-            end
-            if ~isempty(InfX)
-                gaps = normalizedDistances(InfX,Archive.xf(row,:),Problem);
-                legal = gaps+Options.pairImprovementTolerance < ...
-                    Archive.gap(row) & ismember(InfRef,neighborRefs( ...
-                    W,Archive.ref(row),Options.pairNeighborRefCount)) & ...
-                    ~pairDominatesRows(repmat(Archive.yf(row,:), ...
-                    size(InfY,1),1),InfY,RefScale,1e-12);
-                ranks = arrayfun(@(r)referenceRank( ...
-                    W,Archive.ref(row),r),InfRef);
-                candidate = bestGapCandidate(gaps,legal,ranks);
-                if candidate > 0
-                    Archive.xi(row,:) = InfX(candidate,:);
-                    Archive.yi(row,:) = InfY(candidate,:);
-                    Archive.gap(row) = gaps(candidate);
-                    Archive.lastFE(row) = double(currentFE);
-                    Archive.rank(row) = referenceRank( ...
-                        W,Archive.ref(row),InfRef(candidate));
-                    activated(row) = true;
-                    Trace.tightenedInfeasible = ...
-                        Trace.tightenedInfeasible+1;
-                    changed = true;
-                end
-            end
-        end
-    end
-end
-
-function candidate = bestGapCandidate(gaps,legal,ranks)
-%BESTGAPCANDIDATE Deterministic gap then angular-rank selection.
-
-    rows = find(legal);
-    candidate = 0;
-    if isempty(rows)
-        return;
-    end
-    [~,order] = sortrows([gaps(rows),ranks(rows),rows],[1 2 3]);
-    candidate = rows(order(1));
-end
-
-function [candidate,rank] = nearestLegalXi( ...
-        xf,yf,xfRef,ItX,ItY,ItRef,W,RefScale,Problem,Options)
-%NEARESTLEGALXI Find the decision-nearest legal xi in the 5-ref corridor.
-
-    candidate = 0;
-    rank = Inf;
-    if isempty(ItX)
-        return;
-    end
-    legal = ismember(ItRef,neighborRefs( ...
-        W,xfRef,Options.pairNeighborRefCount)) & ...
-        ~pairDominatesRows(repmat(yf,size(ItY,1),1),ItY, ...
-        RefScale,1e-12);
-    rows = find(legal);
-    if isempty(rows)
-        return;
-    end
-    gaps = normalizedDistances(ItX(rows,:),xf,Problem);
-    ranks = arrayfun(@(r)referenceRank(W,xfRef,r),ItRef(rows));
-    [~,order] = sortrows([gaps,ranks(:),rows],[1 2 3]);
-    candidate = rows(order(1));
-    rank = ranks(order(1));
-end
-
-function supported = locallySupportedPairs(Archive,EliteX,Problem,Options)
-%LOCALLYSUPPORTEDPAIRS Use the pair gap as the parameter-free local radius.
-
-    supported = false(numel(Archive.id),1);
-    if isempty(EliteX) || isempty(Archive.id)
-        return;
-    end
-    for row = 1 : numel(Archive.id)
-        distance = normalizedDistances(EliteX,Archive.xf(row,:),Problem);
-        supported(row) = any(distance <= Archive.gap(row)+ ...
-            Options.pairDuplicateTolerance);
-    end
-end
-
-function Archive = refreshPairMetadata( ...
-        Archive,EliteY,EliteFitness,W,RefScale,Problem)
-%REFRESHPAIRMETADATA Recompute gap, angular rank, and support fitness.
-
-    if isempty(Archive.id)
-        return;
-    end
+function Archive = refreshPairMetadata(Archive,~,~,W,RefScale,Problem)
+%REFRESHPAIRMETADATA Derived caches never control historical validity.
+    if isempty(Archive.id); return; end
     Archive.ref = AssignReferenceVectors_CBS(Archive.yf,W,RefScale);
-    xiRef = AssignReferenceVectors_CBS(Archive.yi,W,RefScale);
-    for row = 1 : numel(Archive.id)
-        Archive.gap(row) = normalizedDistance( ...
-            Archive.xf(row,:),Archive.xi(row,:),Problem);
-        Archive.rank(row) = referenceRank(W,Archive.ref(row),xiRef(row));
-        Archive.fitness(row) = pairFitness( ...
-            Archive.yf(row,:),EliteY,EliteFitness);
-    end
-end
-
-function valid = legalPairRows(Archive,EliteY,W,RefScale,Problem,Options)
-%LEGALPAIRROWS Enforce box, dominance, and angular-neighborhood legality.
-
-    valid = validArchiveRows(Archive,size(W,1),Problem);
-    if isempty(Archive.id)
-        return;
-    end
-    valid = valid & ~dominatedByAny( ...
-        Archive.yi,EliteY,RefScale,1e-12) & ...
-        ~pairDominatesRows(Archive.yf,Archive.yi,RefScale,1e-12);
-    xiRef = AssignReferenceVectors_CBS(Archive.yi,W,RefScale);
-    for row = reshape(find(valid),1,[])
-        valid(row) = ismember(xiRef(row),neighborRefs( ...
-            W,Archive.ref(row),Options.pairNeighborRefCount));
-    end
-end
-
-function [Archive,added] = addOrActivatePair(Archive,xf,xi,yf,yi,ref, ...
-        fitness,W,RefScale,Problem,currentFE,Options,varargin)
-%ADDORACTIVATEPAIR Resume an eligible exact pair or allocate a fresh ID.
-
-    added = 0;
-    same = Archive.resumeEligible & Archive.ref == ref & ...
-        sameDecisionRows(Archive.xf,xf,Problem, ...
-        Options.pairDuplicateTolerance) & ...
-        sameDecisionRows(Archive.xi,xi,Problem, ...
-        Options.pairDuplicateTolerance);
-    row = find(same,1);
-    xiRef = AssignReferenceVectors_CBS(yi,W,RefScale);
-    if nargin >= 13 && ~isempty(varargin)
-        rank = double(varargin{1});
-    else
-        rank = referenceRank(W,ref,xiRef);
-    end
-    if ~isempty(row)
-        Archive.active(row) = true;
-        Archive.age(row) = 0;
-        % Mere current-P1 support keeps a pair active but is not a new
-        % endpoint observation. Preserve lastFE so it cannot spuriously
-        % trigger warm-start retraining.
-        Archive.rank(row) = rank;
-        Archive.fitness(row) = fitness;
-        return;
-    end
-    Archive.id(end+1,1) = Archive.nextId;
-    Archive.nextId = Archive.nextId+1;
-    Archive.xf(end+1,:) = xf;
-    Archive.xi(end+1,:) = xi;
-    Archive.yf(end+1,:) = yf;
-    Archive.yi(end+1,:) = yi;
-    Archive.ref(end+1,1) = ref;
-    Archive.gap(end+1,1) = normalizedDistance(xf,xi,Problem);
-    Archive.rank(end+1,1) = rank;
-    Archive.fitness(end+1,1) = fitness;
-    Archive.age(end+1,1) = 0;
-    Archive.lastFE(end+1,1) = double(currentFE);
-    Archive.active(end+1,1) = true;
-    Archive.resumeEligible(end+1,1) = true;
-    added = 1;
-end
-
-function Candidates = emptyPairCandidates(D,M)
-%EMPTYPAIRCANDIDATES New pairs requested by attributed feasible feedback.
-
-    Candidates = struct('xf',zeros(0,D),'xi',zeros(0,D), ...
-        'yf',zeros(0,M),'yi',zeros(0,M),'ref',zeros(0,1), ...
-        'fitness',zeros(0,1),'rank',zeros(0,1));
-end
-
-function Candidates = appendPairCandidate(Candidates,xf,xi,yf,yi,ref, ...
-        fitness,rank)
-%APPENDPAIRCANDIDATE Append one prospective fresh-ID pair.
-
-    Candidates.xf(end+1,:) = xf;
-    Candidates.xi(end+1,:) = xi;
-    Candidates.yf(end+1,:) = yf;
-    Candidates.yi(end+1,:) = yi;
-    Candidates.ref(end+1,1) = ref;
-    Candidates.fitness(end+1,1) = fitness;
-    Candidates.rank(end+1,1) = rank;
-end
-
-function fitness = pairFitness(y,EliteY,varargin)
-%PAIRFITNESS Deterministic SPEA2 fitness used only as a late tie-break.
-
-    if ~isempty(EliteY) && ~isempty(varargin)
-        eliteFitness = reshape(double(varargin{1}),[],1);
-        exact = all(abs(double(EliteY)-double(y)) <= 1e-12,2);
-        if any(exact) && numel(eliteFitness) == size(EliteY,1)
-            fitness = min(eliteFitness(exact));
-            return;
-        end
-    end
-    objectives = [double(EliteY);double(y)];
-    values = reshape(double(CalFitness_CBS(objectives)),[],1);
-    fitness = values(end);
+    Archive.gap = normalizedDistance(Archive.xf,Archive.xi,Problem);
 end
 
 function [Data,Gate,TrainC,QueryRefs,BMem] = buildTrainingData( ...
@@ -630,21 +422,34 @@ function [Data,Gate,TrainC,QueryRefs,BMem] = buildTrainingData( ...
         span = decisionSpan(Problem);
         Data.xF = (Archive.xf(rows,:)-lower)./span;
         Data.xI = (Archive.xi(rows,:)-lower)./span;
+        Data.yF = double(Archive.yf(rows,:));
+        Data.yI = double(Archive.yi(rows,:));
+        Data.W = double(W);
         Data.w = double(W(Archive.ref(rows),:));
         Data.ref = Archive.ref(rows);
         Data.id = Archive.id(rows);
-        Data.lastFE = Archive.lastFE(rows);
         Data.delta = Data.xI-Data.xF;
         Data.count = numel(rows);
-        Data.cF = [Data.w,ones(Data.count,1)];
-        Data.cI = [Data.w,zeros(Data.count,1)];
+        if isfield(Options,'referenceScale')
+            scale = Options.referenceScale;
+        else
+            [~,scale] = AssignReferenceVectors_CBS([Archive.yf;Archive.yi],W);
+        end
+        refF = AssignReferenceVectors_CBS(Archive.yf(rows,:),W,scale);
+        refI = AssignReferenceVectors_CBS(Archive.yi(rows,:),W,scale);
+        Data.cF = [double(W(refF,:)),ones(Data.count,1)];
+        Data.cI = [double(W(refI,:)),zeros(Data.count,1)];
+        Data.referenceScale = scale;
     end
     if numel(unique(Data.ref)) ~= Data.count
         error('CBSPairGuide:NonUniqueTrainingReference', ...
             'Every active reference must own exactly one training pair.');
     end
     TrainC = [Data.cF;Data.cI];
-    QueryRefs = Data.ref;
+    [~,uniqueRows] = unique([[Data.xF;Data.xI],TrainC(:,end)],'rows','stable');
+    TrainC = TrainC(uniqueRows,:);
+    QueryRefs = unique(AssignReferenceVectors_CBS(TrainC(:,1:end-1),W, ...
+        struct('minimum',zeros(1,size(W,2)),'span',ones(1,size(W,2)))));
     Gate = struct('effective',Data.count,'active',Data.count, ...
         'regions',Data.count,'pairs',Data.count, ...
         'eligible',Data.count >= Options.pairMinPairs);
@@ -652,9 +457,9 @@ function [Data,Gate,TrainC,QueryRefs,BMem] = buildTrainingData( ...
 end
 
 function [QueryC,Info] = buildQueryContexts(Archive,W,Options,totalBudget)
-%BUILDQUERYCONTEXTS Stratify randomized s=0 queries over active pairs.
+%BUILDQUERYCONTEXTS Query the complete direction set and both binary sides.
 
-    Options = fillOptions(Options); %#ok<NASGU>
+    Options = fillOptions(Options);
     Info = struct('refs',zeros(0,1),'pairIds',zeros(0,1));
     QueryC = zeros(0,size(W,2)+1);
     if isempty(Archive) || ~isstruct(Archive)
@@ -666,6 +471,21 @@ function [QueryC,Info] = buildQueryContexts(Archive,W,Options,totalBudget)
     if isempty(activeRows) || totalBudget == 0
         return;
     end
+    if ~isfield(Options,'pairOnly') || ~Options.pairOnly
+        % Query labels are independent of archive occupancy and pair IDs.
+        refs = balancedRows((1:size(W,1))',totalBudget);
+        sides = zeros(totalBudget,1);
+        phase = randi(2)-1;
+        for ref = 1:size(W,1)
+            local = find(refs == ref);
+            sides(local) = mod((0:numel(local)-1)'+phase,2);
+            phase = mod(phase+numel(local),2);
+        end
+        QueryC = [double(W(refs,:)),sides];
+        Info.refs = refs; Info.pairIds = zeros(totalBudget,1); Info.sides = sides;
+        Info.conditions = QueryC;
+        return;
+    end
     rows = balancedRows(activeRows,totalBudget);
     refs = Archive.ref(rows);
     QueryC = [double(W(refs,:)),zeros(numel(refs),1)];
@@ -673,319 +493,281 @@ function [QueryC,Info] = buildQueryContexts(Archive,W,Options,totalBudget)
     Info.pairIds = Archive.id(rows);
 end
 
-function [SelectedDecs,SelectedRefs,MatchedIds,Trace] = ...
-        selectCandidates(RawDec,SampleInfo,Archive,Population,Fitness,W, ...
-        RefScale,Problem,Options)
-%SELECTCANDIDATES Rho gate, one raw per pair, then objective-only corridor.
-
-    Options = fillOptions(Options);
-    Archive = ensureArchive(Archive,Problem.D,Problem.M);
-    RawDec = double(RawDec);
-    refs = reshape(double(SampleInfo.refs),[],1);
-    if isfield(SampleInfo,'pairIds')
-        pairIds = reshape(double(SampleInfo.pairIds),[],1);
+function [Dec,Refs,Ids,T] = selectCandidates(X,Info,Archive,Scale,Problem,O)
+%SELECTCANDIDATES Prefer uncovered requests, then in-box points closest to F.
+% The box uses ALL archive endpoints, including inactive retained pairs.
+% Request coverage is a pre-evaluation proxy, not a generated objective label.
+    if isfield(O,'pairOnly') && O.pairOnly
+        [Dec,Refs,Ids,T] = selectPairedCandidates(X,Info,Archive,Scale,Problem,O);
+        return;
+    end
+    O = fillOptions(O); Archive = ensureArchive(Archive,Problem.D,Problem.M);
+    n = size(X,1); T = emptyPoolTrace();
+    T.active = n > 0; T.rawCount = n; T.candidateDecs = double(X); T.percentile = nan(n,1);
+    T.rawConditions = numel(unique(Info.refs)); T.trainConditions = nnz(Archive.active);
+    span = decisionSpan(Problem); Z = (double(X)-Problem.lower)./span;
+    valid = all(isfinite(Z),2) & all(Z >= 0 & Z <= 1,2);
+    if isfield(O,'W'); W=double(O.W); else; W=zeros(0,Problem.M); end
+    if isempty(W)
+        error('CBSPairGuide:MissingQueryDirections','Candidate selection requires the complete W.');
+    end
+    % Recover metadata from actual finite query vectors when available. An
+    % empty or externally supplied direction is not a reason to discard X.
+    refs = reshape(double(Info.refs),[],1);
+    assert(numel(refs)==n,'CBSPairGuide:BadQueryMetadata','One reference ID is required per candidate.');
+    if isfield(Info,'conditions')
+        C=double(Info.conditions);
+        assert(isequal(size(C),[n,size(W,2)+1]) && all(isfinite(C),'all'), ...
+            'CBSPairGuide:BadQueryMetadata','Query conditions must be finite and match the candidate rows.');
+        [found,recovered]=ismember(C(:,1:end-1),W,'rows');
+        if any(~found)
+            [extra,~,index]=unique(C(~found,1:end-1),'rows','stable');
+            recovered(~found)=size(W,1)+index; W=[W;extra];
+        end
+        T.recoveredReferenceCount=nnz(refs~=recovered | ~isfinite(refs));
+        refs=recovered;
     else
-        pairIds = zeros(0,1);
+        T.recoveredReferenceCount=0;
+        assert(all(isfinite(refs) & refs==fix(refs) & refs>=1 & refs<=size(W,1)), ...
+            'CBSPairGuide:BadQueryMetadata','Unregistered reference IDs require the actual query conditions.');
     end
-    rowCount = min([size(RawDec,1),numel(refs),numel(pairIds)]);
-    RawDec = RawDec(1:rowCount,:);
-    refs = refs(1:rowCount);
-    pairIds = pairIds(1:rowCount);
-    Trace = emptyPoolTrace();
-    Trace.active = rowCount > 0;
-    Trace.rawCount = rowCount;
-    Trace.percentile = nan(rowCount,1);
-    Trace.rawConditions = numel(unique(refs));
-    Trace.trainConditions = numel(unique(Archive.ref(Archive.active)));
-    SelectedDecs = zeros(0,Problem.D);
-    SelectedRefs = zeros(0,1);
-    MatchedIds = zeros(0,1);
-    if rowCount == 0 || isempty(Population)
-        return;
+    T.invalidCount = nnz(~valid); T.validCount = nnz(valid);
+    knownY = [Archive.yf;Archive.yi];
+    if isfield(O,'p1AllObjs')
+        knownY = [knownY;double(O.p1AllObjs)];
+    elseif isfield(O,'p1Objs')
+        knownY = [knownY;double(O.p1Objs)];
     end
-
-    lower = double(Problem.lower);
-    upper = double(Problem.upper);
-    span = decisionSpan(Problem);
-    Xn = (RawDec-lower)./span;
-    validRaw = all(isfinite(RawDec),2) & isfinite(refs) & ...
-        refs == fix(refs) & refs >= 1 & refs <= size(W,1) & ...
-        isfinite(pairIds) & pairIds == fix(pairIds) & pairIds > 0 & ...
-        all(RawDec >= lower-1e-12,2) & all(RawDec <= upper+1e-12,2);
-
-    PopX = double(Population.decs);
-    PopY = double(Population.objs);
-    PopC = double(Population.cons);
-    Fitness = reshape(double(Fitness),[],1);
-    populationCount = min([size(PopX,1),size(PopY,1), ...
-        size(PopC,1),numel(Fitness)]);
-    PopX = PopX(1:populationCount,:);
-    PopY = PopY(1:populationCount,:);
-    PopC = PopC(1:populationCount,:);
-    Fitness = Fitness(1:populationCount);
-    validPopulation = all(isfinite(PopX),2) & all(isfinite(PopY),2) & ...
-        all(isfinite(PopC),2);
-    elite = find(validPopulation & constraintViolation(PopC) <= 0 & ...
-        Fitness < 1);
-    if isempty(elite)
-        Trace.supportFailures = nnz(validRaw);
-        return;
-    end
-    eliteRefs = AssignReferenceVectors_CBS(PopY(elite,:),W,RefScale);
-    EliteNorm = (PopX(elite,:)-lower)./span;
-
-    rawPairRows = zeros(rowCount,1);
-    rawRho = inf(rowCount,1);
-    rawGap = nan(rowCount,1);
-    rawParentError = nan(rowCount,1);
-    rawGuideError = nan(rowCount,1);
-    archiveCount = numel(Archive.id);
-    supportState = zeros(archiveCount,1);
-    cachedPairGap = nan(archiveCount,1);
-    cachedParentError = nan(archiveCount,1);
-    cachedXiNorm = zeros(archiveCount,Problem.D);
-    matchFailures = 0;
-    supportFailures = 0;
-    for raw = reshape(find(validRaw),1,[])
-        pair = find(Archive.id == pairIds(raw) & Archive.active,1);
-        if isempty(pair) || refs(raw) ~= Archive.ref(pair)
-            matchFailures = matchFailures+1;
-            continue;
+    knownY = knownY(all(isfinite(knownY),2),:);
+    knownRefs = unique(AssignReferenceVectors_CBS(knownY,W,Scale));
+    uncovered = valid & ~ismember(refs,knownRefs);
+    allEndpoints = [Archive.xf;Archive.xi];
+    inside = false(n,1); distanceF = inf(n,1);
+    lowerBox = nan(1,Problem.D); upperBox = lowerBox;
+    if ~isempty(allEndpoints)
+        lowerBox = min(double(allEndpoints),[],1);
+        upperBox = max(double(allEndpoints),[],1);
+        lo = (lowerBox-Problem.lower)./span; hi = (upperBox-Problem.lower)./span;
+        inside = valid & all(Z>=lo-1e-12 & Z<=hi+1e-12,2);
+        F = (double(Archive.xf)-Problem.lower)./span;
+        for j=1:size(F,1)
+            distanceF = min(distanceF,sqrt(sum((Z-F(j,:)).^2,2)));
         end
-        if supportState(pair) == 0
-            neighborhood = neighborRefs( ...
-                W,Archive.ref(pair),Options.pairNeighborRefCount);
-            local = find(ismember(eliteRefs,neighborhood));
-            if isempty(local)
-                supportState(pair) = -1;
-            else
-                xfNorm = (Archive.xf(pair,:)-lower)./span;
-                xiNorm = (Archive.xi(pair,:)-lower)./span;
-                distance = sqrt(sum((EliteNorm(local,:)-xfNorm).^2,2));
-                nearest = local(distance <= min(distance)+1e-12);
-                [~,order] = sortrows( ...
-                    [Fitness(elite(nearest)),elite(nearest)],[1 2]);
-                parentLocal = nearest(order(1));
-                cachedPairGap(pair) = norm(xiNorm-xfNorm);
-                cachedParentError(pair) = ...
-                    norm(EliteNorm(parentLocal,:)-xfNorm);
-                cachedXiNorm(pair,:) = xiNorm;
-                supportState(pair) = 1;
+    end
+    eligibleKnown = valid & ~uncovered & inside;
+    base = zeros(0,Problem.D);
+    if isfield(O,'currentDecs'); base = (double(O.currentDecs)-Problem.lower)./span; end
+    chosen = zeros(0,1);
+    % Unknown requests keep direction diversity without inventing F targets.
+    groups = unique(refs(uncovered)); groups = groups(randperm(numel(groups)));
+    remaining = uncovered;
+    while numel(chosen)<O.guideQuota && any(remaining)
+        before = numel(chosen);
+        for ref=reshape(groups,1,[])
+            for k=reshape(find(remaining & refs==ref),1,[])
+                remaining(k)=false;
+                if ~isempty(base) && any(vecnorm(base-Z(k,:),2,2)<=O.pairDuplicateTolerance); continue; end
+                chosen(end+1,1)=k; base(end+1,:)=Z(k,:); break; %#ok<AGROW>
             end
+            if numel(chosen)>=O.guideQuota; break; end
         end
-        if supportState(pair) < 0
-            supportFailures = supportFailures+1;
-            continue;
-        end
-        pairGap = cachedPairGap(pair);
-        parentError = cachedParentError(pair);
-        guideError = norm(Xn(raw,:)-cachedXiNorm(pair,:));
-        rho = (parentError+guideError)/(pairGap+eps);
-        if ~isfinite(rho) || pairGap <= 1e-12 || rho >= 1
-            continue;
-        end
-        rawPairRows(raw) = pair;
-        rawRho(raw) = rho;
-        rawGap(raw) = pairGap;
-        rawParentError(raw) = parentError;
-        rawGuideError(raw) = guideError;
+        if numel(chosen)==before; break; end
     end
-
-    representatives = zeros(0,1);
-    for id = reshape(unique(pairIds(rawPairRows > 0),'stable'),1,[])
-        rows = find(rawPairRows > 0 & pairIds == id);
-        [~,order] = sortrows([rawRho(rows),rows],[1 2]);
-        representatives(end+1,1) = rows(order(1)); %#ok<AGROW>
+    % Known requests are globally sorted by distance to the nearest real F.
+    local=find(eligibleKnown); [~,order]=sortrows([distanceF(local),local]);
+    for k=reshape(local(order),1,[])
+        if numel(chosen)>=O.guideQuota; break; end
+        if ~isempty(base) && any(vecnorm(base-Z(k,:),2,2)<=O.pairDuplicateTolerance); continue; end
+        chosen(end+1,1)=k; base(end+1,:)=Z(k,:); %#ok<AGROW>
     end
-    Trace.pairRepresentativeCount = numel(representatives);
-    Trace.rhoFailures = nnz(validRaw)-numel(find(rawPairRows > 0));
-    if isempty(representatives)
-        Trace.matchFailures = matchFailures;
-        Trace.supportFailures = supportFailures;
-        Trace.rawNearDuplicateRate = nearDuplicateRate( ...
-            Xn(all(isfinite(Xn),2),:),Options.pairDuplicateTolerance);
-        return;
-    end
-
-    validObjectives = all(isfinite(PopY),2);
-    occupancy = zeros(size(W,1),1);
-    if any(validObjectives)
-        populationRefs = AssignReferenceVectors_CBS( ...
-            PopY(validObjectives,:),W,RefScale);
-        occupancy = accumarray(populationRefs,1,[size(W,1),1],@sum,0);
-    end
-    pairRows = rawPairRows(representatives);
-    key = [occupancy(Archive.ref(pairRows)),rawRho(representatives), ...
-        -Archive.gap(pairRows),Archive.id(pairRows)];
-    [~,priority] = sortrows(key,[1 2 3 4]);
-    representatives = representatives(priority);
-    quota = Options.guideQuota;
-    objectiveLimit = min([numel(representatives),2*quota, ...
-        Options.objectiveBudget]);
-    shortlist = representatives(1:objectiveLimit);
-    pairRows = rawPairRows(shortlist);
-    Trace.objectiveCandidateCount = objectiveLimit;
-    Trace.objectiveFE = objectiveLimit;
-    Trace.ObjFE = objectiveLimit;
-    if objectiveLimit == 0
-        Trace.matchFailures = matchFailures;
-        Trace.supportFailures = supportFailures;
-        return;
-    end
-    GObj = double(Problem.CalObj(RawDec(shortlist,:)));
-    if size(GObj,1) ~= objectiveLimit || size(GObj,2) ~= Problem.M
-        error('CBSPairGuide:ObjectiveOnlyShapeMismatch', ...
-            'Problem.CalObj must return one M-objective row per donor.');
-    end
-    yF = Archive.yf(pairRows,:);
-    yI = Archive.yi(pairRows,:);
-    localDominance = ~pairDominatesRows( ...
-        GObj,yI,RefScale,1e-12) & ...
-        ~pairDominatesRows(yF,GObj,RefScale,1e-12);
-    GNorm = normalizeObjectives(GObj,RefScale);
-    FNorm = normalizeObjectives(yF,RefScale);
-    INorm = normalizeObjectives(yI,RefScale);
-    corridor = all(GNorm >= min(FNorm,INorm)-1e-12 & ...
-        GNorm <= max(FNorm,INorm)+1e-12,2);
-    % Deliberately no global feasible-elite dominance filter for G.
-    passed = all(isfinite(GObj),2) & localDominance & corridor;
-    accepted = find(passed,quota,'first');
-    selectedRaw = shortlist(accepted);
-    selectedPairs = rawPairRows(selectedRaw);
-    SelectedDecs = RawDec(selectedRaw,:);
-    SelectedRefs = Archive.ref(selectedPairs);
-    MatchedIds = Archive.id(selectedPairs);
-
-    Trace.keptCount = numel(selectedRaw);
-    Trace.keptConditions = numel(unique(SelectedRefs));
-    Trace.keepIdx = selectedRaw;
-    Trace.validCount = numel(selectedRaw);
-    Trace.matchFailures = matchFailures;
-    Trace.supportFailures = supportFailures;
-    Trace.matchedPairIds = MatchedIds;
-    Trace.selectedRho = rawRho(selectedRaw);
-    Trace.selectedPairGap = rawGap(selectedRaw);
-    Trace.selectedParentError = rawParentError(selectedRaw);
-    Trace.selectedGuideError = rawGuideError(selectedRaw);
-    Trace.localDominancePass = nnz(localDominance);
-    Trace.corridorPass = nnz(corridor);
-    Trace.rawNearDuplicateRate = nearDuplicateRate( ...
-        Xn(all(isfinite(Xn),2),:),Options.pairDuplicateTolerance);
-    Trace.keptNearDuplicateRate = nearDuplicateRate( ...
-        Xn(selectedRaw,:),Options.pairDuplicateTolerance);
+    Dec=double(X(chosen,:)); Refs=refs(chosen); Ids=zeros(numel(chosen),1);
+    T.keepIdx=chosen; T.keptCount=numel(chosen); T.keptConditions=numel(unique(Refs));
+    T.matchedPairIds=Ids; T.rawPairIds=zeros(n,1); T.rawRefs=refs;
+    T.rawSides=Info.sides; T.selectedSides=Info.sides(chosen);
+    T.selectionPolicy="uncovered-first-archive-box-v1";
+    T.queryVectors=W; T.knownRefs=knownRefs; T.uncoveredRefs=setdiff((1:size(W,1))',knownRefs);
+    T.requestedUncovered=uncovered; T.insideArchiveBox=inside;
+    T.archiveBoxLower=lowerBox; T.archiveBoxUpper=upperBox;
+    T.nearestFeasibleDistance=distanceF; T.keptUncoveredCount=nnz(uncovered(chosen));
+    T.knownOutsideBoxCount=nnz(valid & ~uncovered & ~inside);
+    % A global box is not a pair interval or a certified boundary region.
+    T.xf=nan(n,Problem.D); T.xi=T.xf; T.yf=nan(n,Problem.M); T.yi=T.yf;
+    T.nativeInBand=nan(n,1); T.gaps=nan(n,1); T.axialBefore=nan(n,1);
+    T.perpendicularBefore=nan(n,1); T.boundaryDistanceUpperBoundRMS=nan(n,1);
+    T.boundaryCertified=false(n,1); T.coarseInterval=false(n,1);
+    T.spherePassCount=nnz(uncovered | eligibleKnown); T.jointPassCount=T.spherePassCount;
+    T.rawNearDuplicateRate=nearDuplicateRate(Z(valid,:),O.pairDuplicateTolerance);
+    T.keptNearDuplicateRate=nearDuplicateRate(Z(chosen,:),O.pairDuplicateTolerance);
+    T.scores=distanceF; T.priority=[];
 end
 
-function Archive = pruneArchive(Archive,Options,refCount,Problem)
-%PRUNEARCHIVE Enforce stale deletion and one canonical pair per reference.
 
-    keep = validArchiveRows(Archive,refCount,Problem) & ...
-        (Archive.active | Archive.age < Options.pairInactiveMaxAge);
-    candidates = find(keep);
-    selected = zeros(0,1);
-    for ref = reshape(unique(Archive.ref(candidates),'stable'),1,[])
-        local = candidates(Archive.ref(candidates) == ref);
-        active = local(Archive.active(local));
-        if ~isempty(active)
-            local = active;
+function [SelectedDecs,SelectedRefs,MatchedIds,Trace] = ...
+        selectPairedCandidates(RawDec,SampleInfo,Archive,RefScale,Problem,Options)
+%SELECTCANDIDATES Select unchanged native proposals without real oracle calls.
+    Options = fillOptions(Options);
+    Archive = ensureArchive(Archive,Problem.D,Problem.M);
+    count = size(RawDec,1);
+    Trace = emptyPoolTrace();
+    Trace.active = count > 0;
+    Trace.rawCount = count;
+    Trace.percentile = nan(count,1);
+    Trace.rawConditions = numel(unique(SampleInfo.refs));
+    Trace.trainConditions = nnz(Archive.active);
+    lower = double(Problem.lower); span = decisionSpan(Problem);
+    cn = (double(RawDec)-lower)./span;
+    Trace.candidateDecs = double(RawDec);
+    Trace.axialBefore = nan(count,1);
+    Trace.perpendicularBefore = nan(count,1);
+    Trace.gaps = nan(count,1);
+    Trace.boundaryDistanceUpperBoundRMS = nan(count,1);
+    Trace.nativeInBand = false(count,1);
+    Trace.xf = nan(count,Problem.D); Trace.xi = nan(count,Problem.D);
+    Trace.yf = nan(count,Problem.M); Trace.yi = nan(count,Problem.M);
+    scores = inf(count,1); pairRows = zeros(count,1);
+    priorities = zeros(numel(Archive.id),1);
+    for p = reshape(find(Archive.active),1,[])
+        localValue = 1;
+        occupancy = 0;
+        if isfield(Options,'p1Refs')
+            occupancy = nnz(Options.p1Refs == Archive.ref(p));
+            local = ismember(Options.p1Refs,neighborRefs(Options.W,Archive.ref(p),5));
+            if dominatedByAny(Archive.yi(p,:), ...
+                    [Archive.yf(p,:);Options.p1Objs(local,:)],RefScale,1e-12)
+                localValue = 0.1;
+            end
+        elseif pairDominatesRows(Archive.yf(p,:),Archive.yi(p,:),RefScale,1e-12)
+            localValue = 0.1;
         end
-        key = [Archive.gap(local),Archive.rank(local), ...
-            Archive.fitness(local),-Archive.lastFE(local),Archive.id(local)];
-        [~,order] = sortrows(key,[1 2 3 4 5]);
-        selected(end+1,1) = local(order(1)); %#ok<AGROW>
+        gstar = 0.003*sqrt(Problem.D)/sqrt(0.6^2+0.05^2);
+        priorities(p) = localValue*Archive.gap(p)/(Archive.gap(p)+gstar)/(1+occupancy);
     end
-    Archive = subsetArchive(Archive,sort(selected));
-    if numel(unique(Archive.ref)) ~= numel(Archive.ref) || ...
-            numel(Archive.id) > refCount
-        error('CBSPairGuide:ArchiveCapacityExceeded', ...
-            'The archive must contain at most one pair per reference.');
+    for k = 1:count
+        if any(~isfinite(cn(k,:))) || any(cn(k,:) < 0 | cn(k,:) > 1)
+            Trace.invalidCount = Trace.invalidCount+1;
+            continue;
+        end
+        p = find(Archive.id == SampleInfo.pairIds(k) & Archive.active & ...
+            Archive.ref == SampleInfo.refs(k),1);
+        if isempty(p)
+            Trace.matchFailures = Trace.matchFailures+1;
+            continue;
+        end
+        f = (Archive.xf(p,:)-lower)./span;
+        i = (Archive.xi(p,:)-lower)./span;
+        d = i-f; g = norm(d);
+        if g <= 0; continue; end
+        t0 = dot(cn(k,:)-f,d)/(g*g);
+        r0 = cn(k,:)-f-t0*d;
+        Trace.axialBefore(k) = t0;
+        Trace.perpendicularBefore(k) = norm(r0)/g;
+        Trace.gaps(k) = g;
+        Trace.nativeInBand(k) = t0 >= 0.4 && t0 <= 0.6 && norm(r0) <= 0.05*g;
+        % Any boundary crossing on the real segment is within this distance.
+        % The former projected-interval bound does not apply to native c.
+        Trace.boundaryDistanceUpperBoundRMS(k) = ...
+            max(norm(cn(k,:)-f),norm(cn(k,:)-i))/sqrt(Problem.D);
+        Trace.xf(k,:) = Archive.xf(p,:); Trace.xi(k,:) = Archive.xi(p,:);
+        Trace.yf(k,:) = Archive.yf(p,:); Trace.yi(k,:) = Archive.yi(p,:);
+        endpointError = 0;
+        if isfield(SampleInfo,'generatedF')
+            endpointError = (norm(SampleInfo.generatedF(k,:)-f)+ ...
+                norm(SampleInfo.generatedI(k,:)-i))/(g+eps);
+        end
+        scores(k) = endpointError;
+        pairRows(k) = p;
     end
+    valid = pairRows > 0;
+    % Relative narrowness and an absolute boundary-distance bound are
+    % different diagnostics. Neither is an additional selection threshold.
+    Trace.boundaryCertified = valid & Trace.boundaryDistanceUpperBoundRMS <= 0.003;
+    Trace.coarseInterval = valid & ~Trace.boundaryCertified;
+    Trace.spherePassCount = nnz(valid); % Legacy name: finite, in-box, matched.
+    Trace.sphereRejectCount = count-Trace.invalidCount-Trace.matchFailures-nnz(valid);
+    Trace.jointPassCount = nnz(valid);
+    pairs = unique(pairRows(valid));
+    [~,order] = sortrows([-priorities(pairs),Archive.ref(pairs),Archive.id(pairs)]);
+    pairs = pairs(order);
+    chosen = zeros(0,1);
+    duplicateBase = zeros(0,Problem.D);
+    if isfield(Options,'currentDecs')
+        duplicateBase = (Options.currentDecs-lower)./span;
+    end
+    for round = 1:2
+        for p = reshape(pairs,1,[])
+            local = find(valid & pairRows == p & ~ismember((1:count)',chosen));
+            [~,order] = sortrows([scores(local),local]);
+            for k = reshape(local(order),1,[])
+                if ~isempty(duplicateBase) && any(sqrt(sum((duplicateBase-cn(k,:)).^2,2)) ...
+                        <= Options.pairDuplicateTolerance)
+                    continue;
+                end
+                chosen(end+1,1) = k; %#ok<AGROW>
+                duplicateBase(end+1,:) = cn(k,:); %#ok<AGROW>
+                break;
+            end
+            if numel(chosen) >= Options.guideQuota; break; end
+        end
+        if numel(chosen) >= Options.guideQuota; break; end
+    end
+    if Options.guideQuota == 0; chosen = zeros(0,1); end
+    SelectedDecs = double(RawDec(chosen,:));
+    SelectedRefs = Archive.ref(pairRows(chosen));
+    MatchedIds = Archive.id(pairRows(chosen));
+    Trace.keepIdx = chosen;
+    Trace.keptCount = numel(chosen); Trace.validCount = numel(chosen);
+    Trace.keptConditions = numel(unique(SelectedRefs));
+    Trace.matchedPairIds = MatchedIds;
+    Trace.rawNearDuplicateRate = nearDuplicateRate(cn(all(isfinite(cn),2),:), ...
+        Options.pairDuplicateTolerance);
+    Trace.keptNearDuplicateRate = nearDuplicateRate(cn(chosen,:),Options.pairDuplicateTolerance);
+    Trace.scores = scores;
+    Trace.rawPairIds = SampleInfo.pairIds;
+    Trace.rawRefs = SampleInfo.refs;
+    Trace.priority = priorities;
 end
 
 function valid = validArchiveRows(Archive,refCount,Problem)
-%VALIDARCHIVEROWS Reject corrupt retained pair rows.
-
-    lower = double(Problem.lower);
-    upper = double(Problem.upper);
-    valid = isfinite(Archive.id) & Archive.id == fix(Archive.id) & ...
-        Archive.id > 0 & isfinite(Archive.ref) & ...
-        Archive.ref == fix(Archive.ref) & Archive.ref >= 1 & ...
-        Archive.ref <= refCount & isfinite(Archive.gap) & ...
-        Archive.gap >= 0 & isfinite(Archive.rank) & Archive.rank >= 1 & ...
-        isfinite(Archive.fitness) & isfinite(Archive.age) & ...
-        Archive.age >= 0 & isfinite(Archive.lastFE) & ...
-        isfinite(Archive.resumeEligible) & ...
-        all(isfinite(Archive.xf),2) & all(isfinite(Archive.xi),2) & ...
-        all(isfinite(Archive.yf),2) & all(isfinite(Archive.yi),2) & ...
-        all(Archive.xf >= lower-1e-12,2) & ...
-        all(Archive.xf <= upper+1e-12,2) & ...
-        all(Archive.xi >= lower-1e-12,2) & ...
-        all(Archive.xi <= upper+1e-12,2);
+%VALIDARCHIVEROWS Geometry validity; endpoint roles certify opposite real labels.
+    lower = double(Problem.lower); upper = double(Problem.upper);
+    valid = isfinite(Archive.id) & Archive.id > 0 & Archive.id == fix(Archive.id) & ...
+        Archive.ref >= 1 & Archive.ref <= refCount & ...
+        isfinite(Archive.gap) & Archive.gap > 0 & ...
+        all(isfinite([Archive.xf,Archive.xi,Archive.yf,Archive.yi]),2) & ...
+        all(Archive.xf >= lower-1e-12 & Archive.xf <= upper+1e-12,2) & ...
+        all(Archive.xi >= lower-1e-12 & Archive.xi <= upper+1e-12,2);
 end
 
 function BMem = archiveAsBoundaryMemory(Archive,Problem)
-%ARCHIVEASBOUNDARYMEMORY Expose endpoints and persistent attribution IDs.
-
+%ARCHIVEASBOUNDARYMEMORY Read-only endpoint view for Pending attribution.
     Archive = ensureArchive(Archive,Problem.D,Problem.M);
     BMem = struct('id',Archive.id,'ref',Archive.ref,'gap',Archive.gap, ...
         'x_b',Archive.xf,'y_b',Archive.yf,'x_i',Archive.xi, ...
-        'y_i',Archive.yi,'active',Archive.active, ...
-        'lastFE',Archive.lastFE);
+        'y_i',Archive.yi,'active',Archive.active);
 end
 
 function Archive = ensureArchive(Archive,D,M)
-%ENSUREARCHIVE Normalize empty and earlier archive schemas.
-
+%ENSUREARCHIVE Discard obsolete lifecycle clocks when reading an older archive.
     Empty = emptyArchive(D,M);
     if isempty(Archive) || ~isstruct(Archive)
         Archive = Empty;
         return;
     end
-    count = size(Archive.xf,1);
     names = fieldnames(Empty);
-    for i = 1 : numel(names)
-        name = names{i};
-        if ~isfield(Archive,name)
-            if strcmp(name,'rank')
-                Archive.rank = ones(count,1);
-            elseif strcmp(name,'fitness')
-                Archive.fitness = realmax*ones(count,1);
-            elseif strcmp(name,'resumeEligible')
-                Archive.resumeEligible = true(count,1);
-            else
-                Archive.(name) = Empty.(name);
-            end
-        end
-    end
-    vectorFields = {'id','ref','gap','rank','fitness','age','lastFE', ...
-        'active','resumeEligible'};
-    for i = 1 : numel(vectorFields)
-        name = vectorFields{i};
-        if size(Archive.(name),1) ~= count
-            if strcmp(name,'rank')
-                Archive.(name) = ones(count,1);
-            elseif strcmp(name,'fitness')
-                Archive.(name) = realmax*ones(count,1);
-            elseif strcmp(name,'resumeEligible')
-                Archive.(name) = true(count,1);
-            else
-                Archive.(name) = Empty.(name);
-            end
-        end
-    end
-    if ~isscalar(Archive.nextId) || ~isfinite(Archive.nextId)
+    extra = setdiff(fieldnames(Archive),names);
+    if ~isempty(extra); Archive = rmfield(Archive,extra); end
+    if ~isfield(Archive,'nextId')
         Archive.nextId = max([0;Archive.id])+1;
     end
+    Archive.nextId = max(Archive.nextId,max([0;Archive.id])+1);
+    if ~isfield(Archive,'active'); Archive.active = true(numel(Archive.id),1); end
 end
 
 function Archive = emptyArchive(D,M)
-%EMPTYARCHIVE Construct the persistent unified pair schema.
-
-    Archive = struct('id',zeros(0,1),'xf',zeros(0,D), ...
-        'xi',zeros(0,D),'yf',zeros(0,M),'yi',zeros(0,M), ...
-        'ref',zeros(0,1),'gap',zeros(0,1),'rank',zeros(0,1), ...
-        'fitness',zeros(0,1),'age',zeros(0,1), ...
-        'lastFE',zeros(0,1),'active',false(0,1), ...
-        'resumeEligible',false(0,1),'nextId',1);
+%EMPTYARCHIVE Six semantic fields plus derived gap/active caches and ID allocator.
+    Archive = struct('id',zeros(0,1),'ref',zeros(0,1), ...
+        'xf',zeros(0,D),'yf',zeros(0,M),'xi',zeros(0,D),'yi',zeros(0,M), ...
+        'gap',zeros(0,1),'active',false(0,1),'nextId',1);
 end
 
 function Data = emptyTrainingData(D,M)
@@ -993,7 +775,7 @@ function Data = emptyTrainingData(D,M)
 
     Data = struct('xF',zeros(0,D),'xI',zeros(0,D), ...
         'delta',zeros(0,D),'w',zeros(0,M),'ref',zeros(0,1), ...
-        'id',zeros(0,1),'lastFE',zeros(0,1), ...
+        'id',zeros(0,1), ...
         'cF',zeros(0,M+1),'cI',zeros(0,M+1),'count',0);
 end
 
@@ -1010,8 +792,11 @@ function Trace = emptyMemoryTrace()
         'pairGapMedian',NaN,'pairGapP90',NaN, ...
         'pairAngleMedian',NaN,'pairAngleP90',NaN, ...
         'added',0,'strong',0,'weak',0,'generatedWeak',0, ...
-        'tightenedFeasible',0,'tightenedInfeasible',0,'removed',0, ...
-        'active',0,'inactive',0,'archiveChanged',0,'previousCount',0);
+        'tightenedFeasible',0,'tightenedInfeasible',0, ...
+        'guidedTightenedFeasible',0,'guidedTightenedInfeasible',0, ...
+        'ordinaryTightenedFeasible',0,'ordinaryTightenedInfeasible',0, ...
+        'removed',0,'active',0,'inactive',0,'resumeEligible',0, ...
+        'archiveChanged',0,'previousCount',0);
 end
 
 function Trace = emptyPoolTrace()
@@ -1038,47 +823,19 @@ function Trace = emptyPoolTrace()
         'rawDirectionCoverage',NaN,'rawDirectionEntropy',NaN, ...
         'rawNearDuplicateRate',NaN,'keptDirectionCoverage',NaN, ...
         'keptDirectionEntropy',NaN,'keptNearDuplicateRate',NaN, ...
-        'validCount',0,'matchFailures',0,'supportFailures',0, ...
-        'rhoFailures',0,'pairRepresentativeCount',0, ...
+        'validCount',0,'invalidCount',0,'matchFailures',0, ...
+        'sphereRejectCount',0,'spherePassCount',0, ...
         'objectiveCandidateCount',0,'objectiveFE',0,'ObjFE',0, ...
         'constraintFE',0, ...
-        'localDominancePass',0,'corridorPass',0, ...
-        'matchedPairIds',zeros(0,1),'selectedRho',zeros(0,1), ...
-        'selectedPairGap',zeros(0,1), ...
-        'selectedParentError',zeros(0,1), ...
-        'selectedGuideError',zeros(0,1));
+        'localDominancePass',0,'corridorPass',0,'jointPassCount',0, ...
+        'matchedPairIds',zeros(0,1));
 end
 
 function Archive = subsetArchive(Archive,rows)
-%SUBSETARCHIVE Subset row fields while preserving the next unique ID.
-
-    rows = reshape(rows,[],1);
-    fields = {'id','xf','xi','yf','yi','ref','gap','rank','fitness', ...
-        'age','lastFE','active','resumeEligible'};
-    for i = 1 : numel(fields)
-        name = fields{i};
-        Archive.(name) = Archive.(name)(rows,:);
-    end
-end
-
-function same = sameDecisionRows(X,x,Problem,tolerance)
-%SAMEDECISIONROWS Vectorized normalized equality.
-
-    if isempty(X)
-        same = false(0,1);
-        return;
-    end
-    same = normalizedDistances(X,x,Problem) <= tolerance;
-end
-
-function distance = normalizedDistances(X,x,Problem)
-%NORMALIZEDDISTANCES Decision-box Euclidean distances to one row.
-
-    if isempty(X)
-        distance = zeros(0,1);
-    else
-        distance = sqrt(sum(((double(X)-double(x))./ ...
-            decisionSpan(Problem)).^2,2));
+%SUBSETARCHIVE Preserve stable IDs and their allocator.
+    fields = {'id','ref','xf','yf','xi','yi','gap','active'};
+    for k = 1:numel(fields)
+        Archive.(fields{k}) = Archive.(fields{k})(rows,:);
     end
 end
 
@@ -1087,23 +844,6 @@ function distance = normalizedDistance(a,b,Problem)
 
     distance = sqrt(sum(((double(a)-double(b))./ ...
         decisionSpan(Problem)).^2,2));
-end
-
-function distance = minimumNormalizedDistance(A,B,Problem)
-%MINIMUMNORMALIZEDDISTANCE Minimum decision-box distance for each A row.
-
-    if isempty(A)
-        distance = zeros(0,1);
-    elseif isempty(B)
-        distance = inf(size(A,1),1);
-    else
-        lower = double(Problem.lower);
-        span = decisionSpan(Problem);
-        An = (double(A)-lower)./span;
-        Bn = (double(B)-lower)./span;
-        distance2 = max(0,sum(An.^2,2)+sum(Bn.^2,2)'-2*(An*Bn'));
-        distance = sqrt(min(distance2,[],2));
-    end
 end
 
 function span = decisionSpan(Problem)
@@ -1131,14 +871,17 @@ function refs = neighborRefs(W,ref,totalCount)
     refs = order(1:total);
 end
 
-function rank = referenceRank(W,baseRef,candidateRef)
-%REFERENCERANK One-based angular rank with stable reference-ID tie-break.
-
-    order = angularOrder(W,baseRef);
-    rank = find(order == candidateRef,1);
-    if isempty(rank)
-        rank = Inf;
+function neighbors = referenceNeighborhoods(W)
+%REFERENCENEIGHBORHOODS Cache the same scalar angular ordering for fixed W.
+    persistent lastW lastNeighbors
+    if isempty(lastW) || ~isequal(W,lastW)
+        lastW = W;
+        lastNeighbors = false(size(W,1));
+        for ref = 1:size(W,1)
+            lastNeighbors(ref,neighborRefs(W,ref,5)) = true;
+        end
     end
+    neighbors = lastNeighbors;
 end
 
 function order = angularOrder(W,ref)
@@ -1203,17 +946,6 @@ function Yn = normalizeObjectives(Y,Scale)
         reshape(double(Scale.span),1,[]);
 end
 
-function Y = finiteObjectiveRows(Y,M)
-%FINITEOBJECTIVEROWS Preserve objective width while removing invalid rows.
-
-    if isempty(Y)
-        Y = zeros(0,M);
-    else
-        Y = double(Y);
-        Y = Y(all(isfinite(Y),2),:);
-    end
-end
-
 function rate = nearDuplicateRate(X,tolerance)
 %NEARDUPLICATERATE Diagnostic only; raw donors are never rejected for it.
 
@@ -1243,24 +975,33 @@ function Options = fillOptions(Options)
 %FILLOPTIONS Fixed minimal PairGuide archive and donor settings.
 
     Options = defaultOption(Options,'pairArchivePerRef',1);
-    Options = defaultOption(Options,'pairInactiveMaxAge',10);
+    Options = defaultOption(Options,'pairArchiveCapacity',500);
+    Options = defaultOption(Options,'archiveFrontDepth',1);
     Options = defaultOption(Options,'pairNeighborRefCount',5);
-    Options = defaultOption(Options,'pairMinPairs',32);
+    Options = defaultOption(Options,'pairMinPairs',8);
     Options = defaultOption(Options,'pairDuplicateTolerance',1e-6);
     Options = defaultOption(Options,'pairImprovementTolerance',1e-12);
     Options = defaultOption(Options,'guideQuota',20);
     Options = defaultOption(Options,'objectiveBudget',Inf);
-    integer = {'pairArchivePerRef','pairInactiveMaxAge', ...
-        'pairNeighborRefCount','pairMinPairs','guideQuota'};
+    integer = {'pairArchivePerRef','pairNeighborRefCount','pairMinPairs','guideQuota'};
     for i = 1 : numel(integer)
         name = integer{i};
         Options.(name) = max(0,round(double(Options.(name))));
     end
     if Options.pairArchivePerRef ~= 1
         error('CBSPairGuide:ArchivePerReferenceMustBeOne', ...
-            'PairGuide requires exactly one archive pair per reference.');
+            'PairGuide requires exactly one active archive pair per reference.');
     end
-    Options.pairNeighborRefCount = max(1,Options.pairNeighborRefCount);
+    if ~isscalar(Options.pairArchiveCapacity) || Options.pairArchiveCapacity ~= 500
+        error('CBSPairGuide:ArchiveCapacity','PairGuide retains 500 pairs (1000 endpoint slots).');
+    end
+    if ~isnumeric(Options.archiveFrontDepth) || ~isscalar(Options.archiveFrontDepth) || ...
+            ~ismember(Options.archiveFrontDepth,[0 1 2])
+        error('CBSPairGuide:ArchiveFrontDepth','Front depth must be 0 (P1), 1, or 2.');
+    end
+    if Options.pairNeighborRefCount ~= 5
+        error('CBSPairGuide:NeighborCount','The neighborhood contains exactly five references (including itself).');
+    end
     Options.pairMinPairs = max(1,Options.pairMinPairs);
     Options.pairDuplicateTolerance = max(eps,double( ...
         Options.pairDuplicateTolerance));

@@ -1,0 +1,294 @@
+--- before/Algorithms/Multi-objective optimization/CBS-CGAN/Core/PairGuideCore.m
++++ after/Algorithms/Multi-objective optimization/CBS-CGAN/Core/PairGuideCore.m
+@@ -952,6 +952,11 @@
+                             'generation',generation,'modelVersion',version, ...
+                             'rawDecs',Raw,'conditions',QueryC,'refs',Info.refs,'sides',Info.sides, ...
+                             'sample',Sample,'pool',Pool,'pending',Pending);
++                        if Algorithm.ComparisonMode == "cgan"
++                            Evidence.queries{end}.conditionScale = Sample.conditionScale;
++                            Evidence.queries{end}.networkConditions = Sample.conditions;
++                            Evidence.queries{end}.useSideCondition = Sample.useSideCondition;
++                        end
+                     end
+                 end
+                 Evidence.totalSeconds = toc(runTimer);
+@@ -1045,6 +1050,7 @@
+         "pairRetrainEpoch","ganMiniBatch","ganLrD","ganLrG", ...
+         "gpLambda","nCritic","trainingSigma","sampleSigma", ...
+         "generatorHidden","criticHidden", ...
++        "stableConditionSpan","useSideCondition", ...
+         "pairArchivePerRef","pairArchiveCapacity", ...
+         "pairNeighborRefCount","pairMinPairs", ...
+         "retrainChange","retrainGenerations", ...
+@@ -1648,7 +1654,8 @@
+     Config.nCritic = double(Options.nCritic);
+     mapping = {'lrG','ganLrG';'lrD','ganLrD';'miniBatch','ganMiniBatch'; ...
+         'generatorHidden','generatorHidden';'criticHidden','criticHidden'; ...
+-        'trainingSigma','trainingSigma';'sampleSigma','sampleSigma';'gpLambda','gpLambda'};
++        'trainingSigma','trainingSigma';'sampleSigma','sampleSigma';'gpLambda','gpLambda'; ...
++        'stableConditionSpan','stableConditionSpan';'useSideCondition','useSideCondition'};
+     for k = 1:size(mapping,1)
+         if isfield(Options,mapping{k,1}); Config.(mapping{k,2}) = Options.(mapping{k,1}); end
+     end
+@@ -1660,7 +1667,7 @@
+ 
+     required = {'initialEpoch','retrainEpoch','nCritic'};
+     optional = {'lrG','lrD','miniBatch','generatorHidden','criticHidden', ...
+-        'trainingSigma','sampleSigma','gpLambda'};
++        'trainingSigma','sampleSigma','gpLambda','stableConditionSpan','useSideCondition'};
+     if ~isstruct(Options) || ~isscalar(Options) || ...
+             ~all(isfield(Options,required)) || ...
+             any(~ismember(fieldnames(Options),[required,optional]))
+@@ -1682,10 +1689,12 @@
+         if ~isfield(Options,name); continue; end
+         v = double(Options.(name));
+         widths = ismember(name,["generatorHidden","criticHidden"]);
+-        assert(isnumeric(Options.(name)) && ~isempty(v) && all(isfinite(v),'all') && ...
++        assert((isnumeric(Options.(name)) || islogical(Options.(name))) && ~isempty(v) && all(isfinite(v),'all') && ...
+             (widths && isvector(v) || ~widths && isscalar(v)), ...
+             'CBSPairGuide:BadTrainingExperimentOptions','Invalid training factor.');
+-        if widths || name == "miniBatch"
++        if ismember(name,["stableConditionSpan","useSideCondition"])
++            assert(isscalar(v) && ismember(v,[0 1]));
++        elseif widths || name == "miniBatch"
+             assert(all(v >= 1 & v == round(v),'all'));
+             if name == "miniBatch"; assert(v >= 2); end
+         elseif ismember(name,["lrG","lrD"])
+--- before/Algorithms/Multi-objective optimization/CBS-CGAN/Core/PairBoundaryArchive_RC.m
++++ after/Algorithms/Multi-objective optimization/CBS-CGAN/Core/PairBoundaryArchive_RC.m
+@@ -422,6 +422,9 @@
+         span = decisionSpan(Problem);
+         Data.xF = (Archive.xf(rows,:)-lower)./span;
+         Data.xI = (Archive.xi(rows,:)-lower)./span;
++        Data.yF = double(Archive.yf(rows,:));
++        Data.yI = double(Archive.yi(rows,:));
++        Data.W = double(W);
+         Data.w = double(W(Archive.ref(rows),:));
+         Data.ref = Archive.ref(rows);
+         Data.id = Archive.id(rows);
+--- before/Algorithms/Multi-objective optimization/CBS-CGAN/Core/PairBoundaryWGAN_RC.m
++++ after/Algorithms/Multi-objective optimization/CBS-CGAN/Core/PairBoundaryWGAN_RC.m
+@@ -68,14 +68,15 @@
+     Previous = Model;
+     Model.lastAttemptGeneration = Options.generation;
+     Candidate = prepareState(Model,Problem.D,size(Data.cF,2),Options);
++    [Candidate,TrainingData] = modelTrainingData(Candidate,Data,Options);
+     diagnosticTimer = tic;
+-    Status.preDiagnostics = pairModelDiagnostics(Candidate,Data,changedRows,Options);
++    Status.preDiagnostics = pairModelDiagnostics(Candidate,TrainingData,changedRows,Options);
+     Status.diagnosticGeneratorRows = 18*Data.count;
+     Status.diagnosticCriticRows = 4*Data.count;
+     Status.diagnosticSeconds = toc(diagnosticTimer);
+     trainingTimer = tic;
+     try
+-        Candidate = trainModel(Candidate,Data,Options,Status.requestedUpdates);
++        Candidate = trainModel(Candidate,TrainingData,Options,Status.requestedUpdates);
+         Status.generatorForwardRows = Candidate.eventGeneratorRows;
+         Status.criticForwardRows = Candidate.eventCriticRows;
+         finiteWeights = all(cellfun(@(x)all(isfinite(extractdata(x)),'all'), ...
+@@ -99,6 +100,11 @@
+     Model = Candidate;
+     Model.ready = true;
+     Model.lastData = Data;
++    Model.lastTrainingData = TrainingData;
++    Status.conditionScale = TrainingData.referenceScale;
++    Status.actualCF = networkConditions(TrainingData.cF,Model);
++    Status.actualCI = networkConditions(TrainingData.cI,Model);
++    Status.useSideCondition = Model.useSideCondition;
+     Model.lastTrainGeneration = Options.generation;
+     Model.lastAttemptGeneration = Options.generation;
+     Model.version = Previous.version+1;
+@@ -118,7 +124,7 @@
+     Status.diagnosticGeneratorRows = 36*Data.count;
+     Status.diagnosticCriticRows = 8*Data.count;
+     diagnosticTimer = tic;
+-    Status.postDiagnostics = pairModelDiagnostics(Model,Data,changedRows,Options);
++    Status.postDiagnostics = pairModelDiagnostics(Model,TrainingData,changedRows,Options);
+     Status.diagnosticSeconds = Status.diagnosticSeconds+toc(diagnosticTimer);
+     Status.reason = "trained";
+ end
+@@ -139,19 +145,36 @@
+     normalized = (generateScaled(Model,Z,QueryC)+1)/2;
+     Dec = double(Problem.lower)+normalized.*(double(Problem.upper)-double(Problem.lower));
+     Info.normalized = normalized; Info.z = Z; Info.sides = QueryC(:,end);
++    Info.conditions = networkConditions(QueryC,Model);
++    Info.useSideCondition = ~isfield(Model,'useSideCondition') || Model.useSideCondition;
++    if isfield(Options,'referenceScale')
++        Info.conditionScale = Options.referenceScale;
++    else
++        Info.conditionScale = Model.lastData.referenceScale;
++    end
++    if isfield(Model,'stableConditionSpan') && Model.stableConditionSpan
++        Info.conditionScale.span = Model.conditionSpan;
++    end
+     Info.endpointForwardRows = count; Info.forwardSeconds = toc(timer);
+ end
+ 
+ function Model = trainModel(Model,Data,Options,updateBudget)
+ %TRAINMODEL Independent endpoints; equal label mass and balanced directions.
+     Training = prepareTrainingArrays(Data);
++    Training.conditions = single(networkConditions(double(Training.conditions'),Model)');
+     batch = max(2,2*floor(min(Options.miniBatch,Training.count)/2));
+     Model.eventEpochs = 0; Model.eventUpdates = 0; Model.eventPairVisits = 0;
+     Model.eventEndpointVisits = 0; Model.eventTrainingSamples = Training.count;
+     Model.eventGeneratorRows = 0; Model.eventCriticRows = 0; Model.eventFailed = false;
+     Model.eventBatchesPerEpoch = ceil(Training.count/batch);
+     for update = 1:updateBudget
+-        idx = balancedEndpointBatch(Training,batch);
++        if isfield(Options,'diagnosticBatchIndices')
++            idx = Options.diagnosticBatchIndices(update,:);
++            assert(numel(idx)==batch && all(idx>=1 & idx<=Training.count & idx==fix(idx)), ...
++                'CBSPairGuide:BadDiagnosticBatch','Invalid fixed diagnostic sample schedule.');
++        else
++            idx = balancedEndpointBatch(Training,batch);
++        end
+         for critic = 1:Options.nCritic
+             Model = updateCritic(Model,Training,idx,Options);
+             Model.eventGeneratorRows = Model.eventGeneratorRows+batch;
+@@ -261,9 +284,35 @@
+ function output = generateScaled(Model,Z,C)
+ %GENERATESCALED Forward double rows through the tanh generator.
+ 
++    C = networkConditions(C,Model);
+     dlZ = dlarray(single(double(Z)'),'CB');
+     dlC = dlarray(single(double(C)'),'CB');
+     output = double(extractdata(generatorForward(Model.netG,dlZ,dlC)))';
++end
++
++function [Model,Actual] = modelTrainingData(Model,Data,Options)
++%MODELTRAININGDATA Keep the archive/gate frame separate from network labels.
++    Actual = Data;
++    Model.useSideCondition = logical(Options.useSideCondition);
++    Model.stableConditionSpan = logical(Options.stableConditionSpan);
++    if ~Model.stableConditionSpan; return; end
++    assert(all(isfield(Data,{'yF','yI','W','referenceScale'})), ...
++        'CBSPairGuide:MissingConditionObjectives','Stable span needs cached objectives and W.');
++    if ~isfield(Model,'conditionSpan') || isempty(Model.conditionSpan)
++        Model.conditionSpan = Data.referenceScale.span;
++    end
++    Actual.referenceScale.span = Model.conditionSpan;
++    rF = AssignReferenceVectors_CBS(Data.yF,Data.W,Actual.referenceScale);
++    rI = AssignReferenceVectors_CBS(Data.yI,Data.W,Actual.referenceScale);
++    Actual.cF = [Data.W(rF,:),ones(Data.count,1)];
++    Actual.cI = [Data.W(rI,:),zeros(Data.count,1)];
++end
++
++function C = networkConditions(C,Model)
++%NETWORKCONDITIONS Constant side ablation preserves shape and sample weights.
++    if isfield(Model,'useSideCondition') && ~Model.useSideCondition
++        C(:,end) = 0;
++    end
+ end
+ 
+ function [delta,changedRows,newRegions] = changesSince(Data,Previous,D)
+@@ -383,8 +432,8 @@
+     cleanup = onCleanup(@()rng(savedRNG));
+     rng(24681357,'twister');
+     count = Data.count;
+-    cF = single(Data.cF');
+-    cI = single(Data.cI');
++    cF = single(networkConditions(Data.cF,Model)');
++    cI = single(networkConditions(Data.cI,Model)');
+     Z = single(gaussianNoise(Model.zDim,count,Options.trainingSigma));
+     generatedF = extractdata(generatorForward( ...
+         Model.netG,dlarray(Z,'CB'),dlarray(cF,'CB')));
+@@ -406,7 +455,7 @@
+ 
+     real = single(2*[Data.xF;Data.xI]'-1);
+     fake = single([generatedF,generatedI]);
+-    conditions = single([Data.cF;Data.cI]');
++    conditions = single(networkConditions([Data.cF;Data.cI],Model)');
+     realScore = extractdata(forward(Model.netC, ...
+         dlarray([real;conditions],'CB')));
+     fakeScore = extractdata(forward(Model.netC, ...
+@@ -485,6 +534,12 @@
+     Options = defaultOption(Options,'retrainChange',0.2);
+     Options = defaultOption(Options,'retrainGenerations',10);
+     Options = defaultOption(Options,'generation',0);
++    Options = defaultOption(Options,'stableConditionSpan',false);
++    Options = defaultOption(Options,'useSideCondition',true);
++    for name = ["stableConditionSpan","useSideCondition"]
++        assert(isscalar(Options.(name)) && ismember(double(Options.(name)),[0 1]), ...
++            'CBSPairGuide:BadConditionOption','Condition options must be logical scalars.');
++    end
+     Options.zDim = max(1,round(double(Options.zDim)));
+     Options.epochs = max(0,round(double(Options.epochs)));
+     Options.initialEpoch = max(0,round(double(Options.initialEpoch)));
+--- before/Algorithms/Multi-objective optimization/CBS-CGAN/Support/render_PairGuide_interval_distribution.m
++++ after/Algorithms/Multi-objective optimization/CBS-CGAN/Support/render_PairGuide_interval_distribution.m
+@@ -16,7 +16,7 @@
+     cacheFile=fullfile(folder,'plot_data.mat');
+     if isfile(cacheFile)
+         old=load(cacheFile,'Report');
+-        if isfield(old.Report,'rendererVersion') && old.Report.rendererVersion==7 && ...
++        if isfield(old.Report,'rendererVersion') && old.Report.rendererVersion==8 && ...
+                 old.Report.rendererSourceHash==rendererHash && ...
+                 old.Report.resultFile==string(resultFile) && ...
+                 old.Report.resultBytes==resultInfo.bytes && old.Report.resultDate==resultInfo.datenum && ...
+@@ -57,7 +57,7 @@
+             'p1',P.p1Objs,'p2',P.p2Objs,'xf',P.archive.yf(active,:), ...
+             'xi',P.archive.yi(active,:),'native',zeros(0,2), ...
+             'candidates',zeros(0,2),'pending',zeros(0,2),'children',zeros(0,2), ...
+-            'nativeMode',nativeMode,'singleMode',singleMode,'sides',zeros(0,1), ...
++            'nativeMode',nativeMode,'singleMode',singleMode,'useSideCondition',true,'sides',zeros(0,1), ...
+             'trueFeasible',zeros(0,1),'labelAccuracy',NaN,'directionError',NaN, ...
+             'nativeBandRate',NaN,'projectionMedian',NaN, ...
+             'inactiveF',P.archive.yf(~active,:),'inactiveI',P.archive.yi(~active,:), ...
+@@ -103,7 +103,12 @@
+                 if singleMode
+                     S.sides=Q.sides; S.trueFeasible=queryCache{q}.feasible;
+                     S.labelAccuracy=mean(S.trueFeasible==S.sides);
++                    if isfield(Q,'useSideCondition')
++                        S.useSideCondition=Q.useSideCondition;
++                        if ~S.useSideCondition; S.labelAccuracy=NaN; end
++                    end
+                     frame=E.population{Q.generation+1}.referenceScale;
++                    if isfield(Q,'conditionScale'); frame=Q.conditionScale; end
+                     [~,~,yn]=AssignReferenceVectors_CBS(S.native,E.W,frame);
+                     target=Q.conditions(:,1:end-1); target=target./max(vecnorm(target,2,2),eps);
+                     yn=yn./max(vecnorm(yn,2,2),eps);
+@@ -131,7 +136,7 @@
+         States{k}=S;
+     end
+     assert(Problem.FE==0,'Offline CalObj plotting changed full-evaluation FE.');
+-    Report=struct('rendererVersion',7,'rendererSourceHash',rendererHash, ...
++    Report=struct('rendererVersion',8,'rendererSourceHash',rendererHash, ...
+         'sourceHash',R.Record.sourceHash,'problem',R.Record.problem, ...
+         'resultFile',string(resultFile),'resultBytes',resultInfo.bytes,'resultDate',resultInfo.datenum, ...
+         'seed',1,'mode',"cgan",'files',files,'focusFiles',focusFiles, ...
+@@ -191,7 +196,7 @@
+             end
+         elseif pane==2
+             h1=points(ax,S.native,14,[0.13 0.43 0.82],'o',0.45);
+-            if S.singleMode
++            if S.singleMode && S.useSideCondition
+                 delete(h1);
+                 h1=points(ax,S.native(S.sides==1,:),17,[.05 .45 .16],'o',.55);
+                 h0=points(ax,S.native(S.sides==0,:),17,[.78 .13 .14],'s',.55);
+@@ -203,12 +208,14 @@
+                     sprintf('Selected and truly used (%d)',size(S.pending,1))}, ...
+                     'Location','southoutside','FontSize',11);
+                 title(ax,'CGAN generated / selected candidates | original coordinates');
+-                if S.singleMode
++                if S.singleMode && S.useSideCondition
+                     delete(h2); h2=points(ax,S.children,75,[1 .63 .08],'d',.95);
+                     legend(ax,[h1 h0 h2],{'Requested feasible (s=1)', ...
+                         'Requested infeasible (s=0)','Selected and truly evaluated'}, ...
+                         'Location','southoutside','FontSize',10);
+                     title(ax,'Single-point CGAN | colors are requests, not true feasibility');
++                elseif S.singleMode
++                    title(ax,'Single-point CGAN | side condition disabled');
+                 end
+             else
+                 legend(ax,h1,{sprintf('native proposals (%d)',size(S.native,1))}, ...
+@@ -252,6 +259,10 @@
+     if S.singleMode
+         trainingNote=sprintf('Last training FE %g | %g pairs | %g G updates | true label accuracy %.1f%% | direction error %.1f deg', ...
+             S.trainingFE,S.trainingPairs,S.trainingUpdates,100*S.labelAccuracy,S.directionError);
++        if ~S.useSideCondition
++            trainingNote=sprintf('Last training FE %g | %g pairs | %g G updates | no side condition | direction error %.1f deg', ...
++                S.trainingFE,S.trainingPairs,S.trainingUpdates,S.directionError);
++        end
+     end
+     eventNote=sprintf('production FE %g | consumption FE %g | model %g | stale=%d | raw objectives: offline only', ...
+         S.productionFE,S.consumptionFE,S.modelVersion,S.stale);

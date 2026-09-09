@@ -1,0 +1,79 @@
+{
+  "status": "complete",
+  "session_id": 36748,
+  "tasks": 12,
+  "workers": 10,
+  "threadsPerWorker": 1,
+  "lastConfirmed": "2026-09-07T17:04:56.340088+08:00",
+  "progress": [
+    {
+      "run": "LIRCMOP5_BC_seed01_cgan",
+      "FE": 100000
+    },
+    {
+      "run": "LIRCMOP5_BC_seed02_cgan",
+      "FE": 100000
+    },
+    {
+      "run": "LIRCMOP5_BC_seed03_cgan",
+      "FE": 100000
+    },
+    {
+      "run": "LIRCMOP6_BC_seed01_cgan",
+      "FE": 100000
+    },
+    {
+      "run": "LIRCMOP6_BC_seed02_cgan",
+      "FE": 100000
+    },
+    {
+      "run": "LIRCMOP6_BC_seed03_cgan",
+      "FE": 100000
+    },
+    {
+      "run": "LIRCMOP7_BC_seed01_cgan",
+      "FE": 100000
+    },
+    {
+      "run": "LIRCMOP7_BC_seed02_cgan",
+      "FE": 100000
+    },
+    {
+      "run": "LIRCMOP7_BC_seed03_cgan",
+      "FE": 100000
+    },
+    {
+      "run": "LIRCMOP8_BC_seed01_cgan",
+      "FE": 100000
+    },
+    {
+      "run": "LIRCMOP8_BC_seed02_cgan",
+      "FE": 100000
+    },
+    {
+      "run": "LIRCMOP8_BC_seed03_cgan",
+      "FE": 100000
+    }
+  ],
+  "completedTasks": 12,
+  "failedTasks": 0,
+  "validation": "verified",
+  "completedAt": "2026-09-07T17:01:51.085880+08:00",
+  "verification": {
+    "status": "verified",
+    "completedRuns": 12,
+    "failedRuns": 0,
+    "checkpointRows": 72,
+    "missingFirstUse": 0,
+    "distributionFigures": 48,
+    "plottedStates": 24,
+    "plottedStatesWithoutGeneration": 1,
+    "metricCurves": 4,
+    "sourceHash": "d1fca395b8a2ad822a6b7d776a637b62f161372e9327b7843b712ff71cb85a92",
+    "verifiedAt": "2026-09-07 17:02:20"
+  },
+  "sourceFilesVerified": 86,
+  "sourceSnapshotFilesVerified": 86,
+  "sourceManifestSHA256": "86fd437b1cce8740646b08993a15810b335cd507b5b195ab8b37b7f97c04da5f",
+  "distributionOnlyRun1": true
+}

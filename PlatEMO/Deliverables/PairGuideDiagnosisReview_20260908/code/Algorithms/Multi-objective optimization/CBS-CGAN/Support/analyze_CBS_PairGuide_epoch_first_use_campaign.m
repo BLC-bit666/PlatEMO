@@ -1,0 +1,246 @@
+function Analysis = analyze_CBS_PairGuide_epoch_first_use_campaign( ...
+        rootPath,campaignName)
+%ANALYZE_CBS_PAIRGUIDE_EPOCH_FIRST_USE_CAMPAIGN Summarize paired epoch runs.
+
+    if nargin < 1 || isempty(rootPath)
+        rootPath = fileparts(which('platemo'));
+    end
+    if nargin < 2 || isempty(campaignName)
+        campaignName = "CBS_PairGuide_first_use_epoch_v4_20260901";
+    end
+    campaignDir = fullfile(char(rootPath),'Data',char(campaignName));
+    addCBSPaths(char(rootPath));
+    Manifest = load(fullfile(campaignDir,'campaign_manifest.mat'), ...
+        'Protocol','Tasks');
+    P = Manifest.Protocol;
+    Tasks = Manifest.Tasks;
+    Rows = repmat(emptyRow(),numel(Tasks),1);
+    for i = 1 : numel(Tasks)
+        Data = load(Tasks(i).outputFile,'Metrics','Capture');
+        M = Data.Metrics;
+        Continuous = continuousConstraintMetrics( ...
+            Tasks(i).problem,Data.Capture,P);
+        Rows(i) = struct('problem',Tasks(i).problem, ...
+            'epoch',Tasks(i).epoch,'run',Tasks(i).run, ...
+            'poolFE',M.poolFE,'useFE',M.useFE, ...
+            'wallClockSeconds',M.wallClockSeconds, ...
+            'trainingPairs',M.trainingPairs, ...
+            'batchesPerEpoch',M.batchesPerEpoch,'updates',M.updates, ...
+            'pairVisits',M.pairVisits, ...
+            'candidateValidCount',M.candidateValidCount, ...
+            'candidateValidRate',M.candidateValidRate, ...
+            'guidedCount',M.guidedCount, ...
+            'guidedSelectionRate',M.guidedSelectionRate, ...
+            'fallbackCount',M.fallbackCount, ...
+            'rawFeasibleRate',M.rawFeasibleRate, ...
+            'rawInfeasibleRate',Continuous.rawInfeasibleRate, ...
+            'rawBoundaryMarginMedian', ...
+                Continuous.rawBoundaryMarginMedian, ...
+            'rawCVMedian',Continuous.rawCVMedian, ...
+            'rawDecisionUniqueRate',M.rawDecisionUniqueRate, ...
+            'guidedFeasibleRate',M.guidedFeasibleRate, ...
+            'guidedBoundaryMarginMedian', ...
+                Continuous.guidedBoundaryMarginMedian, ...
+            'guidedCVMedian',Continuous.guidedCVMedian, ...
+            'guidedDominatingRate',M.guidedDominatingRate, ...
+            'guidedUsefulRate',M.guidedUsefulRate, ...
+            'guidedUsefulPerQuota',M.guidedUsefulPerQuota, ...
+            'qualityScore',NaN);
+    end
+    TaskMetrics = struct2table(Rows);
+    TaskMetrics.qualityScore = pairedQualityScore(TaskMetrics);
+    PerProblem = aggregatePerProblem(TaskMetrics,P);
+    Overall = aggregateOverall(TaskMetrics,P);
+    bestQuality = max(Overall.qualityScoreMedian);
+    bestFull = max(Overall.full20Rate);
+    eligible = Overall.qualityScoreMedian >= bestQuality-0.03 & ...
+        Overall.full20Rate >= bestFull-0.05;
+    if ~any(eligible)
+        eligible = Overall.qualityScoreMedian == bestQuality;
+    end
+    recommendedEpoch = min(Overall.epoch(eligible));
+    [~,bestRow] = max(Overall.qualityScoreMedian);
+    bestQualityEpoch = Overall.epoch(bestRow);
+
+    analysisDir = fullfile(campaignDir,'analysis');
+    ensureFolder(analysisDir);
+    writetable(TaskMetrics,fullfile(analysisDir,'task_metrics.csv'));
+    writetable(PerProblem,fullfile(analysisDir,'per_problem_epoch.csv'));
+    writetable(Overall,fullfile(analysisDir,'overall_epoch.csv'));
+    Analysis = struct('schemaVersion',P.schemaVersion, ...
+        'campaignName',string(campaignName), ...
+        'taskCount',height(TaskMetrics), ...
+        'recommendedEpoch',recommendedEpoch, ...
+        'bestQualityEpoch',bestQualityEpoch, ...
+        'recommendationRule', ...
+        "smallest epoch within 0.03 quality and 0.05 full-20 rate of best", ...
+        'finishedAt',string(datetime('now')));
+    save(fullfile(analysisDir,'epoch_analysis.mat'), ...
+        'Analysis','TaskMetrics','PerProblem','Overall');
+    lines = [ ...
+        "PairGuide first-use epoch analysis"; ...
+        "Recommended epoch: "+recommendedEpoch; ...
+        "Best median-quality epoch: "+bestQualityEpoch; ...
+        "Rule: "+Analysis.recommendationRule];
+    writelines(lines,fullfile(analysisDir,'recommendation.txt'));
+end
+
+function Row = emptyRow()
+    Row = struct('problem',"",'epoch',0,'run',0,'poolFE',NaN, ...
+        'useFE',NaN,'wallClockSeconds',NaN,'trainingPairs',NaN, ...
+        'batchesPerEpoch',NaN,'updates',NaN,'pairVisits',NaN, ...
+        'candidateValidCount',NaN,'candidateValidRate',NaN, ...
+        'guidedCount',NaN,'guidedSelectionRate',NaN, ...
+        'fallbackCount',NaN,'rawFeasibleRate',NaN, ...
+        'rawInfeasibleRate',NaN,'rawBoundaryMarginMedian',NaN, ...
+        'rawCVMedian',NaN, ...
+        'rawDecisionUniqueRate',NaN,'guidedFeasibleRate',NaN, ...
+        'guidedBoundaryMarginMedian',NaN,'guidedCVMedian',NaN, ...
+        'guidedDominatingRate',NaN,'guidedUsefulRate',NaN, ...
+        'guidedUsefulPerQuota',NaN, ...
+        'qualityScore',NaN);
+end
+
+function score = pairedQualityScore(T)
+%PAIREDQUALITYSCORE Score the intended infeasible-side boundary mechanism.
+
+    score = nan(height(T),1);
+    blocks = unique(T(:,{'problem','run'}),'rows','stable');
+    for i = 1 : height(blocks)
+        rows = T.problem == blocks.problem(i) & T.run == blocks.run(i);
+        rawBoundary = inverseMinMax(T.rawBoundaryMarginMedian(rows));
+        guidedBoundary = inverseMinMax( ...
+            T.guidedBoundaryMarginMedian(rows));
+        guidedBoundary(~isfinite(guidedBoundary)) = 0;
+        guidedFeasible = T.guidedFeasibleRate(rows);
+        guidedFeasible(~isfinite(guidedFeasible)) = 0;
+        score(rows) = 0.30*T.guidedSelectionRate(rows)+ ...
+            0.20*T.rawInfeasibleRate(rows)+ ...
+            0.20*rawBoundary+0.15*guidedFeasible+ ...
+            0.15*guidedBoundary;
+    end
+end
+
+function value = inverseMinMax(X)
+    lo = min(X,[],'omitnan');
+    hi = max(X,[],'omitnan');
+    if ~isfinite(lo) || ~isfinite(hi)
+        value = nan(size(X));
+    elseif hi-lo <= eps(max(1,abs(hi)))
+        value = ones(size(X));
+    else
+        value = 1-(X-lo)/(hi-lo);
+    end
+end
+
+function A = aggregatePerProblem(T,P)
+    template = aggregateTemplate(true);
+    A = repmat(template,numel(P.problems)*numel(P.epochs),1);
+    row = 0;
+    for problem = P.problems
+        for epoch = P.epochs
+            row = row+1;
+            X = T(T.problem == problem & T.epoch == epoch,:);
+            A(row) = summarize(X,problem,epoch,true);
+        end
+    end
+    A = struct2table(A);
+end
+
+function A = aggregateOverall(T,P)
+    template = aggregateTemplate(false);
+    A = repmat(template,numel(P.epochs),1);
+    for i = 1 : numel(P.epochs)
+        epoch = P.epochs(i);
+        X = T(T.epoch == epoch,:);
+        A(i) = summarize(X,"ALL",epoch,false);
+    end
+    A = struct2table(A);
+end
+
+function S = aggregateTemplate(withProblem)
+    S = struct('epoch',0,'taskCount',0,'full20Rate',NaN, ...
+        'guidedCountMedian',NaN,'candidateValidRateMedian',NaN, ...
+        'rawFeasibleRateMedian',NaN,'rawInfeasibleRateMedian',NaN, ...
+        'rawBoundaryMarginMedian',NaN,'rawCVMedian',NaN, ...
+        'guidedFeasibleRateMedian',NaN, ...
+        'guidedBoundaryMarginMedian',NaN,'guidedCVMedian',NaN, ...
+        'guidedUsefulPerQuotaMedian',NaN,'useFEMedian',NaN, ...
+        'wallClockMedian',NaN,'wallClockP90',NaN, ...
+        'qualityScoreMedian',NaN,'qualityScoreIQR',NaN);
+    if withProblem
+        S.problem = "";
+    end
+end
+
+function S = summarize(X,problem,epoch,withProblem)
+    S = aggregateTemplate(withProblem);
+    if withProblem
+        S.problem = problem;
+    end
+    S.epoch = epoch;
+    S.taskCount = height(X);
+    S.full20Rate = mean(X.guidedCount == 20);
+    S.guidedCountMedian = median(X.guidedCount,'omitnan');
+    S.candidateValidRateMedian = median(X.candidateValidRate,'omitnan');
+    S.rawFeasibleRateMedian = median(X.rawFeasibleRate,'omitnan');
+    S.rawInfeasibleRateMedian = median(X.rawInfeasibleRate,'omitnan');
+    S.rawBoundaryMarginMedian = ...
+        median(X.rawBoundaryMarginMedian,'omitnan');
+    S.rawCVMedian = median(X.rawCVMedian,'omitnan');
+    S.guidedFeasibleRateMedian = median(X.guidedFeasibleRate,'omitnan');
+    S.guidedBoundaryMarginMedian = ...
+        median(X.guidedBoundaryMarginMedian,'omitnan');
+    S.guidedCVMedian = median(X.guidedCVMedian,'omitnan');
+    S.guidedUsefulPerQuotaMedian = ...
+        median(X.guidedUsefulPerQuota,'omitnan');
+    S.useFEMedian = median(X.useFE,'omitnan');
+    S.wallClockMedian = median(X.wallClockSeconds,'omitnan');
+    S.wallClockP90 = prctile(X.wallClockSeconds,90);
+    S.qualityScoreMedian = median(X.qualityScore,'omitnan');
+    S.qualityScoreIQR = iqr(X.qualityScore);
+end
+
+function C = continuousConstraintMetrics(problemName,Capture,P)
+%CONTINUOUSCONSTRAINTMETRICS Recover boundary distance without search feedback.
+
+    baseName = erase(string(problemName),"_BC");
+    constructor = str2func(char(baseName));
+    Problem = constructor('N',P.popSize,'D',P.dimension, ...
+        'maxFE',1e9,'maxRuntime',Inf);
+    rawCount = size(Capture.rawDecs,1);
+    Decs = [double(Capture.rawDecs);double(Capture.childDecs)];
+    Population = Problem.Evaluation(Decs);
+    Cons = double(Population.cons);
+    RawCons = Cons(1:rawCount,:);
+    GuidedCons = Cons(rawCount+1:end,:);
+    rawCV = sum(max(0,RawCons),2);
+    C = struct( ...
+        'rawInfeasibleRate',mean(rawCV > 0), ...
+        'rawBoundaryMarginMedian',median(min(abs(RawCons),[],2)), ...
+        'rawCVMedian',median(rawCV), ...
+        'guidedBoundaryMarginMedian',constraintMargin(GuidedCons), ...
+        'guidedCVMedian',constraintCV(GuidedCons));
+end
+
+function value = constraintMargin(Cons)
+    if isempty(Cons)
+        value = NaN;
+    else
+        value = median(min(abs(Cons),[],2));
+    end
+end
+
+function value = constraintCV(Cons)
+    if isempty(Cons)
+        value = NaN;
+    else
+        value = median(sum(max(0,Cons),2));
+    end
+end
+
+function ensureFolder(folder)
+    if ~isfolder(folder)
+        mkdir(folder);
+    end
+end

@@ -1,0 +1,7 @@
+{
+  "passed": true,
+  "new_training": 0,
+  "new_objective_calls": 0,
+  "new_constraint_calls": 0,
+  "scope": "Frozen end-point relabelling, not performance attribution"
+}

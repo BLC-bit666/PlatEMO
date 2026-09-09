@@ -1,0 +1,20 @@
+{
+  "zip_integrity": "passed",
+  "manifest_hashes": "all passed",
+  "mat_files": 0,
+  "fig_files": 0,
+  "original_png_files": 117,
+  "copied_source_and_experiment_files": 911,
+  "numeric_export": {
+    "complete": true,
+    "cganRuns": 12,
+    "plotStates": 24,
+    "holdoutModels": 8,
+    "newTrainingCalls": 0,
+    "newObjectiveCalls": 0,
+    "newConstraintCalls": 0
+  },
+  "limit_bytes": 50000000,
+  "zip_bytes_before_validation_record": 45560497,
+  "note": "MANIFEST covers payload except itself and this validation record."
+}

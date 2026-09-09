@@ -1,0 +1,1 @@
+LIRCMOP8_BC seed=2 mode=fallback_only FE=100000/100000

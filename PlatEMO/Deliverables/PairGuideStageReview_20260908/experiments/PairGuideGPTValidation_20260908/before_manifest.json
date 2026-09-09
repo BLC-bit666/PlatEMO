@@ -1,0 +1,30 @@
+[
+  {
+    "path": "Algorithms/Multi-objective optimization/CBS-CGAN/Core/PairGuideCore.m",
+    "sha256": "f96a1e7b7210f2aa176d7042f76c243bbc34da86a3e5d6e9a5b242c89afbcfe2"
+  },
+  {
+    "path": "Algorithms/Multi-objective optimization/CBS-CGAN/Core/PairBoundaryArchive_RC.m",
+    "sha256": "db4fe76b002c6852af3c81f9fc484a20ebc39b5c7953466f20e6eac8ba9c5578"
+  },
+  {
+    "path": "Algorithms/Multi-objective optimization/CBS-CGAN/Core/PairBoundaryWGAN_RC.m",
+    "sha256": "0d9afd14c07904932ecfe140cb4d266d0a046fb89f4c1fd4389333f913621323"
+  },
+  {
+    "path": "Algorithms/Multi-objective optimization/CBS-CGAN/Core/AssignReferenceVectors_CBS.m",
+    "sha256": "52d6455dfb2a3fc12042b0da409ac67f7d752f61d84a3374c4246f88d75cde76"
+  },
+  {
+    "path": "Algorithms/Multi-objective optimization/CBS-CGAN/Support/render_PairGuide_interval_distribution.m",
+    "sha256": "186f7bb33c8fe269976c19b851171cd350d93a7cd5a977d6277eeb37ae564834"
+  },
+  {
+    "path": "Algorithms/Multi-objective optimization/CBS-CGAN/Support/run_PairGuide_validation.m",
+    "sha256": "25249f1e2b39acd7cc67b9666f032eb711a7b27b63b346b1213e5efcb1a0d1ad"
+  },
+  {
+    "path": "Algorithms/Multi-objective optimization/PairGuide/PairGuide.m",
+    "sha256": "e824ece66deb825e6eea29a4668251b034eea8b68e47d321a0590c16be45f508"
+  }
+]

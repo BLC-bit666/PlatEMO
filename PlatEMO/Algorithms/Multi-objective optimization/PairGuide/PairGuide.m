@@ -1,13 +1,13 @@
 classdef PairGuide < PairGuideCore
 % <2026> <multi> <real> <constrained>
-% Atomic boundary-pair CGAN with rho-gated midpoint guidance
-% rawGuideCount    --- 500 --- Raw s=0 candidates per query event
+% Boundary-archive conditional single-point generation
+% rawGuideCount    --- 500 --- Native single-point proposals per query event
 % zDim             ---   6 --- Generator noise dimension
-% ganEpoch         --- 500 --- Full pair epochs for initial training
-% ganMiniBatch     ---  64 --- 32 complete pairs per mini-batch
+% ganUpdates       --- 1000 --- Generator updates for initial training
+% ganMiniBatch     ---  32 --- Independent endpoints per mini-batch
 % nCritic          ---   5 --- Critic updates per generator update
-% minGANTrainCount ---  32 --- Minimum active pairs required for training
-% sampleSigma      ---   1 --- Production inference noise standard deviation
+% minGANTrainCount ---   8 --- Minimum active pairs required for training
+% sampleSigma      --- 0.1 --- Production inference noise standard deviation
 
 %------------------------------- Reference --------------------------------
 % [1] Y. Tian, T. Zhang, J. Xiao, X. Zhang, and Y. Jin. A coevolutionary

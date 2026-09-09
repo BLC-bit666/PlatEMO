@@ -1,0 +1,2 @@
+problem,seed,prefixFE,mode,backboneSeed,queryAvailable,trainingStream,initialIGD,finalIGD,finalHV,IGDAUC,firstSelected,firstSurvivedP1,firstGuidedInfeasible,suffixFE,wallSeconds
+LIRCMOP7_BC,1,80000,adversarial2000,1891096984,1,1,0.0105797636404637,0.00952238709593108,0.293062517684254,0.0101367544474397,20,0,15,5000,3.239252625

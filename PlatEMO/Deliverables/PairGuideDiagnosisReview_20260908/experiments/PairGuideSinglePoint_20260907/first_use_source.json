@@ -1,0 +1,18 @@
+[
+  {
+    "path": "Algorithms/Multi-objective optimization/CBS-CGAN/Core/PairGuideCore.m",
+    "sha256": "cc38a8fa648775183c7971b1983fa2ae9d572be2bf1362272a1e9c59c2e53cac"
+  },
+  {
+    "path": "Algorithms/Multi-objective optimization/CBS-CGAN/Core/PairBoundaryArchive_RC.m",
+    "sha256": "ba2230e42d977d7c21849d24c6fcd0394d9b2e8a5a4707ec5f44a6ea0c27a9fa"
+  },
+  {
+    "path": "Algorithms/Multi-objective optimization/CBS-CGAN/Core/PairBoundaryWGAN_RC.m",
+    "sha256": "747e3e3b523d3103d68d25bd1e68c91554557a590cb6bf59a66cc14e1ebfa087"
+  },
+  {
+    "path": "Algorithms/Multi-objective optimization/CBS-CGAN/Support/run_PairGuide_single_first_use.m",
+    "sha256": "34a0f95a51813ee241990b098a4913c5a873e489c74627162116ba64b3654215"
+  }
+]

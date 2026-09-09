@@ -1,0 +1,2 @@
+problem,seed,arm,verified,fullFE,CalObjRows,CalConRows,initialPrefixExact,trainingEvents,totalGUpdates,lateGuidedSelected,lateGuidedSurvivedP1,lateGuidedInfeasibleReplacements,sourceHash
+LIRCMOP6_BC,12,original,1,100000,200000,100000,1,162,4220,3260,8,168,306cfaced492f0a15bf7e48b4f73de462a5de39e7d44fe934e7226d46da231b3

@@ -1,0 +1,10 @@
+{
+  "status": "verified",
+  "cases": 121,
+  "identicalPrefixGroups": 12,
+  "oneTrainingOneConsumption": true,
+  "offlineLabelsSeparated": true,
+  "nativeCoordinatesUnchanged": true,
+  "sharedEndpointDedupVerified": true,
+  "jointAngleToleranceDegrees": 5
+}

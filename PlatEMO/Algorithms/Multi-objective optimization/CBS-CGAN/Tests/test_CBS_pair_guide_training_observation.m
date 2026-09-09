@@ -1,93 +1,93 @@
 function test_CBS_pair_guide_training_observation
-%TEST_CBS_PAIR_GUIDE_TRAINING_OBSERVATION Verify formal-run observers.
-
-    rootPath = fileparts(fileparts(fileparts(fileparts(fileparts( ...
-        mfilename('fullpath'))))));
-    addpath(fullfile(rootPath,'Algorithms','Multi-objective optimization', ...
-        'CBS-CGAN','Support'),'-begin');
-    addCBSPaths(rootPath);
-
-    seed = 1;
-    schedule = struct('initialEpoch',2,'retrainEpoch',1,'nCritic',2);
-    parameters = {500,6,2,64,4,32,1};
-    rng(seed,'twister');
-    PlainProblem = LIRCMOP5_BC('N',100,'D',30,'maxFE',8000, ...
-        'maxRuntime',Inf);
-    Plain = PairGuide('parameter',parameters, ...
-        'save',1,'run',1,'outputFcn',@silentOutput);
-    Plain.configurePairGuideTrainingExperiment(schedule);
-    Plain.Solve(PlainProblem);
-    plainRNG = rng;
-
-    metricFE = zeros(0,1);
-    metricIGD = zeros(0,1);
-    feasibleCount = zeros(0,1);
-    rng(seed,'twister');
-    ObservedProblem = LIRCMOP5_BC('N',100,'D',30,'maxFE',8000, ...
-        'maxRuntime',Inf);
-    Observed = PairGuide('parameter',parameters, ...
-        'save',1,'run',1,'outputFcn',@recordMetric);
-    Observed.configurePairGuideTrainingExperiment(schedule);
-    Observed.configureCutoffDiagnostics(struct('enabled',true, ...
-        'stopAtCGANEnd',false,'disableOracleAudit',false));
-    Observed.configureObjectiveSpaceSnapshots(struct('enabled',true, ...
-        'targetFE',5000,'expectedRawCount',500, ...
-        'expectedGuidedCount',20));
-    Observed.Solve(ObservedProblem);
-    observedRNG = rng;
-
-    assert(PlainProblem.FE == 8000 && ObservedProblem.FE == 8000);
-    assert(isequaln(plainRNG,observedRNG), ...
-        'Metric/snapshot observation changed the terminal RNG.');
-    assert(isequaln(double(Plain.result{end,2}.decs), ...
-        double(Observed.result{end,2}.decs)) && ...
-        isequaln(double(Plain.result{end,2}.objs), ...
-        double(Observed.result{end,2}.objs)) && ...
-        isequaln(double(Plain.result{end,2}.cons), ...
-        double(Observed.result{end,2}.cons)), ...
-        'Metric/snapshot observation changed the final population.');
-    assert(~isempty(metricFE) && metricFE(end) == 8000 && ...
-        all(diff(metricFE) > 0) && numel(metricIGD) == numel(metricFE) && ...
-        numel(feasibleCount) == numel(metricFE));
-    Snapshots = Observed.objectiveSpaceSnapshots();
-    assert(isscalar(Snapshots) && Snapshots.targetFE == 5000 && ...
-        Snapshots.rawCount == 500 && ...
-        Snapshots.requestedCount == 20 && ...
-        Snapshots.guidedCount+Snapshots.fallbackCount == 20);
-    Audit = Observed.guideExperimentSnapshot();
-    assert(Audit.pairInitialEpoch == 2 && ...
-        Audit.pairRetrainEpoch == 1 && Audit.nCritic == 2 && ...
-        ~isempty(Audit.pairTrainingLog) && ...
-        Audit.pairTrainingLog(1).kind == "initial" && ...
-        Audit.pairTrainingLog(1).epochs == 2 && ...
-        isfinite(Audit.pairTrainingLog(1).postAllEndpointRMSE) && ...
-        isfinite(Audit.pairTrainingLog(1).postPairDifferenceRMSE) && ...
-        isfinite(Audit.pairTrainingLog(1).postSameConditionThickness) && ...
-        all([Audit.pairTrainingLog(2:end).epochs] == 1));
-    fprintf('PairGuide formal observation smoke test passed.\n');
-
-    function recordMetric(Algorithm,Problem)
-        savedFE = Problem.FE;
-        savedRNG = rng;
-        cleanup = onCleanup(@()restoreSearchState( ...
-            Problem,savedFE,savedRNG));
-        Population = Algorithm.result{end,2};
-        if isempty(metricFE) || metricFE(end) ~= Problem.FE
-            metricFE(end+1,1) = double(Problem.FE);
-            metricIGD(end+1,1) = double( ...
-                Problem.CalMetric('IGD',Population));
-            feasibleCount(end+1,1) = nnz(all(Population.cons <= 0,2));
+%TEST_CBS_PAIR_GUIDE_TRAINING_OBSERVATION Delayed direct evaluation and pure logging.
+    addCBSPaths(fileparts(which('platemo')));
+    results = cell(1,2); states = cell(1,2);
+    for observed = 1:2
+        rng(1,'twister');
+        % The final single FE has no P1 guide slot; 10% checkpoints also fall
+        % between completed generations and must use the preceding state.
+        P = LIRCMOP5_BC('N',100,'maxFE',6001);
+        A = PairGuide('save',1,'outputFcn',@(varargin)[]);
+        A.configurePairGuideTrainingExperiment(struct('initialEpoch',2, ...
+            'retrainEpoch',1,'nCritic',1));
+        if observed == 2
+            % The new default must replay the explicit C configuration exactly.
+            A.configureBoundaryExperiment(struct('selectionPool',"ccmo",'archiveFrontDepth',1));
+            A.configureObjectiveSpaceSnapshots(struct('enabled',true, ...
+                'targetFE',1000:1000:6000,'expectedRawCount',500,'expectedGuidedCount',20));
         end
-        clear cleanup;
+        A.Solve(P);
+        assert(P.FE == 6001);
+        results{observed} = A.guideExperimentSnapshot();
+        checkpoints = results{observed};
+        assert(all(checkpoints.checkpointFE <= checkpoints.checkpointTargets));
+        states{observed} = rng;
+        if observed == 2
+            before = P.FE;
+            Snapshots = A.objectiveSpaceSnapshots();
+            assert(P.FE == before && all([Snapshots.observationFE] <= [Snapshots.targetFE]) && ...
+                all(arrayfun(@(s)isempty(s.rawObjs),Snapshots)));
+        end
     end
-end
-
-function restoreSearchState(Problem,FE,RNG)
-%RESTORESEARCHSTATE Keep diagnostic callbacks behavior neutral.
-
-    Problem.FE = FE;
-    rng(RNG);
-end
-
-function silentOutput(~,~)
+    E = results{1}.evidence;
+    assert(isequaln(states{1},states{2}) && ...
+        isequaln(E.population,results{2}.evidence.population) && ...
+        isequaln(E.evaluations,results{2}.evidence.evaluations));
+    assert(E.fullFE == 6001 && E.objectiveOnlyFE == 0 && E.constraintOnlyFE == 0 && ...
+        E.oracleCalls.CalObjRows == 12002 && E.oracleCalls.CalConRows == 6001);
+    assert(~isempty(E.queries) && ~isempty(E.training));
+    assert(E.networkEndpointRows == 500*numel(E.queries));
+    assert(E.schema == "PairGuide-single-v3");
+    for k = 1:numel(E.population)
+        P = E.population{k}; F = P.p1Objs(all(P.p1Cons <= 0,2),:);
+        for y = P.archive.yf(P.archive.active,:)'
+            assert(~any(all(F <= y'+1e-12,2) & any(F < y'-1e-12,2)), ...
+                'Active feasible endpoints must pass the P1 at this same observation.');
+        end
+        for y = P.archive.yi'
+            assert(~any(all(F <= y'+1e-12,2) & any(F < y'-1e-12,2)), ...
+                'No stored infeasible endpoint may be dominated by current feasible P1.');
+        end
+    end
+    positive = 0;
+    for k = 1:numel(E.generations)
+        G = E.generations{k}; U = G.use;
+        assert(G.archive.archiveFrontDepth == 1 && ...
+            all(G.archive.retainedFrontRanks == 1) && G.archive.eligibilityRejectedPairs == 0);
+        assert(U.selected+U.fallback == U.requested);
+        assert(U.requested == 20 || (k == numel(E.generations) && U.requested == 0));
+        if U.selected == 0; continue; end
+        positive = positive+1;
+        assert(U.productionGeneration == U.consumptionGeneration-1 && ...
+            U.productionFE < G.consumptionFE);
+        query = E.queries{find(cellfun(@(q)q.productionFE == U.productionFE,E.queries),1)};
+        assert(all(ismember(U.childDecs,query.pending.decs,'rows')));
+        assert(all(U.matchedPairIds==0) && numel(U.requestedSides)==U.selected);
+        assert(all(U.evalIDs > U.productionFE) && ...
+            all(U.evalIDs <= G.consumptionFE));
+        for j = 1:numel(G.archive.events)
+            event = G.archive.events(j);
+            assert(event.afterGap < event.beforeGap-1e-12);
+        end
+    end
+    assert(positive > 0 && all(cellfun(@(q)q.productionFE < 6000,E.queries)));
+    for k = 1:numel(E.queries)
+        Q = E.queries{k};
+        assert(isequal(Q.pending.decs,Q.rawDecs(Q.pool.keepIdx,:)) && ...
+            isequal(Q.pool.candidateDecs,Q.rawDecs) && ~isfield(Q.pool,'constructedDecs'));
+        assert(Q.pool.selectionPolicy=="uncovered-first-archive-box-v1");
+        at=Q.pool.keepIdx; unknown=Q.pool.requestedUncovered(at);
+        assert(all(diff(double(unknown))<=0) && all(Q.pool.insideArchiveBox(at(~unknown))));
+        assert(all(diff(Q.pool.nearestFeasibleDistance(at(~unknown)))>=-1e-12));
+        assert(Q.pool.objectiveFE==0 && Q.pool.constraintFE==0);
+        Prefix=E.population{Q.generation+1};
+        allY=[Prefix.p1Objs;Prefix.archive.yf;Prefix.archive.yi];
+        expected=unique(AssignReferenceVectors_CBS(allY,E.W,Prefix.referenceScale));
+        assert(isequal(Q.pool.knownRefs,expected));
+        nextCount1 = min(100,ceil(min(200,6001-Q.productionFE)/2));
+        assert(round(0.20*nextCount1) > 0 && ...
+            size(Q.pending.decs,1) <= round(0.20*nextCount1));
+    end
+    assert(all(cellfun(@(s)s.generation < E.generations{end-1}.generation,E.training)));
+    fprintf('PairGuide direct-use and observation contract passed.\n');
 end

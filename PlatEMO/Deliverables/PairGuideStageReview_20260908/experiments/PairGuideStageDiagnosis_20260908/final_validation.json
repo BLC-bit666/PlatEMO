@@ -1,0 +1,32 @@
+{
+  "status": "passed",
+  "checkedAtUTC": "2026-09-08T09:36:06.491486+00:00",
+  "completePrimaryCases": 72,
+  "completeLowerGRateCases": 36,
+  "completeSearchWindows": 84,
+  "exactUnchangedFullSearchReplays": 4,
+  "exactNativeFirstSteps": 12,
+  "pairedTrainingStreams": 54,
+  "stageObservationFE": [
+    20000,
+    50000,
+    80000
+  ],
+  "searchSeeds": [
+    1
+  ],
+  "trainingStreams": [
+    1,
+    2,
+    3
+  ],
+  "scientificPNGs": 31,
+  "productionFilesUnchanged": 8,
+  "newTrueFE": 888800,
+  "reportedLimitations": [
+    "One search trajectory per problem;training streams are not independent search runs.",
+    "5/6 mid/late historical training data reported separately;6 late original query gate closed.",
+    "Suffixes change one batch then freeze further CGAN service;not continuous modified online training.",
+    "No validated production fix or proof of a unique root cause."
+  ]
+}

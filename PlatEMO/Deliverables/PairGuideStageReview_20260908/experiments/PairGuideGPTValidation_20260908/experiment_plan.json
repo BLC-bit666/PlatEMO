@@ -1,0 +1,118 @@
+{
+  "sourceURL": "https://chatgpt.com/share/6a9f698f-7b90-83ea-908a-07b4ea22bb3f",
+  "problems": [
+    5,
+    6,
+    7,
+    8
+  ],
+  "developmentSeeds": [
+    1,
+    2,
+    3
+  ],
+  "N": 100,
+  "D": 30,
+  "maxFE": 100000,
+  "arms": [
+    "original cached",
+    "stable_side",
+    "stable_no_side",
+    "DE cached",
+    "pair_only cached"
+  ],
+  "changedFactors": [
+    "network-only fixed first-training span; current minimum",
+    "side channel constant zero; same endpoint side/group sampler"
+  ],
+  "fixedData": {
+    "problems": [
+      7,
+      8
+    ],
+    "seeds": [
+      1,
+      2,
+      3
+    ],
+    "start": "saved last model and Adam",
+    "arms": [
+      "fixed labels",
+      "replayed spans"
+    ],
+    "sameEndpoints": true,
+    "sameBatchIDs": true,
+    "sameRandomNumbers": true,
+    "additionalUpdates": [
+      20,
+      200,
+      1000,
+      2000
+    ],
+    "maxEvents": 100
+  },
+  "suffix": {
+    "problems": [
+      7,
+      8
+    ],
+    "seeds": [
+      1,
+      2,
+      3
+    ],
+    "prefixFE": [
+      50000,
+      70000
+    ],
+    "modes": [
+      "raw",
+      "midpoint",
+      "de",
+      "pair_only"
+    ],
+    "interventionBatches": 1,
+    "subsequentGuidance": "fallback_only for all arms",
+    "suffixFE": 5000,
+    "newFullFE": 240000
+  },
+  "primaryMetric": "mean late IGD from trapezoidal integral FE 50000..100000 using 1000-FE cached trajectory",
+  "selection": "Choose lower across-run mean log(lateIGDAUC / original) among stable arms; require ratio < 1 to nominate a confirmatory candidate. Do not retune on confirmation seeds. If neither improves, report negative intervention evidence, no claimed solution.",
+  "confirmationIfCandidate": {
+    "seeds": [
+      11,
+      12,
+      13,
+      14,
+      15
+    ],
+    "modes": [
+      "selected stable arm",
+      "original",
+      "fallback_only",
+      "pair_only"
+    ],
+    "runs": 80
+  },
+  "noveltyMetric": {
+    "space": "normalized decision RMS",
+    "shortPairMax": 0.02,
+    "novelMidpointMin": 0.02,
+    "P1CoverageMax": 0.02,
+    "reference": "all short pairs present at 50000 FE",
+    "interpretation": "proxy from true opposite-label short pairs, not proof of unexplored global boundary",
+    "sensitivityThresholds": [
+      0.01,
+      0.02,
+      0.04
+    ]
+  },
+  "invariants": [
+    "No new network or coordinate context",
+    "No archive qualification/activation change",
+    "No free online true labels",
+    "Retain weights and Adam",
+    "No changes to P1/P2 proportions and selection",
+    "No production default switch during comparison"
+  ]
+}

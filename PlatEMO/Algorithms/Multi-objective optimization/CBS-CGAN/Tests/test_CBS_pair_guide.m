@@ -1,429 +1,178 @@
 function test_CBS_pair_guide()
-%TEST_CBS_PAIR_GUIDE Verify the PairGuide mechanism contract.
-
-    repoRoot = fileparts(which('platemo'));
-    addCBSPaths(repoRoot);
-    addpath(fullfile(repoRoot,'Problems','Multi-objective optimization', ...
-        'LIR-CMOP_BC'),'-begin');
-
-    %% Own identity, locked schedule, and stable schema
-    Algorithm = PairGuide( ...
-        'save',0,'outputFcn',@(varargin)[]);
-    Problem = DASCMOP1_BC('N',2,'D',5,'maxFE',1);
-    rng(910,'twister');
-    Algorithm.Solve(Problem);
-    Snapshot = Algorithm.guideExperimentSnapshot();
-    assert(Snapshot.arm == 7 && ...
-        Snapshot.generationMode == "pair_guide" && ...
-        Snapshot.useMode == "pair_guide" && ...
-        Snapshot.pairGanEpoch == 500 && ...
-        Snapshot.pairInitialEpoch == 500 && ...
-        Snapshot.pairRetrainEpoch == 20 && ...
-        Snapshot.nCritic == 5 && ...
-        Snapshot.guideOffspringShare == 0.20 && ...
-        Snapshot.pairGuideSchema == "PairGuide" && ...
-        isinf(Snapshot.cganEndTarget) && isa(Algorithm,'PairGuide'));
-
-    %% Archive: globally illegal xi is excluded; every ref owns one pair
-    Problem = LIRCMOP5_BC('N',4,'D',2,'maxFE',100);
-    W = twoObjectiveWeights(5);
-    Options = pairOptions(2,10);
-    xf = [0.10 0.10;0.90 0.90];
-    yf = [0 1;1 0];
-    legalXi = [0.45 0.55];
-    legalYi = [0.50 0.50];
-    dominatedXi = [0.11 0.10;0.89 0.90];
-    dominatedYi = [2 2;1.5 1.5];
-    P1 = SOLUTION(xf,yf,zeros(2,1));
-    Infeasible = SOLUTION([dominatedXi;legalXi], ...
-        [dominatedYi;legalYi],ones(3,1));
-    [Archive,~] = PairBoundaryArchive_RC('update',[],P1, ...
-        [P1,Infeasible],W,Problem,Options,struct(),100);
-    assert(~isempty(Archive.id) && all(Archive.active) && ...
-        all(Archive.resumeEligible));
-    assert(numel(unique(Archive.ref)) == numel(Archive.ref));
-    assert(~containsDecision(Archive.xi,dominatedXi(1,:)) && ...
-        ~containsDecision(Archive.xi,dominatedXi(2,:)) && ...
-        containsDecision(Archive.xi,legalXi));
-    for row = 1 : size(Archive.yi,1)
-        assert(~any(rowDominates(yf,repmat(Archive.yi(row,:),2,1))));
-    end
-    [Data,Gate,TrainC,QueryRefs,BMem] = ...
-        PairBoundaryArchive_RC('trainingdata', ...
-        Archive,W,Problem,Options);
-    assert(Data.count == numel(unique(Data.ref)) && ...
-        Data.count == Gate.regions && Gate.eligible && ...
-        isequal(QueryRefs,Data.ref) && ...
-        size(TrainC,1) == 2*Data.count && ...
-        all(TrainC(1:Data.count,end) == 1) && ...
-        all(TrainC(Data.count+1:end,end) == 0) && ...
-        numel(unique(BMem.ref)) == numel(BMem.ref));
-
-    % A historical xi dominated by a current feasible elite cannot remain
-    % active or enter training, even when its xf still has local support.
-    Illegal = makeArchive(xf(1,:),dominatedXi(1,:), ...
-        yf(1,:),dominatedYi(1,:),1);
-    [Illegal,~] = PairBoundaryArchive_RC('update',Illegal,P1,P1, ...
-        W,Problem,Options,struct(),200);
-    [IllegalData,IllegalGate] = PairBoundaryArchive_RC( ...
-        'trainingdata',Illegal,W,Problem,Options);
-    assert(~any(Illegal.active) && IllegalData.count == 0 && ...
-        ~IllegalGate.eligible);
-
-    % Local P1 support alone keeps a legal pair active without pretending
-    % that a new endpoint observation arrived.
-    Stable = makeArchive(xf(1,:),legalXi,yf(1,:),legalYi,1);
-    Stable.lastFE = 123;
-    StableP1 = SOLUTION(xf(1,:),yf(1,:),0);
-    StableUnion = [StableP1,SOLUTION(legalXi,legalYi,1)];
-    [Stable,~] = PairBoundaryArchive_RC('update',Stable,StableP1, ...
-        StableUnion,W,Problem,Options,struct(),999);
-    assert(isscalar(Stable.id) && Stable.active && ...
-        Stable.lastFE == 123);
-
-    % A legal exact pair may pause for lack of P1 support and later resume
-    % under the same ID without pretending that its endpoints changed.
-    LifecycleW = twoObjectiveWeights(11);
-    lifecycleXf = [0.10 0.10];
-    lifecycleXi = [0.45 0.55];
-    lifecycleYf = [0 1];
-    lifecycleYi = [0.10 0.90];
-    Paused = makeArchive(lifecycleXf,lifecycleXi, ...
-        lifecycleYf,lifecycleYi,1);
-    Paused.lastFE = 123;
-    FarP1 = SOLUTION([0.95 0.95],[1 0],0);
-    VerticalInfeasible = SOLUTION([1 1],[0 1],1);
-    [Paused,~] = PairBoundaryArchive_RC('update',Paused,FarP1, ...
-        [FarP1,VerticalInfeasible],LifecycleW,Problem,Options,struct(),200);
-    assert(isscalar(Paused.id) && Paused.id == 1 && ...
-        ~Paused.active && Paused.resumeEligible && Paused.age == 1 && ...
-        Paused.nextId == 2);
-    ResumingP1 = SOLUTION(lifecycleXf,lifecycleYf,0);
-    HorizontalInfeasible = SOLUTION([1 1],[1 0],1);
-    [Resumed,~] = PairBoundaryArchive_RC('update',Paused,ResumingP1, ...
-        [ResumingP1,HorizontalInfeasible],LifecycleW,Problem,Options, ...
-        struct(),300);
-    assert(isscalar(Resumed.id) && Resumed.id == 1 && ...
-        Resumed.active && Resumed.resumeEligible && ...
-        Resumed.lastFE == 123 && Resumed.nextId == 2);
-
-    % Once objective legality is lost, the retained row cannot resume in
-    % place. A later reconstruction receives a new ID and observation FE.
-    Invalidated = makeArchive(lifecycleXf,lifecycleXi, ...
-        lifecycleYf,lifecycleYi,1);
-    Invalidated.lastFE = 123;
-    DominatingP1 = SOLUTION([0.20 0.20],[0 0],0);
-    [Invalidated,~] = PairBoundaryArchive_RC('update',Invalidated, ...
-        DominatingP1,DominatingP1,LifecycleW,Problem,Options,struct(),400);
-    assert(isscalar(Invalidated.id) && Invalidated.id == 1 && ...
-        ~Invalidated.active && ~Invalidated.resumeEligible && ...
-        Invalidated.nextId == 2);
-    [Rebuilt,~] = PairBoundaryArchive_RC('update',Invalidated, ...
-        ResumingP1,[ResumingP1,HorizontalInfeasible],LifecycleW,Problem, ...
-        Options,struct(),500);
-    assert(isscalar(Rebuilt.id) && Rebuilt.id == 2 && Rebuilt.active && ...
-        Rebuilt.resumeEligible && Rebuilt.lastFE == 500 && ...
-        Rebuilt.nextId == 3);
-
-    % A condition reassociation without a new endpoint observation also
-    % starts a new ID rather than silently changing an old CGAN condition.
-    Reassociated = makeArchive(lifecycleXf,lifecycleXi, ...
-        lifecycleYf,lifecycleYi,size(LifecycleW,1));
-    Reassociated.lastFE = 123;
-    [Reassociated,~] = PairBoundaryArchive_RC('update',Reassociated, ...
-        ResumingP1,[ResumingP1,HorizontalInfeasible],LifecycleW,Problem, ...
-        Options,struct(),600);
-    assert(isscalar(Reassociated.id) && Reassociated.id == 2 && ...
-        Reassociated.ref == 1 && Reassociated.active && ...
-        Reassociated.lastFE == 600 && Reassociated.nextId == 3);
-
-    %% Query metadata: 500 randomized rows, balanced and ID/ref aligned
-    rng(913,'twister');
-    [QueryC,Info] = PairBoundaryArchive_RC( ...
-        'querycontexts',Archive,W,Options,500);
-    assert(size(QueryC,1) == 500 && all(QueryC(:,end) == 0) && ...
-        numel(Info.refs) == 500 && numel(Info.pairIds) == 500);
-    archiveRows = arrayfun(@(id)find(Archive.id == id,1),Info.pairIds);
-    assert(isequal(Info.refs,Archive.ref(archiveRows)) && ...
-        max(abs(QueryC(:,1:end-1)-W(Info.refs,:)),[],'all') <= 1e-12);
-    queryIds = unique(Info.pairIds,'stable');
-    queryCounts = arrayfun(@(id)nnz(Info.pairIds == id),queryIds);
-    assert(numel(queryIds) == nnz(Archive.active) && ...
-        max(queryCounts)-min(queryCounts) <= 1 && ...
-        nnz(diff(Info.pairIds) ~= 0) > 1);
-
-    %% Angular neighborhood is exactly five; midpoint is deterministic
-    theta = linspace(0,pi/2,7)';
-    W7 = [cos(theta),sin(theta)];
-    pairRef = 4;
-    order = angularOrder(W7,pairRef);
-    allowedRef = order(5);
-    excludedRef = order(6);
-    assert(~ismember(excludedRef,order(1:5)));
-    pairXf = [0.20 0.20];
-    pairXi = [0.80 0.80];
-    FeasDecs = [0.25 0.20;pairXf];
-    feasRefs = [allowedRef;excludedRef];
-    feasFitness = [0.1;0.1];
-    PairBMem = struct('id',1,'x_b',pairXf,'x_i',pairXi, ...
-        'y_b',[0 1],'y_i',[1 0],'ref',pairRef, ...
-        'gap',norm(pairXi-pairXf),'active',true,'lastFE',0);
-    Config = PairGuideCore.mainlineDefaults();
-    Config.pairNeighborRefCount = 5;
-    Config.pairDuplicateTolerance = 1e-8;
-    expectedChild = 0.5*(FeasDecs(1,:)+pairXi);
-    rng(914,'twister');
-    beforeRNG = rng;
-    [ChildDecs,parentRows,selectedRefs,Map,matchedIds] = ...
-        PairGuideCore.pairGuideDecisionTestHook( ...
-        Problem,FeasDecs,feasRefs,feasFitness,pairXi,pairRef,1, ...
-        W7,1,PairBMem,Config,FeasDecs);
-    afterRNG = rng;
-    pairGap = norm(pairXi-pairXf);
-    assert(isequaln(beforeRNG,afterRNG) && parentRows == 1 && ...
-        selectedRefs == pairRef && matchedIds == 1 && ...
-        max(abs(ChildDecs-expectedChild),[],'all') <= 1e-12 && ...
-        Map.rho < 1 && ...
-        norm(ChildDecs-pairXf) < pairGap && ...
-        norm(ChildDecs-pairXi) < pairGap && ...
-        abs(Map.centerStep-Map.actualStep) <= 1e-12 && ...
-        abs(Map.directionCosine-1) <= 1e-12);
-
-    % Duplicate filtering occurs only after midpoint construction, against P1.
-    [DuplicateChild,~,~,DuplicateMap,~] = ...
-        PairGuideCore.pairGuideDecisionTestHook( ...
-        Problem,FeasDecs,feasRefs,feasFitness,pairXi,pairRef,1, ...
-        W7,1,PairBMem,Config,[FeasDecs;expectedChild]);
-    assert(isempty(DuplicateChild) && DuplicateMap.validCount == 0);
-
-    %% Candidate gates: raw G may equal xi; no global feasible filter for G
-    CandidateProblem = LIRCMOP5_BC('N',10,'D',2,'maxFE',100);
-    g = [0.80 0.80];
-    gObj = CandidateProblem.CalObj(g);
-    globallyDominatingElite = gObj-[1 1];
-    assert(rowDominates(globallyDominatingElite,gObj));
-    [Selected,~,Matched,Trace] = selectSingleCandidate( ...
-        CandidateProblem,g,gObj,gObj,globallyDominatingElite, ...
-        pairOptions(1,2));
-    assert(isequal(Selected,g) && Matched == 1 && ...
-        Trace.keptCount == 1 && Trace.objectiveFE == 1 && ...
-        Trace.constraintFE == 0 && Trace.selectedRho == 0);
-
-    % Local rule 1: g must not dominate paired xi.
-    [Selected,~,~,Trace] = selectSingleCandidate( ...
-        CandidateProblem,g,gObj,gObj+[1 1],[],pairOptions(1,2));
-    assert(isempty(Selected) && Trace.localDominancePass == 0 && ...
-        Trace.corridorPass == 1);
-
-    % Local rule 2: paired xf must not dominate g.
-    [Selected,~,~,Trace] = selectSingleCandidate( ...
-        CandidateProblem,g,gObj-[1 1],gObj,[],pairOptions(1,2));
-    assert(isempty(Selected) && Trace.localDominancePass == 0 && ...
-        Trace.corridorPass == 1);
-
-    % Neither local dominance relation is enough: Pareto corridor is required.
-    corridorYf = gObj+[-2 1];
-    corridorYi = gObj+[-1 -1];
-    [Selected,~,~,Trace] = selectSingleCandidate( ...
-        CandidateProblem,g,corridorYf,corridorYi,[],pairOptions(1,2));
-    assert(isempty(Selected) && Trace.localDominancePass == 1 && ...
-        Trace.corridorPass == 0);
-
-    %% One minimum-rho representative per pair, 2Q objective checks, Q donors
-    pairCount = 5;
-    W5 = twoObjectiveWeights(pairCount);
-    Xf = [linspace(0.10,0.50,pairCount)',0.20*ones(pairCount,1)];
-    Xi = Xf+0.25;
-    Y = CandidateProblem.CalObj(Xi);
-    ManyArchive = makeArchive(Xf,Xi,Y,Y,(1:pairCount)');
-    Population = SOLUTION(Xf,W5,zeros(pairCount,1));
-    Fitness = zeros(pairCount,1);
-    Raw = zeros(2*pairCount,2);
-    ManyInfo = struct('refs',zeros(2*pairCount,1), ...
-        'pairIds',zeros(2*pairCount,1));
-    for pair = 1 : pairCount
-        Raw(2*pair-1,:) = Xi(pair,:)+[0.05 0];
-        Raw(2*pair,:) = Xi(pair,:);
-        ManyInfo.refs(2*pair-1:2*pair) = pair;
-        ManyInfo.pairIds(2*pair-1:2*pair) = pair;
-    end
+%TEST_CBS_PAIR_GUIDE Final shared-conversation contract, including real autodiff.
+    addCBSPaths(fileparts(which('platemo')));
+    P = LIRCMOP5_BC('N',10,'D',2,'maxFE',100);
+    O = struct('pairMinPairs',8,'guideQuota',20,'generation',1, ...
+        'initialEpoch',2,'retrainEpoch',1,'nCritic',1,'miniBatch',32);
+    W = [1 1];
+    A = archive([0.2 0.2],[0.8 0.8],[0 1],[1 0],1);
+    P1 = SOLUTION([0.05 0.05],[-1 -1],0);
+    % Unqualified historical endpoints are deleted, not merely deactivated.
+    [Retained,~] = PairBoundaryArchive_RC('update',A,P1,P1,W,P,O,struct(),10);
+    assert(isempty(Retained.id) && ~isfield(Retained,'resumeEligible') && ...
+        ~isfield(Retained,'lastFE'));
+    % Explicit legacy control: P1-only qualification remains available.
+    Legacy = O; Legacy.archiveFrontDepth = 0;
+    Candidates = archive([0.1 0.1;0.8 0.8], ...
+        [0.1 0.10001;0.8 0.80001],[0.2 0.8;0.7 0.7],[0 1;1 0],[1;1]);
+    CurrentP1 = SOLUTION([0.5 0.5],[0.6 0.6],0);
+    [Eligible,~,ET] = PairBoundaryArchive_RC('update',Candidates,CurrentP1,[],W,P,Legacy,struct(),10);
+    assert(Eligible.active(Eligible.id == 1) && ~ismember(2,Eligible.id) && ...
+        ET.frontRejectedPairs == 1 && isscalar(Eligible.id));
+    [Reactivated,~] = PairBoundaryArchive_RC('update',Eligible, ...
+        SOLUTION([0.5 0.5],[-10 -10],1),[],W,P,Legacy,struct(),11);
+    assert(nnz(Reactivated.active)==1 && ~ismember(2,Reactivated.id), ...
+        'An infeasible P1 cannot reject a valid pair or resurrect deleted history.');
+    % Global front one rejects dominated endpoints across reference directions.
+    Candidates.yf = [1 2;2 3]; Candidates.yi = [0 4;4 0];
+    [Internal,~,IT] = PairBoundaryArchive_RC('update',Candidates, ...
+        SOLUTION([0.5 0.5],[5 5],0),[],[1 2;2 3],P,O,struct(),12);
+    assert(nnz(Internal.active) == 1 && isscalar(Internal.id) && ...
+        IT.eligiblePairs == 1 && IT.frontRejectedPairs == 1, ...
+        'Only qualified feasible endpoints may remain in the archive.');
+    % Feasible guided feedback need not survive P1. Accept even tiny shrinkage.
+    q = [0.200001 0.200001];
+    F = struct('childDecs',q,'childObjs',[0 1],'childCons',0,'matchedPairIds',1);
+    [Updated,~,T] = PairBoundaryArchive_RC('update',A,[], ...
+        SOLUTION(q,[0 1],0),W,P,O,F,20);
+    row = find(Updated.id == 1);
+    assert(norm(Updated.xf(row,:)-q) < 1e-12 && Updated.gap(row) < A.gap);
+    assert(T.guidedTightenedFeasible == 1 && T.events(1).originalPair);
+    assert(T.events(1).afterGap/T.events(1).beforeGap > 0.99);
+    % A distinct ordinary result near a guided result is still real evidence.
+    nearQ = q+1e-7;
+    Union = [SOLUTION(q,[0 1],0),SOLUTION(nearQ,[0 1],0)];
+    [Updated,~,T] = PairBoundaryArchive_RC('update',A,[],Union,W,P,O,F,21);
+    row = find(Updated.id == 1);
+    assert(isequal(Updated.xf(row,:),nearQ) && ...
+        any(arrayfun(@(event)event.source == "ordinary",T.events)));
+    % Migration changes the input condition, preserving the lineage ID.
+    A.ref = 3;
+    [Migrated,~] = PairBoundaryArchive_RC('update',A,[],[], ...
+        [0 1;0.5 0.5;1 0],P,O,struct(),30);
+    assert(any(Migrated.id == 1) && Migrated.nextId >= 2);
+    % Angular nearest-neighbor relations are not symmetric. A middle source
+    % must not update all nine pairs through the inverse neighborhood.
+    W9 = [linspace(0,1,9)',linspace(1,0,9)'];
+    A9 = archive(zeros(9,2),ones(9,2),W9,W9,(1:9)');
+    Q9 = SOLUTION([0.25 0.25],W9(5,:),0);
+    [~,~,T9] = PairBoundaryArchive_RC('update',A9,[],Q9,W9,P,O,struct(),31);
+    assert(isequal(sort([T9.events.pairId]),3:7));
+    % Original-pair attribution remains exempt from instantaneous ref drift.
+    F9 = struct('childDecs',[0.25 0.25],'childObjs',W9(5,:), ...
+        'childCons',0,'matchedPairIds',1);
+    [~,~,T9] = PairBoundaryArchive_RC('update',A9,[],Q9,W9,P,O,F9,32);
+    assert(T9.events(1).pairId == 1 && T9.events(1).originalPair && ...
+        isequal(sort([T9.events(2:end).pairId]),3:7));
+    O.pairOnly = true; % Preserve the explicit real-pair control.
+    % Native proposals survive selection unchanged, including far-off-band rows.
+    A = archive([0.2 0.2],[0.8 0.8],[0 1],[1 0],1);
+    Raw = [0 1;1 0;0.5 0.5;NaN 0;-0.1 0.5];
+    I = struct('refs',ones(5,1),'pairIds',ones(5,1));
     Scale = struct('minimum',[0 0],'span',[1 1]);
-    ManyOptions = pairOptions(2,10);
-    feBefore = CandidateProblem.FE;
-    [Selected,SelectedRefs,Matched,Trace] = ...
-        PairBoundaryArchive_RC('selectcandidates',Raw,ManyInfo, ...
-        ManyArchive,Population,Fitness,W5,Scale, ...
-        CandidateProblem,ManyOptions);
-    assert(CandidateProblem.FE == feBefore);
-    assert(Trace.pairRepresentativeCount == pairCount);
-    assert(Trace.objectiveCandidateCount == 4 && Trace.objectiveFE == 4);
-    assert(Trace.keptCount == 2 && all(Trace.selectedRho == 0));
-    assert(numel(unique(Matched)) == 2 && ...
-        isequal(SelectedRefs,ManyArchive.ref(Matched)));
-    assert(max(abs(Selected-Xi(Matched,:)),[],'all') <= 1e-12);
-    assert(all(mod(Trace.keepIdx,2) == 0));
-    LimitedOptions = pairOptions(2,3);
-    [~,~,~,LimitedTrace] = PairBoundaryArchive_RC( ...
-        'selectcandidates',Raw,ManyInfo,ManyArchive,Population,Fitness, ...
-        W5,Scale,CandidateProblem,LimitedOptions);
-    assert(LimitedTrace.objectiveCandidateCount == 3 && ...
-        LimitedTrace.objectiveFE == 3 && LimitedTrace.keptCount == 2);
-    OneObjectiveOptions = pairOptions(2,1);
-    [OneSelected,~,~,OneTrace] = PairBoundaryArchive_RC( ...
-        'selectcandidates',Raw,ManyInfo,ManyArchive,Population,Fitness, ...
-        W5,Scale,CandidateProblem,OneObjectiveOptions);
-    assert(size(OneSelected,1) == 1 && ...
-        OneTrace.objectiveCandidateCount == 1 && OneTrace.objectiveFE == 1);
-
-    % CalObj itself is deliberately FE-neutral; production consumes Trace.ObjFE.
-    coreSource = char(fileread(which('PairGuideCore')));
-    assert(~isempty(regexp(coreSource, ...
-        'Problem\.FE\s*=\s*Problem\.FE\s*\+\s*PoolTrace\.objectiveFE', ...
-        'once')) && contains(coreSource,'withObjectiveBudget'));
-
-    %% Six BC problems: CalObj/CalCon are FE-neutral; Evaluation is consistent
-    problemNames = ["LIRCMOP5_BC","LIRCMOP7_BC","LIRCMOP8_BC", ...
-        "LIRCMOP10_BC","LIRCMOP12_BC","LIRCMOP14_BC"];
-    X = reshape(mod(0:17,10)/10,3,6);
-    for name = problemNames
-        constructor = str2func(char(name));
-        BCProblem = constructor('N',3,'D',6,'maxFE',20);
-        startFE = BCProblem.FE;
-        expectedObj = BCProblem.CalObj(X);
-        expectedCon = BCProblem.CalCon(X);
-        assert(BCProblem.FE == startFE && size(expectedObj,1) == 3 && ...
-            isequal(size(expectedCon),[3 1]) && ...
-            all(expectedCon == 0 | expectedCon == 1,'all'));
-        Evaluated = BCProblem.Evaluation(X);
-        assert(BCProblem.FE == startFE+3 && ...
-            max(abs(double(Evaluated.objs)-expectedObj),[],'all') <= 1e-12 && ...
-            isequal(double(Evaluated.cons),expectedCon));
+    PairGuideCost_RC('start',P);
+    [Q,~,ids,T] = PairBoundaryArchive_RC('selectcandidates',Raw,I,A,Scale,P,O);
+    Cost = PairGuideCost_RC('snapshot'); PairGuideCost_RC('stop');
+    assert(size(Q,1) == 2 && all(ids == 1) && Cost.CalObjRows == 0 && ...
+        Cost.CalConRows == 0 && T.objectiveFE == 0);
+    assert(isequal(Q,Raw(T.keepIdx,:)), ...
+        'Selection must not project or otherwise move a native CGAN proposal.');
+    assert(isequal(Q,Raw(1:2,:)) && ~any(T.nativeInBand(T.keepIdx)) && T.invalidCount == 2);
+    assert(isequaln(T.candidateDecs,Raw) && ~isfield(T,'constructedDecs') && ...
+        ~isfield(T,'correction'));
+    assert(all(Q >= 0 & Q <= 1,'all'));
+    assert(all(T.coarseInterval(1:3)) && ~any(T.boundaryCertified));
+    Narrow = archive([0.2 0.2],[0.20001 0.20001],[0 1],[1 0],1);
+    [~,~,~,TN] = PairBoundaryArchive_RC('selectcandidates',[0.200005 0.200005], ...
+        struct('refs',1,'pairIds',1),Narrow,Scale,P,O);
+    assert(TN.boundaryCertified && ~TN.coarseInterval && ...
+        TN.boundaryDistanceUpperBoundRMS <= 0.003);
+    [Far,~,~,TF] = PairBoundaryArchive_RC('selectcandidates',[0.9 0.9], ...
+        struct('refs',1,'pairIds',1),Narrow,Scale,P,O);
+    assert(isequal(Far,[0.9 0.9]) && ~TF.boundaryCertified && TF.coarseInterval, ...
+        'A tiny source gap must not certify a distant native candidate.');
+    % Round-robin covers pairs first, with a strict cap of two per pair.
+    refs = (1:8)';
+    xF = [linspace(0.05,0.4,8)',0.1*ones(8,1)];
+    xI = xF+0.4;
+    weights = [linspace(0.05,0.95,8)',linspace(0.95,0.05,8)'];
+    A = archive(xF,xI,weights,weights,refs);
+    [Data,Gate] = PairBoundaryArchive_RC('trainingdata',A,weights,P,O);
+    rng(21);
+    [C,I] = PairBoundaryArchive_RC('querycontexts',A,weights,O,500);
+    assert(size(C,1) == 500 && all(C(:,end) == 0));
+    [~,rows] = ismember(I.pairIds,A.id);
+    Raw = A.xf(rows,:)+(0.4+0.2*rand(500,1)).*(A.xi(rows,:)-A.xf(rows,:));
+    [Q,~,ids] = PairBoundaryArchive_RC('selectcandidates',Raw,I,A,Scale,P,O);
+    assert(size(Q,1) == 16 && numel(unique(ids(1:8))) == 8 && ...
+        all(arrayfun(@(id)nnz(ids == id),unique(ids)) == 2));
+    % Two generator updates, not two epochs; both sides share z in sampling.
+    [M,S] = PairBoundaryWGAN_RC('trainifneeded',[],Data,Gate,P,O);
+    assert(M.ready && S.updates == 2 && S.criticUpdates == 2 && ...
+        S.pairVisits == 0 && S.endpointVisits == 32 && S.trainingSamples == 16 && isfinite(S.preDiagnostics.allEndpointRMSE));
+    [Raw,Sample] = PairBoundaryWGAN_RC('sample',M,C,P,O);
+    expected = P.lower+Sample.normalized.*(P.upper-P.lower);
+    assert(isequal(Raw,expected) && Sample.endpointForwardRows == 500 && ...
+        size(Sample.z,1) == 500 && isequal(Sample.sides,C(:,end)));
+    assert(~isfield(Sample,'alpha') && ~isfield(Sample,'generatedF'));
+    O.pairOnly = false; O.W = [weights;0.123 0.877];
+    [C,I] = PairBoundaryArchive_RC('querycontexts',A,O.W,O,500);
+    assert(nnz(C(:,end)==1)==250 && nnz(C(:,end)==0)==250 && ...
+        numel(unique(I.refs))==9 && all(I.pairIds==0));
+    Raw = rand(500,2);
+    [Q,refs,ids,T] = PairBoundaryArchive_RC('selectcandidates',Raw,I,A,Scale,P,O);
+    assert(size(Q,1)==20 && all(ids==0));
+    assert(isequal(Q,Raw(T.keepIdx,:)) && all(isnan(T.nativeInBand)));
+    assert(all(T.requestedUncovered(T.keepIdx)), ...
+        'Enough valid uncovered requests must take priority over known requests.');
+    F.matchedPairIds = 0;
+    [~,~,T] = PairBoundaryArchive_RC('update',archive([.2 .2],[.8 .8],[0 1],[1 0],1), ...
+        [],SOLUTION(q,[0 1],0),[1 1],P,O,F,33);
+    assert(T.guidedTightenedFeasible>0 && ~any([T.events.originalPair]));
+    % A shared real endpoint is one sample, and owns its own direction label.
+    Shared = A; Shared.xi(:,:) = repmat(A.xi(1,:),8,1);
+    Shared.yi(:,:) = repmat(A.yi(1,:),8,1);
+    [SharedData,SharedGate] = PairBoundaryArchive_RC('trainingdata',Shared,weights,P,O);
+    assert(size(unique(SharedData.cI,'rows'),1)==1);
+    rng(71);
+    [~,SharedStatus] = PairBoundaryWGAN_RC('trainifneeded',[],SharedData,SharedGate,P,O);
+    assert(SharedStatus.trainingSamples==9 && SharedStatus.pairVisits==0);
+    % Binary conditions are required; intermediate side=0.5 has no meaning.
+    bad = C; bad(1,end)=0.5; rejected=false;
+    try
+        PairBoundaryWGAN_RC('sample',M,bad,P,O);
+    catch err
+        rejected=strcmp(err.identifier,'CBSPairGuide:BadQueryCondition');
     end
-
-    %% WGAN uses only geometry loss and exposes the new diagnostics
-    wganSource = string(fileread(which('PairBoundaryWGAN_RC')));
-    removed = ["pairRelationWeight","pairLatentWeight", ...
-        "pairLatentThreshold","energyDistanceDL","modeSeeking"];
-    for token = removed
-        assert(~contains(wganSource,token));
-    end
-    required = ["pairGeometryWeight","allEndpointRMSE", ...
-        "changedEndpointRMSE","pairDifferenceRMSE", ...
-        "sameConditionThickness"];
-    for token = required
-        assert(contains(wganSource,token));
-    end
-    [~,BlockedStatus] = PairBoundaryWGAN_RC('trainifneeded',[],Data, ...
-        struct('eligible',false),Problem,struct('pairMinPairs',1));
-    assert(all(isfield(BlockedStatus.preDiagnostics, ...
-        {'allEndpointRMSE','changedEndpointRMSE','pairDifferenceRMSE', ...
-        'sameConditionThickness','criticGap'})));
-
-    % Execute one tiny autodiff update so the paired geometry loss and
-    % repeated-condition thickness diagnostic are covered at runtime.
-    SmokeOptions = struct('initialEpoch',1,'retrainEpoch',1, ...
-        'miniBatch',4,'nCritic',1,'pairMinPairs',1, ...
-        'collectDiagnostics',true,'generatorHidden',[4 4], ...
-        'criticHidden',[4 4]);
-    [SmokeModel,SmokeStatus] = PairBoundaryWGAN_RC( ...
-        'trainifneeded',[],Data,Gate,Problem,SmokeOptions);
-    [~,RepeatStatus] = PairBoundaryWGAN_RC( ...
-        'trainifneeded',SmokeModel,Data,Gate,Problem,SmokeOptions);
-    [SmokeSample,~] = PairBoundaryWGAN_RC('sample',SmokeModel, ...
-        Data.cI(1:min(2,Data.count),:),Problem,SmokeOptions);
-    Diagnostics = SmokeStatus.postDiagnostics;
-    diagnosticValues = [Diagnostics.allEndpointRMSE, ...
-        Diagnostics.changedEndpointRMSE, ...
-        Diagnostics.pairDifferenceRMSE, ...
-        Diagnostics.sameConditionThickness,Diagnostics.criticGap];
-    assert(SmokeModel.ready && SmokeStatus.trained && ...
-        SmokeStatus.epochs == 1 && ...
-        SmokeStatus.pairVisits == Data.count && ...
-        SmokeStatus.criticUpdates == SmokeStatus.updates && ...
-        ~RepeatStatus.trained && RepeatStatus.reason == "current" && ...
-        isequal(size(SmokeSample),[min(2,Data.count),Problem.D]) && ...
-        all(isfinite(SmokeSample),'all') && ...
-        all(isfinite(diagnosticValues)));
-
-    fprintf('PairGuide mechanism test passed.\n');
+    assert(rejected);
+    % ID-only changes are zero; accumulated content and generation triggers differ.
+    Same = Data; Same.id = Same.id+1000; O.generation = 2;
+    [~,S] = PairBoundaryWGAN_RC('trainifneeded',M,Same,Gate,P,O);
+    assert(~S.trained && S.useModel && S.contentChange == 0 && S.reason == "current");
+    O.generation = 11;
+    [~,S] = PairBoundaryWGAN_RC('trainifneeded',M,Same,Gate,P,O);
+    assert(S.trained && S.trigger == "generation" && S.updates == 1);
+    Changed = Data; Changed.xI(:,1) = Changed.xI(:,1)-0.2;
+    Changed.delta = Changed.xI-Changed.xF; O.generation = 2;
+    [~,S] = PairBoundaryWGAN_RC('trainifneeded',M,Changed,Gate,P,O);
+    assert(S.trained && S.trigger == "content" && S.contentChange >= 0.2);
+    One = Data;
+    fields = {'xF','xI','w','ref','id','delta','cF','cI'};
+    for k=1:numel(fields); One.(fields{k}) = One.(fields{k})(1,:); end
+    One.count = 1;
+    [~,S] = PairBoundaryWGAN_RC('trainifneeded',M,One,struct('eligible',false),P,O);
+    assert(S.useModel && ~S.trained);
+    % Real full evaluation counts nested objectives transparently.
+    PairGuideCost_RC('start',P);
+    P.Evaluation([0.1 0.2;0.3 0.4]);
+    Cost = PairGuideCost_RC('snapshot'); PairGuideCost_RC('stop');
+    assert(Cost.CalObjRows == 4 && Cost.CalConRows == 2 && ...
+        Cost.CalObjBatches == 2 && Cost.CalConBatches == 1);
+    fprintf('PairGuide final mechanism contract passed.\n');
 end
 
-function Options = pairOptions(quota,objectiveBudget)
-%PAIROPTIONS Minimal final PairGuide settings for deterministic unit tests.
-
-    Options = struct('pairArchivePerRef',1,'pairInactiveMaxAge',10, ...
-        'pairNeighborRefCount',5,'pairMinPairs',1, ...
-        'pairDuplicateTolerance',1e-8, ...
-        'pairImprovementTolerance',1e-12, ...
-        'guideQuota',quota,'objectiveBudget',objectiveBudget);
-end
-
-function W = twoObjectiveWeights(count)
-%TWOOBJECTIVEWEIGHTS Ordered nonzero directions on the positive quadrant.
-
-    first = linspace(0,1,count)';
-    W = [first,1-first];
-end
-
-function Archive = makeArchive(xf,xi,yf,yi,refs)
-%MAKEARCHIVE Construct complete pair rows without hiding test intent.
-
-    count = size(xf,1);
-    refs = reshape(double(refs),[],1);
-    Archive = struct('id',(1:count)','xf',double(xf),'xi',double(xi), ...
-        'yf',double(yf),'yi',double(yi),'ref',refs, ...
-        'gap',sqrt(sum((double(xi)-double(xf)).^2,2)), ...
-        'rank',ones(count,1),'fitness',zeros(count,1), ...
-        'age',zeros(count,1),'lastFE',zeros(count,1), ...
-        'active',true(count,1),'resumeEligible',true(count,1), ...
-        'nextId',count+1);
-end
-
-function yes = containsDecision(X,x)
-%CONTAINSDECISION Exact-enough row membership for fixed unit-test values.
-
-    yes = ~isempty(X) && any(all(abs(double(X)-double(x)) <= 1e-12,2));
-end
-
-function dominates = rowDominates(A,B)
-%ROWDOMINATES Rowwise minimization dominance with the locked tolerance.
-
-    dominates = all(double(A) <= double(B)+1e-12,2) & ...
-        any(double(A) < double(B)-1e-12,2);
-end
-
-function order = angularOrder(W,ref)
-%ANGULARORDER Independent expected ordering for the five-neighbor test.
-
-    Wn = double(W)./max(sqrt(sum(double(W).^2,2)),eps);
-    angle = 1-Wn*Wn(ref,:)';
-    [~,order] = sortrows([angle,(1:size(W,1))'],[1 2]);
-end
-
-function [Selected,SelectedRefs,Matched,Trace] = selectSingleCandidate( ...
-        Problem,g,yf,yi,otherEliteObjective,Options)
-%SELECTSINGLECANDIDATE Exercise local objective gates independently.
-
-    xf = [0.20 0.20];
-    xi = [0.80 0.80];
-    Archive = makeArchive(xf,xi,yf,yi,1);
-    if isempty(otherEliteObjective)
-        PopX = xf;
-        PopY = yf;
-    else
-        PopX = [xf;0.95 0.95];
-        PopY = [yf;otherEliteObjective];
-    end
-    Population = SOLUTION(PopX,PopY,zeros(size(PopX,1),1));
-    Fitness = zeros(size(PopX,1),1);
-    W = [1 0];
-    gObj = Problem.CalObj(g);
-    allObjectives = [PopY;yf;yi;gObj];
-    minimum = min(allObjectives,[],1)-1;
-    span = max(allObjectives,[],1)-minimum+1;
-    RefScale = struct('minimum',minimum,'span',span);
-    Info = struct('refs',1,'pairIds',1);
-    [Selected,SelectedRefs,Matched,Trace] = ...
-        PairBoundaryArchive_RC('selectcandidates',g,Info,Archive, ...
-        Population,Fitness,W,RefScale,Problem,Options);
+function A = archive(xf,xi,yf,yi,refs)
+    n = size(xf,1);
+    A = struct('id',(1:n)','ref',refs(:),'xf',xf,'xi',xi,'yf',yf,'yi',yi, ...
+        'gap',vecnorm(xi-xf,2,2),'active',true(n,1),'nextId',n+1);
 end

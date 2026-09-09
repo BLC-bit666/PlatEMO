@@ -1,0 +1,53 @@
+{
+  "algorithm": "PairGuide",
+  "selectionPool": "ccmo",
+  "archiveFrontDepth": 1,
+  "problems": [
+    "LIRCMOP5_BC",
+    "LIRCMOP6_BC",
+    "LIRCMOP7_BC",
+    "LIRCMOP8_BC"
+  ],
+  "modes": [
+    "cgan"
+  ],
+  "seeds": [
+    1,
+    2,
+    3
+  ],
+  "N": 100,
+  "D": "problem default (30)",
+  "maxFE": 100000,
+  "initialGeneratorUpdates": 200,
+  "retrainGeneratorUpdates": 20,
+  "nCritic": 5,
+  "miniBatchEndpointRows": 32,
+  "maxCompletePairsPerBatch": 16,
+  "checkpointStages": [
+    "first true use",
+    10000,
+    30000,
+    50000,
+    70000,
+    100000
+  ],
+  "plotSeeds": [
+    1
+  ],
+  "plotLayout": "left actual model training populations and archive; right native generated and selected candidates",
+  "plotViews": [
+    "full",
+    "focus"
+  ],
+  "workers": 10,
+  "threadsPerWorker": 1,
+  "sourceFileCount": 86,
+  "preparedAt": "2026-09-07T16:28:18.284358+08:00",
+  "archiveCapacity": 500,
+  "archiveCapacityIsUpperBound": true,
+  "unqualifiedPairs": "delete",
+  "infeasibleEndpointFilter": "not dominated by any feasible point in the complete candidate pool; screen before pairing",
+  "allowSharedInfeasibleEndpoint": true,
+  "warmStartTraining": true
+}

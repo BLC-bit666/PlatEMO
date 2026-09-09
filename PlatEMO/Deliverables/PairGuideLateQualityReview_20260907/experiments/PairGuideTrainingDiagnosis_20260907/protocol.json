@@ -1,0 +1,62 @@
+{
+  "status": "complete",
+  "campaign": "/Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/PairGuideFilteredArchive_5to8_R3_20260907",
+  "scope": "read-only production analysis and isolated fixed-data diagnostics",
+  "sourceFilesVerified": 86,
+  "sourceManifestSHA256": "86fd437b1cce8740646b08993a15810b335cd507b5b195ab8b37b7f97c04da5f",
+  "searchRunsInspected": 12,
+  "fullTrainingHistorySeeds": [
+    1
+  ],
+  "fullTrainingHistoryProblems": [
+    5,
+    6,
+    7,
+    8
+  ],
+  "exactModelReplayProblems": [
+    7,
+    8
+  ],
+  "exactReplaySuccessfulEvents": [
+    466,
+    467
+  ],
+  "mainFixedTrainingFE": 99800,
+  "trainingTargetsFrozen": true,
+  "warmStartModelsRetained": true,
+  "productionCodeModified": false,
+  "diagnosticModelInitializations": "same recorded RNG state for cold variants; same pre-training model and RNG state for warm variants",
+  "extensionRNG": "fixed common seed 20260908 after 1000 updates; saved training RNG thereafter",
+  "first1000GeneratorUpdates": {
+    "warm": [
+      20,
+      1000
+    ],
+    "cold": [
+      1000
+    ]
+  },
+  "longFixedDataBudgets": [
+    5000,
+    10000
+  ],
+  "offlineEvaluation": "instrumented independent problem objects; search FE remains zero",
+  "createdAt": "2026-09-07T18:22:33.941109+08:00",
+  "verification": {
+    "status": "verified_analysis",
+    "productionModified": false,
+    "diagnosticModels": 48,
+    "successfulTrainingEventsInspected": 1501,
+    "exactReplayedSuccessfulEvents": 933,
+    "plotNodes": 24,
+    "plotNodesWithGeneration": 23,
+    "diagnosticFigures": 3,
+    "offlineCalObjRows": 2561626.0,
+    "offlineCalConRows": 859804,
+    "newSearchFE": 0,
+    "originalOffsetStillReproduces": true,
+    "verifiedAt": "2026-09-07 18:42:07"
+  },
+  "completedAt": "2026-09-07T18:44:21.627377+08:00"
+}

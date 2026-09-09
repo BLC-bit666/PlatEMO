@@ -1,0 +1,2 @@
+problem,seed,mode,sourceHash,finalFE,initialExactReplay,generatorUpdates,trainingEvents,queries,archiveEligibilityVerified,nativeCoordinatesVerified
+LIRCMOP5_BC,1,cgan,ab105726c44e4ee325dd174531b3be01823f359bd1c5883497690dd70a25bc5a,100000,1,6680,285,474,1,1

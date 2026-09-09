@@ -1,0 +1,15 @@
+{
+  "status": "verified_analysis",
+  "productionModified": false,
+  "diagnosticModels": 48,
+  "successfulTrainingEventsInspected": 1501,
+  "exactReplayedSuccessfulEvents": 933,
+  "plotNodes": 24,
+  "plotNodesWithGeneration": 23,
+  "diagnosticFigures": 3,
+  "offlineCalObjRows": 2.561626E+6,
+  "offlineCalConRows": 859804,
+  "newSearchFE": 0,
+  "originalOffsetStillReproduces": true,
+  "verifiedAt": "2026-09-07 18:42:07"
+}

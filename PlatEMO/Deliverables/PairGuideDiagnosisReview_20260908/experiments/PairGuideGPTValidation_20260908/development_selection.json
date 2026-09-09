@@ -1,0 +1,31 @@
+{
+  "criterion": "Mean paired log lateIGDAUC ratio, require below 1",
+  "arms": [
+    {
+      "problem": "ALL",
+      "arm": "stable_no_side",
+      "n": 12,
+      "finalIGDMean": 0.01224357023415166,
+      "finalIGDSD": 0.0048506392744714025,
+      "lateIGDAUCMean": 0.03773368021424727,
+      "finalHVMean": 0.26629493473263516,
+      "pairedLateIGDAUCGeomean": 0.9309716607347719,
+      "pairedFinalIGDGeomean": 1.047766716503468,
+      "lateIGDAUCWins": 8
+    },
+    {
+      "problem": "ALL",
+      "arm": "stable_side",
+      "n": 12,
+      "finalIGDMean": 0.012327312222567293,
+      "finalIGDSD": 0.004717858304833777,
+      "lateIGDAUCMean": 0.03971314625765418,
+      "finalHVMean": 0.2662610260227644,
+      "pairedLateIGDAUCGeomean": 1.1226990918621198,
+      "pairedFinalIGDGeomean": 1.0678349629425696,
+      "lateIGDAUCWins": 7
+    }
+  ],
+  "selected": "stable_no_side",
+  "independentConfirmationRequired": true
+}

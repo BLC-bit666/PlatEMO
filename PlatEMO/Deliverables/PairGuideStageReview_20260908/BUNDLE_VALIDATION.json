@@ -1,0 +1,25 @@
+{
+  "status": "passed",
+  "currentTrainingCases": 108,
+  "currentSearchWindows": 84,
+  "latestOriginalPNGs": 31,
+  "historicalOriginalPNGs": 8,
+  "currentNumericRecords": 244,
+  "historicalNumericRecords": 10,
+  "allModelCheckpointsRetained": [
+    0,
+    20,
+    200,
+    2000
+  ],
+  "exactExpandedNumericRecordsVerified": 254,
+  "productionSourceHashesVerified": 8,
+  "localDocumentLinksVerified": 84,
+  "matFiles": 0,
+  "newTrainingForPackaging": 0,
+  "newOracleCallsForPackaging": 0,
+  "numberEncoding": "Exact float32 only if every value round-trips; otherwise float64; integer number types restored. Little-endian byte-shuffled XZ arrays.bin.xz with array_index.json. Reader uses Python standard library.",
+  "limitBytes": 50000000,
+  "zipFormat": "DEFLATE",
+  "note": "These are packaging checks, not fresh experiments. ZIP byte-size/CRC/SHA checks execute after writing. MANIFEST excludes itself and this validation file."
+}

@@ -1,0 +1,42 @@
+{
+  "problems": [
+    "LIRCMOP5_BC",
+    "LIRCMOP6_BC",
+    "LIRCMOP7_BC",
+    "LIRCMOP8_BC"
+  ],
+  "N": 100,
+  "D": "problem default",
+  "stage1": {
+    "seed": 1,
+    "initialUpdates": [
+      200,
+      1000,
+      4000
+    ],
+    "nCritic": 5,
+    "hidden": [
+      32,
+      32
+    ],
+    "learningRates": 0.0001
+  },
+  "stop": "after exactly one actual CGAN offspring batch and environmental selection",
+  "selection": "Compare true first-use P1 survival and IGD/HV, raw non-dominated feasible rate, label/angle consistency, and training cost; select across all four problems, confirm on seeds 2/3; do not optimize endpoint reconstruction RMSE. Best means best among tested settings.",
+  "fullRun": {
+    "seeds": [
+      1,
+      2,
+      3
+    ],
+    "FE": 100000,
+    "plots": "seed 1 only"
+  },
+  "constraints": [
+    "No auxiliary network",
+    "No solution-coordinate context",
+    "Raw reference vectors and binary side only",
+    "No pair match or post-generation projection",
+    "Retain warm weights/Adam"
+  ]
+}
