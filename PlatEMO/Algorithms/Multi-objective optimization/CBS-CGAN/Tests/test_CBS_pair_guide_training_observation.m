@@ -75,10 +75,13 @@ function test_CBS_pair_guide_training_observation
         Q = E.queries{k};
         assert(isequal(Q.pending.decs,Q.rawDecs(Q.pool.keepIdx,:)) && ...
             isequal(Q.pool.candidateDecs,Q.rawDecs) && ~isfield(Q.pool,'constructedDecs'));
-        assert(Q.pool.selectionPolicy=="uncovered-first-archive-box-v1");
-        at=Q.pool.keepIdx; unknown=Q.pool.requestedUncovered(at);
-        assert(all(diff(double(unknown))<=0) && all(Q.pool.insideArchiveBox(at(~unknown))));
-        assert(all(diff(Q.pool.nearestFeasibleDistance(at(~unknown)))>=-1e-12));
+        assert(Q.pool.selectionPolicy=="archive-box-capped-exploration-v2" && ...
+            E.candidateSelectionPolicy==Q.pool.selectionPolicy);
+        at=Q.pool.keepIdx; inside=Q.pool.insideArchiveBox(at); outside=at(~inside);
+        assert(numel(outside)<=Q.pool.outsideQuota && Q.pool.outsideQuota<=4 && ...
+            all(Q.pool.requestedUncovered(outside)) && numel(unique(Q.pool.rawRefs(outside)))==numel(outside));
+        assert(Q.pool.keptInsideCount==nnz(inside) && Q.pool.keptOutsideCount==numel(outside));
+        assert(all(diff(Q.pool.nearestFeasibleDistance(at(inside)))>=-1e-12));
         assert(Q.pool.objectiveFE==0 && Q.pool.constraintFE==0);
         Prefix=E.population{Q.generation+1};
         allY=[Prefix.p1Objs;Prefix.archive.yf;Prefix.archive.yi];

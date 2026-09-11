@@ -1,6 +1,8 @@
-# PairGuide 单点条件生成（2026-09-09）
+# PairGuide 单点条件生成（2026-09-10）
 
 本节为当前执行契约，覆盖下方保留的 native-v2 历史记录。算法入口仍为 PairGuide。
+
+16＋4选择规则已通过机制测试；下述既有参数、拟合及IGD实验仍属于旧选择规则，不构成新规则的效果验证。
 
 2026-09-09 前中期参数实验已完成：40组参数的160次固定档案训练、96次开发搜索及120次独立确认，全部搜索至50k FE并通过核验。保留训练/生成sigma=0.1、G/D学习率=1e-3、错误方向负例默认0。默认组相对同骨架CGAN名额换DE的前期IGD面积比为0.880（95%区间0.758–0.978）；中期及前中期总面积的改善未获确认。较大参数组合的中期均值更低，但不稳定且早期拟合更差。详见[前中期参数实验报告](</Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/PairGuideEarlyMidTuning_20260909/REPORT.md>)。
 
@@ -10,19 +12,19 @@
 - 输入 `[z,w,s]`，s=1 请求可行、s=0 请求不可行（这是条件标签，BC 问题返回的 0/1 约束值含义相反）；输出一个绝对决策解。无编码器、辅助网络、坐标条件或生成后的坐标拉回。
 - 激活配对拆成独立端点，按 `[x,s]` 去重，分别用真实目标在同代 referenceScale 下关联原始 W。每批两侧等额，每侧方向组均衡；不要求同批端点来自同一 pair，也不共享 z。
 - G 损失 `-mean(D(G(z,w,s),w,s))`；C 为条件 Wasserstein 差加决策梯度惩罚。无端点回归、差向量回归或逆 gap 权重。`pairVisits=0`；`endpointVisits` 记录实际样本访问，`epochs=endpointVisits/trainingSamples`，更新预算单位仍为 G 更新次数。
-- 查询完整 W，0/1 各半，包括当前 P1 与整个存档均未覆盖的方向。当前覆盖根据 P1 全部真实目标（含不可行点）与全部存档 F/I 目标，在同一 referenceScale 下关联 W 得到；不把无 active pair 等同于未知。这里“未知”是请求方向的当前缺失，不是对生成位置或从未访问历史的认证。
-- 2026-09-09 用户指定的500→20规则：未知请求优先，按方向轮转保留非重复原始点，不受已知边界盒限制；剩余名额只取已知请求中位于**全部存档F/I端点逐维min/max形成的盒子**内的点，按到最近真实F的归一化决策欧氏距离升序选择。非激活端点同样参与盒子和最近F计算。该盒子不是逐对球、线段或目标空间包围框。未知点也必须合法、有限、不重复；名额不足由DE补齐。
+- 查询完整 W，0/1 各半。统一定义：**已知方向＝当前P1或边界存档覆盖的方向**；其余为待探索方向。覆盖使用P1全部真实目标（含不可行点）和全部存档F/I目标，在同一referenceScale下关联W；不把没有active pair等同于未知。
+- 2026-09-10 用户确认500→20规则：**16个盒内点＋最多4个盒外探索点**。盒子由全部存档F/I端点（含inactive）逐维min/max构成；所有盒内候选按到最近真实F的归一化决策距离排序。盒外只允许待探索请求方向，每方向最多1点。盒外名额不足由盒内补齐，总数不足由DE补齐；盒内不足不增加盒外上限。总引导配额Q变化时，盒外上限为min(4,floor(Q/5))。候选保持合法、有限，并对当前P1/P2及已选点去重。该盒子不是逐对球、线段或目标空间包围框；请求未覆盖也不认证真实外推成功。
 - 数值方向ID不是探索资格。当实际有限查询条件存在时，从条件恢复或登记方向编号，包括显式给出的W外向量，不因原编号NaN或越界而直接丢弃原始点；缺少实际方向且编号损坏时报告元数据错误，不伪装成未知区域。当前自动500次查询范围仍为完整W，没有自动扩展W之外的条件。
 - ID=0仍表示不绑定现有配对；全档案盒筛选不改变真实反馈归因。下一代原坐标真实评价，所有guided子代仍可经邻域收紧更新存档。pair-only保持原真实配对控制机制。
 - P1/P2 选择、25/55/20 与 25/75 算子比例、500 raw、20% 配额、FE 规则保持。无存档或无模型时 DE 回填。训练仍至少 8 active pairs；模型和 Adam 持续保留，内容变化 0.2 或 10 代触发，首训 1000、重训 20 次生成器更新。
-- 本轮统一配置：G/C 均为两层 32 单元，学习率均为 1e-3，Adam=(0,0.9)，GP=10，C:G=5:1，batch 上限 32。训练与推理默认 sigma=0.1，均必须为有限正数；z=sigma*epsilon，epsilon 为6维标准高斯噪声。同一 (w,s) 的重复查询独立采样 z，候选按上述未知优先与全档案盒规则筛选和去重。随机输入不保证已学会同方向多模态；调整系数时仍须保持大于0。错误方向负例目前仅通过实验选项 `mismatchFraction` 开启，默认0。取值范围[0,1)，表示D负样本槽中改用同侧真实端点搭配不同方向条件的目标比例；方向重复时保留原生成负例，实际数量另行记录。G损失不变；参数选择依据见上述前中期实验报告。
+- 本轮统一配置：G/C 均为两层 32 单元，学习率均为 1e-3，Adam=(0,0.9)，GP=10，C:G=5:1，batch 上限 32。训练与推理默认 sigma=0.1，均必须为有限正数；z=sigma*epsilon，epsilon 为6维标准高斯噪声。同一 (w,s) 的重复查询独立采样 z，候选按上述16＋4规则筛选和去重。随机输入不保证已学会同方向多模态；调整系数时仍须保持大于0。错误方向负例目前仅通过实验选项 `mismatchFraction` 开启，默认0。取值范围[0,1)，表示D负样本槽中改用同侧真实端点搭配不同方向条件的目标比例；方向重复时保留原生成负例，实际数量另行记录。G损失不变；参数选择依据见上述前中期实验报告。
 - 历史零噪声配置曾在 200/500/1000/2000/4000、四问题各三种子上选出首训1000（对同FE fallback为11胜、1平），该结果仅属于当时配置。本轮144例正噪声首用复验中，sigma=0.1/200步的首用表现更好，但完整搜索后半程IGD面积相对1000步为1.0141，未显示持续优势，因此保留1000/20为机制基线，不声称全局最优。完整结果见[非零噪声报告](</Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/PairGuideNonzeroNoise_20260908/REPORT.md>)。
 - `configurePairGuideTrainingExperiment` 必填 initialEpoch/retrainEpoch/nCritic，可选 lrG/lrD/miniBatch/generatorHidden/criticHidden/trainingSigma/sampleSigma/gpLambda/stableConditionSpan/useSideCondition/mismatchFraction。公开第七参数只控制生成噪声；同时调整训练与生成时，显式设置两项正sigma。固定跨度只固定首次训练span，minimum仍更新；关闭侧别只合并网络输入的侧别分量，不修改真实端点标签或原始侧别均衡采样。主线不能通过此接口输入任意条件或辅助网络。
-- 数据结构协议仍为 `PairGuide-single-v3`，新增 `candidateSelectionPolicy="uncovered-first-archive-box-v1"` 区分新运行。Pool保存knownRefs、requestedUncovered、insideArchiveBox、盒子上下界、nearestFeasibleDistance及映射修复数；旧运行无这些字段，不能按新策略解读。保存完整 query conditions/refs/sides、原生候选、筛选索引、真实子代、首次/最新模型及各代 referenceScale。无对应配对的几何诊断填 NaN，不能按相对窄带或原配对支配统计证明质量。原端点 RMSE 仅保留作固定探针描述，不作为训练目标或筛选门槛。
+- 数据结构协议仍为 `PairGuide-single-v3`，以 `candidateSelectionPolicy="archive-box-capped-exploration-v2"` 区分新运行。Pool保存knownRefs、requestedUncovered、insideArchiveBox、盒子上下界、nearestFeasibleDistance、insideQuota/outsideQuota、keptInsideCount/keptOutsideCount及映射修复数；旧运行不能按新策略解读。保存完整 query conditions/refs/sides、原生候选、筛选索引、真实子代、首次/最新模型及各代 referenceScale。无对应配对的几何诊断填 NaN，不能按相对窄带或原配对支配统计证明质量。原端点 RMSE 仅保留作固定探针描述，不作为训练目标或筛选门槛。
 - 生图只在 run 1，显示请求可行/不可行两类原生候选和真实消费点，颜色代表请求而非 oracle 标签；标题给出独立真实评价的标签正确率和方向偏差。离线生图对 unique raw 调用 CalObj 与 CalCon，BC 的 CalCon 内部也调用 CalObj，因此账单为每点两行 CalObj、一行 CalCon，不计入搜索 FE。
 - `run_PairGuide_single_first_use` 在首训后仅真实消费一批 CGAN 子代、完成环境选择后停止；raw 的目标/可行标签在停止后独立评价。本轮目录 `Data/PairGuideSinglePoint_20260907`，不覆盖旧实验。
 
-本次修改与验证见[全档案盒与未知优先报告](</Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/PairGuideExplorationSelection_20260909/REPORT.md>)。真实生成到未覆盖区域及前中期IGD收益需要分别核验，不能由请求标签直接认定。
+本次修改与验证见[16＋4选择记录](</Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/PairGuideSelection16plus4_20260910/REPORT.md>)；旧无限额未知优先机制见[历史报告](</Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Data/PairGuideExplorationSelection_20260909/REPORT.md>)。真实生成到未覆盖区域及前中期IGD收益需要分别核验，不能由请求标签直接认定。
 
 以下内容为历史机制、验证与来源记录，不能替代上述单点协议。
 

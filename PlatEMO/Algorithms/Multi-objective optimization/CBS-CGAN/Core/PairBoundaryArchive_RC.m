@@ -494,7 +494,7 @@ function [QueryC,Info] = buildQueryContexts(Archive,W,Options,totalBudget)
 end
 
 function [Dec,Refs,Ids,T] = selectCandidates(X,Info,Archive,Scale,Problem,O)
-%SELECTCANDIDATES Prefer uncovered requests, then in-box points closest to F.
+%SELECTCANDIDATES Reserve in-box slots and cap uncovered outside exploration.
 % The box uses ALL archive endpoints, including inactive retained pairs.
 % Request coverage is a pre-evaluation proxy, not a generated objective label.
     if isfield(O,'pairOnly') && O.pairOnly
@@ -554,28 +554,35 @@ function [Dec,Refs,Ids,T] = selectCandidates(X,Info,Archive,Scale,Problem,O)
             distanceF = min(distanceF,sqrt(sum((Z-F(j,:)).^2,2)));
         end
     end
-    eligibleKnown = valid & ~uncovered & inside;
+    eligibleOutside = uncovered & ~inside;
+    outsideQuota = min(4,floor(O.guideQuota/5));
+    insideQuota = O.guideQuota-outsideQuota;
     base = zeros(0,Problem.D);
     if isfield(O,'currentDecs'); base = (double(O.currentDecs)-Problem.lower)./span; end
     chosen = zeros(0,1);
-    % Unknown requests keep direction diversity without inventing F targets.
-    groups = unique(refs(uncovered)); groups = groups(randperm(numel(groups)));
-    remaining = uncovered;
-    while numel(chosen)<O.guideQuota && any(remaining)
-        before = numel(chosen);
-        for ref=reshape(groups,1,[])
-            for k=reshape(find(remaining & refs==ref),1,[])
-                remaining(k)=false;
-                if ~isempty(base) && any(vecnorm(base-Z(k,:),2,2)<=O.pairDuplicateTolerance); continue; end
-                chosen(end+1,1)=k; base(end+1,:)=Z(k,:); break; %#ok<AGROW>
-            end
-            if numel(chosen)>=O.guideQuota; break; end
-        end
-        if numel(chosen)==before; break; end
+    % All in-box points compete by nearest F, irrespective of request coverage.
+    local=find(inside); [~,order]=sortrows([distanceF(local),local]);
+    local=local(order);
+    for k=reshape(local,1,[])
+        if numel(chosen)>=insideQuota; break; end
+        if ~isempty(base) && any(vecnorm(base-Z(k,:),2,2)<=O.pairDuplicateTolerance); continue; end
+        chosen(end+1,1)=k; base(end+1,:)=Z(k,:); %#ok<AGROW>
     end
-    % Known requests are globally sorted by distance to the nearest real F.
-    local=find(eligibleKnown); [~,order]=sortrows([distanceF(local),local]);
-    for k=reshape(local(order),1,[])
+    % Outside exploration gets at most one point per uncovered request direction.
+    outsideCount=0;
+    if outsideQuota>0
+        groups = unique(refs(eligibleOutside)); groups = groups(randperm(numel(groups)));
+        for ref=reshape(groups,1,[])
+            for k=reshape(find(eligibleOutside & refs==ref),1,[])
+                if ~isempty(base) && any(vecnorm(base-Z(k,:),2,2)<=O.pairDuplicateTolerance); continue; end
+                chosen(end+1,1)=k; base(end+1,:)=Z(k,:); %#ok<AGROW>
+                outsideCount=outsideCount+1; break;
+            end
+            if outsideCount>=outsideQuota; break; end
+        end
+    end
+    % Unused exploration slots return to the in-box pool; other deficits use DE.
+    for k=reshape(local,1,[])
         if numel(chosen)>=O.guideQuota; break; end
         if ~isempty(base) && any(vecnorm(base-Z(k,:),2,2)<=O.pairDuplicateTolerance); continue; end
         chosen(end+1,1)=k; base(end+1,:)=Z(k,:); %#ok<AGROW>
@@ -584,18 +591,20 @@ function [Dec,Refs,Ids,T] = selectCandidates(X,Info,Archive,Scale,Problem,O)
     T.keepIdx=chosen; T.keptCount=numel(chosen); T.keptConditions=numel(unique(Refs));
     T.matchedPairIds=Ids; T.rawPairIds=zeros(n,1); T.rawRefs=refs;
     T.rawSides=Info.sides; T.selectedSides=Info.sides(chosen);
-    T.selectionPolicy="uncovered-first-archive-box-v1";
+    T.selectionPolicy="archive-box-capped-exploration-v2";
     T.queryVectors=W; T.knownRefs=knownRefs; T.uncoveredRefs=setdiff((1:size(W,1))',knownRefs);
     T.requestedUncovered=uncovered; T.insideArchiveBox=inside;
     T.archiveBoxLower=lowerBox; T.archiveBoxUpper=upperBox;
     T.nearestFeasibleDistance=distanceF; T.keptUncoveredCount=nnz(uncovered(chosen));
+    T.insideQuota=insideQuota; T.outsideQuota=outsideQuota;
+    T.keptInsideCount=nnz(inside(chosen)); T.keptOutsideCount=outsideCount;
     T.knownOutsideBoxCount=nnz(valid & ~uncovered & ~inside);
     % A global box is not a pair interval or a certified boundary region.
     T.xf=nan(n,Problem.D); T.xi=T.xf; T.yf=nan(n,Problem.M); T.yi=T.yf;
     T.nativeInBand=nan(n,1); T.gaps=nan(n,1); T.axialBefore=nan(n,1);
     T.perpendicularBefore=nan(n,1); T.boundaryDistanceUpperBoundRMS=nan(n,1);
     T.boundaryCertified=false(n,1); T.coarseInterval=false(n,1);
-    T.spherePassCount=nnz(uncovered | eligibleKnown); T.jointPassCount=T.spherePassCount;
+    T.spherePassCount=nnz(inside | eligibleOutside); T.jointPassCount=T.spherePassCount;
     T.rawNearDuplicateRate=nearDuplicateRate(Z(valid,:),O.pairDuplicateTolerance);
     T.keptNearDuplicateRate=nearDuplicateRate(Z(chosen,:),O.pairDuplicateTolerance);
     T.scores=distanceF; T.priority=[];
