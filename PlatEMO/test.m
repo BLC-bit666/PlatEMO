@@ -1,6 +1,6 @@
 clc; clear;
 
-%% ===== PairGuide mainline campaign: five LIRCMOP problems x five runs =====
+%% PairGuide coverage-0.04 mainline; run this campaign only when requested.
 nWorker = 10;
 popSize = 100;
 maxFE   = 2e5;
@@ -8,15 +8,14 @@ saveNum = 2;
 runs    = 1:5;
 algName = 'PairGuide';
 proNames = {
-    'LIRCMOP5_BC','LIRCMOP7_BC','LIRCMOP8_BC', ...
-    'LIRCMOP10_BC','LIRCMOP14_BC'};
+    'LIRCMOP1_BC','LIRCMOP2_BC','LIRCMOP3_BC','LIRCMOP4_BC', ...
+    'LIRCMOP5_BC','LIRCMOP6_BC','LIRCMOP7_BC','LIRCMOP8_BC', ...
+    'LIRCMOP9_BC','LIRCMOP10_BC','LIRCMOP11_BC','LIRCMOP12_BC', ...
+    'LIRCMOP13_BC','LIRCMOP14_BC'};
 
 rootPath = fileparts(mfilename('fullpath'));
 cd(rootPath);
-supportPath = fullfile(rootPath,'Algorithms','Multi-objective optimization', ...
-    'CBS-CGAN','Support');
-addpath(supportPath,'-begin');
-addCBSPaths(rootPath);
+addRuntimePaths(rootPath);
 
 %% ===== Flatten problem x run tasks and resume completed runs =====
 tasks = cell(0,2);
@@ -25,7 +24,8 @@ for p = 1:numel(proNames)
         tasks(end+1,:) = {proNames{p},r}; %#ok<SAGROW>
     end
 end
-dataDir = fullfile(rootPath,'Data',algName);
+% Keep prior fixed-quota results separate from the selected adaptive mainline.
+dataDir = fullfile(rootPath,'Data','PairGuideCoverage');
 [~,~] = mkdir(dataDir);
 todo = true(size(tasks,1),1);
 for t = 1:size(tasks,1)
@@ -45,7 +45,7 @@ ownsPool = isempty(pool);
 if ownsPool
     pool = parpool("Processes",nWorker);
 elseif pool.NumWorkers ~= nWorker
-    error('CBSRegionGAN:WorkerCount', ...
+    error('PairGuide:WorkerCount', ...
         'Existing pool must contain exactly %d workers.',nWorker);
 end
 poolCleanup = onCleanup(@()closeOwnedPool(ownsPool));
@@ -54,7 +54,7 @@ nTask = size(tasks,1);
 taskProblems = tasks(:,1);
 taskRuns = cell2mat(tasks(:,2));
 parfor t = 1:nTask
-    addCBSPaths(rootPath);
+    addRuntimePaths(rootPath);
     cd(rootPath);
     rng(taskRuns(t),'twister');
     problem = str2func(taskProblems{t});
@@ -72,6 +72,12 @@ parfor t = 1:nTask
 end
 
 disp('ALL PAIR-GUIDE TASKS DONE');
+
+function addRuntimePaths(rootPath)
+    for folder = {'Algorithms','Problems','Metrics'}
+        addpath(genpath(fullfile(rootPath,folder{1})),'-begin');
+    end
+end
 
 function closeOwnedPool(ownsPool)
     if ownsPool

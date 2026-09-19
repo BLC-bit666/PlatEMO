@@ -1,0 +1,15 @@
+{
+  "status": "passed",
+  "bytes": 49101828,
+  "allRestoredFilesVerified": 17814,
+  "allImagesPixelsVerified": 149,
+  "currentEraCodeManifestsFullyCovered": 47,
+  "fullRunUseFamiliesRecomputed": 13,
+  "searchFEAdded": 0,
+  "trainingUpdatesAdded": 0,
+  "algorithmFilesModifiedForPackaging": false,
+  "webUploadTested": false,
+  "textUploadCaveat": "Official FAQ caps text/document files at 2M tokens; use the equivalent ZIP with Python if TXT is rejected.",
+  "equivalentZIPRoundtripPassed": true,
+  "includedTextCredentialPatternScan": "no matches"
+}
