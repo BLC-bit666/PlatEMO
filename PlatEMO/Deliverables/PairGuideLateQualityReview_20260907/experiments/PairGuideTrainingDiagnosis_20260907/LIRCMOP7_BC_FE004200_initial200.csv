@@ -1,2 +1,0 @@
-problem,FE,arm,pairs,updates,seconds,parameters,RMSE,biasRMSE,noiseRMSE,biasMSEShare,relativeError,targetJump,outputJump,endpointObjectiveRMSE,midpointObjectiveRMSE,feasibleLabelAccuracy,infeasibleLabelAccuracy,midpointFeasibleRate,adversarialGradientNorm,geometryGradientNorm,advGeometryCosine
-LIRCMOP7_BC,4200,initial200,12,200,14.4012834166667,2366,0.213302477702884,0.212261439881136,0.0358068547179321,0.972330330632874,1.99820706244567,0.12602130955463,0.00679722551718074,8.87874952443815,9.26433792606006,1,0,1,1.93025786465535,63.0036066116609,0.987902116836428

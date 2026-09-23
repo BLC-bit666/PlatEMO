@@ -1,2 +1,0 @@
-problem,seed,arm,lateSelected,lateFeasible,lateRetainedP1,lateRetainedP2,lateRetainedEither,lateRetainedNeither,lateGenerations,lateFullyFeasibleP1Generations
-LIRCMOP6_BC,15,stable_no_side,3580,1444,6,3,7,3573,250,250

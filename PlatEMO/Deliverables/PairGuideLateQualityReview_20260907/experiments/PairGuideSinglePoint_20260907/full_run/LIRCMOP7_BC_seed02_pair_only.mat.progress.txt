@@ -1,1 +1,0 @@
-LIRCMOP7_BC seed=2 mode=pair_only FE=100000/100000

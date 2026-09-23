@@ -1,2 +1,0 @@
-problem,seed,prefixFE,mode,backboneSeed,initialIGD,finalIGD,finalHV,IGDAUC,firstSelected,firstSurvivedP1,firstGuidedInfeasible,suffixFE,wallSeconds
-LIRCMOP8_BC,2,70000,raw,288711303,0.00814867655828574,0.00807725771498929,0.293775400356615,0.00808285128180643,20,0,4,5000,1.645777875

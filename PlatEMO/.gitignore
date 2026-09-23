@@ -22,11 +22,23 @@ slprj/
 codegen/
 *.slxc
 
-# Runtime, experiment, and temporary outputs
+# Runtime, experiment, package, and temporary outputs
 /Data/
 /ExperimentData/
+/Experiments/
+/Deliverables/
+/output/
 /tmp/
 *.log
+
+# Root-level research and visualization exports
+/*.xlsx
+/*.zip
+/*.zip.sha256
+/*.drawio
+/*.png
+/*.mjs
+*.drawio.bkp
 
 # Project-local scratch files
 /collect_prbccmo1_t_metrics.m

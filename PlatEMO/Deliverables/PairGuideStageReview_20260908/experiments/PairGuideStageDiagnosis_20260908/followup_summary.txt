@@ -1,9 +1,0 @@
-FOLLOWUP_SUMMARIES_COMPLETE:108 low-rate paired checkpoints,48 search-window comparisons
-adversarial20 vs raw IGD wins/ties/losses at1% 5 4 2 AUC wins/ties/losses 3 6 2
-adversarial20 vs de IGD wins/ties/losses at1% 5 4 2 AUC wins/ties/losses 3 5 3
-distance20 vs raw IGD wins/ties/losses at1% 4 4 3 AUC wins/ties/losses 2 6 3
-distance20 vs de IGD wins/ties/losses at1% 5 2 4 AUC wins/ties/losses 2 5 4
-adversarial2000 vs raw IGD wins/ties/losses at1% 4 2 5 AUC wins/ties/losses 4 5 2
-adversarial2000 vs de IGD wins/ties/losses at1% 3 4 4 AUC wins/ties/losses 3 6 2
-distance2000 vs raw IGD wins/ties/losses at1% 3 5 3 AUC wins/ties/losses 4 4 3
-distance2000 vs de IGD wins/ties/losses at1% 4 3 4 AUC wins/ties/losses 3 6 2

@@ -1,8 +1,0 @@
-{
-  "completedRuns": 72,
-  "plannedRuns": 72,
-  "recordedCheckpoints": 288,
-  "matchedNonzeroCheckpoints": 108,
-  "actualStepsObserved": 7560,
-  "note": "Partial summaries are exploratory; final decision requires complete paired streams."
-}

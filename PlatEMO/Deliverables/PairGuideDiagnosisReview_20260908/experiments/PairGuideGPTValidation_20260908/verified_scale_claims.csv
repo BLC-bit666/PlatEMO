@@ -1,5 +1,0 @@
-problem,seed,fixed_points,frame_transitions,dynamic_changed_fraction,stable_span_changed_fraction,dynamic_angle_step,side_gap_median,below_initial_minimum,late_training_events,late_selected,late_guided_infeasible_replacements
-LIRCMOP5_BC,1,100,250,0.76612,0.00508,3.9392827286201513,0.25140065556356705,1.0,70,5000,20
-LIRCMOP6_BC,1,100,250,0.91332,0.00028,7.580853644443934,0.21625496161969215,1.0,59,2500,50
-LIRCMOP7_BC,1,100,250,0.86408,0.01768,5.934109639385123,0.37345414619237527,0.96,247,5000,2625
-LIRCMOP8_BC,1,100,250,0.89044,0.0002,5.611402941010687,0.21473347249278768,0.97,249,5000,2577

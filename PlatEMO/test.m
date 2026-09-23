@@ -1,12 +1,11 @@
 clc; clear;
 
-%% PairGuide coverage-0.04 mainline; run this campaign only when requested.
+%% GANCMO coverage-0.04 mainline; run this campaign only when requested.
 nWorker = 10;
 popSize = 100;
 maxFE   = 2e5;
-saveNum = 2;
-runs    = 1:5;
-algName = 'PairGuide';
+runs    = 151:200;
+algName = 'GANCMO';
 proNames = {
     'LIRCMOP1_BC','LIRCMOP2_BC','LIRCMOP3_BC','LIRCMOP4_BC', ...
     'LIRCMOP5_BC','LIRCMOP6_BC','LIRCMOP7_BC','LIRCMOP8_BC', ...
@@ -34,9 +33,9 @@ for t = 1:size(tasks,1)
     todo(t) = isempty(files);
 end
 tasks = tasks(todo,:);
-fprintf('PairGuide remaining tasks: %d\n',size(tasks,1));
+fprintf('GANCMO remaining tasks: %d\n',size(tasks,1));
 if isempty(tasks)
-    disp('ALL PAIR-GUIDE TASKS DONE');
+    disp('ALL GANCMO TASKS DONE');
     return;
 end
 
@@ -45,7 +44,7 @@ ownsPool = isempty(pool);
 if ownsPool
     pool = parpool("Processes",nWorker);
 elseif pool.NumWorkers ~= nWorker
-    error('PairGuide:WorkerCount', ...
+    error('GANCMO:WorkerCount', ...
         'Existing pool must contain exactly %d workers.',nWorker);
 end
 poolCleanup = onCleanup(@()closeOwnedPool(ownsPool));
@@ -61,17 +60,17 @@ parfor t = 1:nTask
     fprintf('Running %s on %s run %d\n', ...
         algName,taskProblems{t},taskRuns(t));
     Problem = problem('N',popSize,'D',30,'maxFE',maxFE);
-    Algorithm = PairGuide( ...
-        'save',-saveNum,'run',taskRuns(t), ...
+    Algorithm = GANCMO( ...
+        'save',0,'run',taskRuns(t), ...
         'metName',{'IGD','HV','Feasible_rate'});
     Algorithm.Solve(Problem);
     Algorithm.CalMetric('IGD');
     Algorithm.CalMetric('HV');
     Algorithm.CalMetric('Feasible_rate');
-    savePairGuideResult(dataDir,Algorithm,Problem,taskRuns(t));
+    saveGANCMOResult(dataDir,Algorithm,Problem,taskRuns(t));
 end
 
-disp('ALL PAIR-GUIDE TASKS DONE');
+disp('ALL GANCMO TASKS DONE');
 
 function addRuntimePaths(rootPath)
     for folder = {'Algorithms','Problems','Metrics'}
@@ -88,8 +87,8 @@ function closeOwnedPool(ownsPool)
     end
 end
 
-function savePairGuideResult(dataDir,Algorithm,Problem,run)
-%SAVEPAIRGUIDERESULT Save PairGuide results under its own name.
+function saveGANCMOResult(dataDir,Algorithm,Problem,run)
+%SAVEGANCMORESULT Save GANCMO results under its own name.
 
     result = Algorithm.result;
     metric = Algorithm.metric;
