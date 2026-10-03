@@ -1,60 +1,78 @@
-function Dec = GANCMOCandidates(Model,Archive,W,Scale,P1,P2,Problem,quota)
-% Generate 500 unevaluated queries and retain unique in-box/exploration points.
-    values = (1:size(W,1))'; total = 500;
-    refs = repelem(values,floor(total/numel(values)),1);
-    remainder = mod(total,numel(values));
-    if remainder>0; refs = [refs;values(randperm(numel(values),remainder))]; end
-    refs = refs(randperm(numel(refs)));
-    sides = zeros(total,1); phase = randi(2)-1;
-    for ref = 1:size(W,1)
-        local = find(refs==ref);
-        sides(local) = mod((0:numel(local)-1)'+phase,2);
-        phase = mod(phase+numel(local),2);
-    end
-    X = GANCMOModel.sample(Model,[double(W(refs,:)),sides],Problem);
-    span = double(Problem.upper)-double(Problem.lower); span(span<=eps) = 1;
+function [Dec,Info] = GANCMOCandidates(Model,Archive,W,Scale,P1,P2,Problem,quota,S)
+% Feasible-condition queries; direction-balanced selection; no evaluations.
+    Dec = zeros(0,Problem.D);
+    Info = struct('ref',zeros(0,1),'targetRef',zeros(0,1),'distanceF',zeros(0,1), ...
+        'available',0,'diverse',0,'queried',0);
+    targetCap = Inf;
+    if isfield(S,'candidateTargetCap'); targetCap = S.candidateTargetCap; end
+    if quota<=0 || isempty(Model) || ~Model.ready; return; end
+    Data = GANCMOArchive.training(Archive,W,Scale,Problem,S.maxTrainingObjectiveGap);
+    supported = intersect(unique(Data.ref),unique(Model.lastData.ref));
+    if isempty(supported); return; end
+    total = max(S.candidateCount,quota);
+    Info.queried = total;
+    refs = repmat(supported,ceil(total/numel(supported)),1);
+    refs = refs(1:total); refs = refs(randperm(total));
+    X = GANCMOModel.sample(Model,[double(W(refs,:)),ones(total,1)],Problem);
+    finite = all(isfinite(X),2);
+    X = min(Problem.upper,max(Problem.lower,X));
+    span = Problem.upper-Problem.lower; span(span<=eps) = 1;
     Z = (double(X)-Problem.lower)./span;
-    valid = all(isfinite(Z),2) & all(Z>=0 & Z<=1,2);
-    knownY = [Archive.yf;Archive.yi;double(P1.objs)];
-    knownY = knownY(all(isfinite(knownY),2),:);
-    knownRefs = unique(GANCMOReference(knownY,W,Scale));
-    uncovered = valid & ~ismember(refs,knownRefs);
-    endpoints = [Archive.xf;Archive.xi];
-    lo = (min(double(endpoints),[],1)-Problem.lower)./span;
-    hi = (max(double(endpoints),[],1)-Problem.lower)./span;
-    inside = valid & all(Z>=lo-1e-12 & Z<=hi+1e-12,2);
-    F = (double(Archive.xf)-Problem.lower)./span;
-    distanceF = inf(total,1);
-    for j = 1:size(F,1)
-        distanceF = min(distanceF,sqrt(sum((Z-F(j,:)).^2,2)));
+    Current = [P1,P2];
+    base = ([double(Current.decs);Archive.xf;Archive.xi]-Problem.lower)./span;
+    valid = finite;
+    if ~isempty(base); valid = valid & min(pdist2(Z,base),[],2)>1e-6; end
+    queues = cell(numel(supported),1); distanceF = inf(total,1);
+    targetRef = zeros(total,1);
+    if isfinite(targetCap)
+        ready = find(Archive.active & vecnorm(Archive.yf-Archive.yi,2,2)<=S.maxTrainingObjectiveGap);
+        assert(isequal(Archive.ref(ready),Data.ref));
+        fixed = struct('minimum',zeros(1,Problem.M),'span',ones(1,Problem.M));
+        dataRef = GANCMOReference(Archive.yf(ready,:),W,fixed);
     end
-    outside = uncovered & ~inside;
-    outsideQuota = floor(quota*.2); insideQuota = quota-outsideQuota;
-    Current = [P1,P2]; base = (double(Current.decs)-Problem.lower)./span;
-    chosen = zeros(quota,1); count = 0;
-    local = find(inside); [~,order] = sortrows([distanceF(local),local]); local = local(order);
-    for k = reshape(local,1,[])
-        if count>=insideQuota; break; end
-        if any(vecnorm(base-Z(k,:),2,2)<=1e-6); continue; end
-        count = count+1; chosen(count) = k; base(end+1,:) = Z(k,:); %#ok<AGROW>
-    end
-    outsideCount = 0;
-    if outsideQuota>0
-        groups = unique(refs(outside)); groups = groups(randperm(numel(groups)));
-        for ref = reshape(groups,1,[])
-            for k = reshape(find(outside & refs==ref),1,[])
-                if any(vecnorm(base-Z(k,:),2,2)<=1e-6); continue; end
-                count = count+1; chosen(count) = k; base(end+1,:) = Z(k,:); %#ok<AGROW>
-                outsideCount = outsideCount+1; break;
-            end
-            if outsideCount>=outsideQuota; break; end
+    for j = 1:numel(supported)
+        rows = find(refs==supported(j) & valid);
+        if isempty(rows); continue; end
+        F = Data.xF(Data.ref==supported(j),:);
+        [distanceF(rows),nearest] = min(pdist2(Z(rows,:),F),[],2);
+        if isfinite(targetCap)
+            targets = dataRef(Data.ref==supported(j)); targetRef(rows) = targets(nearest);
         end
+        fitted = distanceF(rows)<=S.maxCandidateDistanceF;
+        valid(rows(~fitted)) = false; rows = rows(fitted);
+        [~,order] = sortrows([distanceF(rows),rows]); queues{j} = rows(order);
     end
-    % Return unused exploration slots to the in-box pool; shortages use DE.
-    for k = reshape(local,1,[])
-        if count>=quota; break; end
-        if any(vecnorm(base-Z(k,:),2,2)<=1e-6); continue; end
-        count = count+1; chosen(count) = k; base(end+1,:) = Z(k,:); %#ok<AGROW>
+    Info.available = nnz(valid); Info.diverse = Info.available;
+    if isfinite(targetCap)
+        % Multiple query IDs can map to the same physical objective direction.
+        % Keep its closest fitted raw proposals, using only already evaluated F.
+        keep = false(total,1);
+        for ref = reshape(unique(targetRef(valid)),1,[])
+            local = find(valid & targetRef==ref);
+            [~,rank] = sortrows([distanceF(local),local]);
+            keep(local(rank(1:min(targetCap,numel(local))))) = true;
+        end
+        for j = 1:numel(queues); queues{j} = queues{j}(keep(queues{j})); end
+        Info.diverse = nnz(keep);
     end
-    Dec = double(X(chosen(1:count),:));
+    order = randperm(numel(supported));
+    positions = ones(numel(supported),1); chosen = zeros(quota,1); count = 0;
+    while count<quota
+        advanced = false;
+        for j = order
+            rows = queues{j};
+            while positions(j)<=numel(rows)
+                k = rows(positions(j)); positions(j) = positions(j)+1;
+                if count>0 && any(vecnorm(Z(chosen(1:count),:)-Z(k,:),2,2)<=1e-6)
+                    continue;
+                end
+                count = count+1; chosen(count) = k;
+                advanced = true; break;
+            end
+            if count>=quota; break; end
+        end
+        if ~advanced; break; end
+    end
+    chosen = chosen(1:count); Dec = double(X(chosen,:));
+    Info.ref = refs(chosen); Info.targetRef = targetRef(chosen); Info.distanceF = distanceF(chosen);
 end

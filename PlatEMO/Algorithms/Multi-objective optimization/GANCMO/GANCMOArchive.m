@@ -1,25 +1,28 @@
 classdef GANCMOArchive
-% Real feasible/infeasible endpoint pairs, with one active pair per direction.
+% Real feasible/infeasible endpoint pairs, with configurable active selection.
     methods(Static)
-        function [Archive,Scale] = update(Archive,Evaluated,Guided,W,Problem)
+        function [Archive,Scale] = update(Archive,Evaluated,Generated,W,Problem,pairsPerDirection,priority,FixedScale)
+            if nargin<6; pairsPerDirection = 1; end
+            if nargin<7; priority = 'quality'; end
+            if nargin<8; FixedScale = []; end
             span = decisionSpan(Problem); neighbors = referenceNeighborhoods(W);
             if isempty(Archive); Archive = emptyArchive(Problem.D,Problem.M); end
             Historical = Archive;
             [fx,fy,ix,iy] = evaluatedRows(Evaluated,zeros(0,Problem.D),Problem);
-            [gx,gy,gf] = feedbackRows(Guided,Problem);
+            [gx,gy,gf] = feedbackRows(Generated,Problem);
             if isempty(gx)
                 ofx = fx; ofy = fy; oix = ix; oiy = iy;
             else
                 [ofx,ofy,oix,oiy] = evaluatedRows(Evaluated,gx,Problem);
             end
-            [~,Scale] = GANCMOReference([fy;iy;Archive.yf;Archive.yi],W);
+            [~,Scale] = GANCMOReference([fy;iy;Archive.yf;Archive.yi],W,FixedScale);
             Archive = refresh(Archive,W,Scale,Problem);
             ordinaryX = [ofx;oix;Historical.xf;Historical.xi];
             ordinaryY = [ofy;oiy;Historical.yf;Historical.yi];
             ordinaryFeasible = [true(size(ofx,1),1);false(size(oix,1),1); ...
                 true(size(Historical.xf,1),1);false(size(Historical.xi,1),1)];
-            Archive = tightenRows(Archive,gx,gy,gf,W,Scale,span,neighbors);
-            Archive = tightenRows(Archive,ordinaryX,ordinaryY,ordinaryFeasible,W,Scale,span,neighbors);
+            Archive = tightenRows(Archive,gx,gy,gf,W,Scale,span,neighbors,priority);
+            Archive = tightenRows(Archive,ordinaryX,ordinaryY,ordinaryFeasible,W,Scale,span,neighbors,priority);
             Archive = refresh(Archive,W,Scale,Problem);
             fx = [fx;Historical.xf]; fy = [fy;Historical.yf];
             ix = [ix;Historical.xi]; iy = [iy;Historical.yi];
@@ -42,7 +45,14 @@ classdef GANCMOArchive
                     gaps = sqrt(sum(((ix(local,:)-fx(f,:))./span).^2,2));
                     admissible = gaps>1e-12; eligible = local(admissible); gaps = gaps(admissible);
                     if isempty(eligible); continue; end
-                    [gap,j] = min(gaps); count = count+1;
+                    if strcmp(priority,'objective_gap')
+                        objectiveGap = vecnorm(iy(eligible,:)-fy(f,:),2,2);
+                        [~,order] = sortrows([objectiveGap,gaps,eligible]); j = order(1);
+                        gap = gaps(j);
+                    else
+                        [gap,j] = min(gaps);
+                    end
+                    count = count+1;
                     Candidate.ref(count) = ref;
                     Candidate.xf(count,:) = fx(f,:); Candidate.yf(count,:) = fy(f,:);
                     Candidate.xi(count,:) = ix(eligible(j),:); Candidate.yi(count,:) = iy(eligible(j),:);
@@ -76,17 +86,21 @@ classdef GANCMOArchive
             [foundI,whereI] = ismember(Archive.xi,ix,'rows');
             assert(all(foundF & foundI),'GANCMO:FrontPool','An archive endpoint is missing from the evaluated pool.');
             Archive = subsetArchive(Archive,find(feasibleEligible(whereF) & infeasibleEligible(whereI)));
-            Archive = retainArchive(Archive,W,Scale);
+            Archive = retainArchive(Archive,W,Scale,pairsPerDirection,priority);
             new = Archive.id>=firstNewId; added = nnz(new);
             Archive.id(new) = firstNewId+(0:added-1)'; Archive.nextId = firstNewId+added;
         end
 
-        function Data = training(Archive,W,Scale,Problem)
+        function Data = training(Archive,W,Scale,Problem,maxObjectiveGap)
+            if nargin<5; maxObjectiveGap = Inf; end
             rows = find(Archive.active & all(isfinite(Archive.xf),2) & ...
-                all(isfinite(Archive.xi),2) & Archive.ref>=1 & Archive.ref<=size(W,1));
+                all(isfinite(Archive.xi),2) & Archive.ref>=1 & Archive.ref<=size(W,1) & ...
+                vecnorm(Archive.yf-Archive.yi,2,2)<=maxObjectiveGap);
+            % Readiness for training only. Archive eligibility and retention
+            % are unchanged; this uses previously evaluated objectives.
             Data = struct('xF',zeros(0,Problem.D),'xI',zeros(0,Problem.D), ...
                 'cF',zeros(0,Problem.M+1),'cI',zeros(0,Problem.M+1), ...
-                'ref',Archive.ref(rows),'count',numel(rows));
+                'ref',Archive.ref(rows),'count',numel(rows),'directions',double(W));
             if ~isempty(rows)
                 lower = double(Problem.lower); span = decisionSpan(Problem);
                 Data.xF = (Archive.xf(rows,:)-lower)./span;
@@ -96,8 +110,8 @@ classdef GANCMOArchive
                 Data.cF = [double(W(refF,:)),ones(Data.count,1)];
                 Data.cI = [double(W(refI,:)),zeros(Data.count,1)];
             end
-            assert(numel(unique(Data.ref))==Data.count,'GANCMO:NonUniqueTrainingReference', ...
-                'Every active reference must own one training pair.');
+            assert(size(unique([Data.ref,Data.xF,Data.xI],'rows'),1)==Data.count, ...
+                'GANCMO:DuplicateTrainingPair','Active pairs must be distinct.');
         end
     end
 end
@@ -109,13 +123,22 @@ function Archive = appendArchive(Archive,Other)
     end
 end
 
-function Archive = retainArchive(Archive,W,Scale)
+function Archive = retainArchive(Archive,W,Scale,pairsPerDirection,priority)
     Archive.active(:) = false; rank = zeros(numel(Archive.id),1);
     for ref = reshape(unique(Archive.ref),1,[])
         rows = find(Archive.ref==ref);
         quality = max(normalizeObjectives(Archive.yf(rows,:),Scale)./(double(W(ref,:))+1e-12),[],2);
-        [~,order] = sortrows([quality,Archive.gap(rows),Archive.id(rows)]);
-        rank(rows(order)) = (1:numel(rows))'; Archive.active(rows(order(1))) = true;
+        if strcmp(priority,'objective_gap')
+            objectiveGap = vecnorm(Archive.yf(rows,:)-Archive.yi(rows,:),2,2);
+            keys = [objectiveGap,quality,Archive.gap(rows),Archive.id(rows)];
+        elseif strcmp(priority,'gap')
+            keys = [Archive.gap(rows),quality,Archive.id(rows)];
+        else
+            keys = [quality,Archive.gap(rows),Archive.id(rows)];
+        end
+        [~,order] = sortrows(keys);
+        rank(rows(order)) = (1:numel(rows))';
+        Archive.active(rows(order(1:min(pairsPerDirection,numel(rows))))) = true;
     end
     if numel(Archive.id)>500
         [~,order] = sortrows([~Archive.active,rank,Archive.ref,Archive.id]);
@@ -123,7 +146,7 @@ function Archive = retainArchive(Archive,W,Scale)
     end
 end
 
-function Archive = tightenRows(Archive,X,Y,feasible,W,Scale,span,neighbors)
+function Archive = tightenRows(Archive,X,Y,feasible,W,Scale,span,neighbors,priority)
 % Preserve sequential tightening: later endpoints see earlier improvements.
     if isempty(X) || isempty(Archive.id); return; end
     refs = GANCMOReference(Y,W,Scale); localRows = cell(size(W,1),1);
@@ -137,7 +160,16 @@ function Archive = tightenRows(Archive,X,Y,feasible,W,Scale,span,neighbors)
         else
             gap = sqrt(sum(((Archive.xf(local,:)-X(k,:))./span).^2,2));
         end
-        accepted = ~(gap<=0 | gap>=Archive.gap(local)-1e-12);
+        if strcmp(priority,'objective_gap')
+            oldObjectiveGap = vecnorm(Archive.yf(local,:)-Archive.yi(local,:),2,2);
+            otherY = Archive.yf(local,:);
+            if feasible(k); otherY = Archive.yi(local,:); end
+            newObjectiveGap = vecnorm(otherY-Y(k,:),2,2);
+            accepted = gap>0 & (newObjectiveGap<oldObjectiveGap-1e-12 | ...
+                (abs(newObjectiveGap-oldObjectiveGap)<=1e-12 & gap<Archive.gap(local)-1e-12));
+        else
+            accepted = ~(gap<=0 | gap>=Archive.gap(local)-1e-12);
+        end
         rows = local(accepted);
         if feasible(k)
             Archive.xf(rows,:) = repmat(X(k,:),numel(rows),1);
@@ -297,4 +329,3 @@ function Yn = normalizeObjectives(Y,Scale)
     Yn = (double(Y)-reshape(double(Scale.minimum),1,[]))./ ...
         reshape(double(Scale.span),1,[]);
 end
-
