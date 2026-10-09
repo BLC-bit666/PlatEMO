@@ -1,106 +1,70 @@
 classdef GANCMOArchive
-% Real feasible/infeasible endpoint pairs, with configurable active selection.
+% Unified endpoint eligibility, pair-front filtering and nearest legal pairing.
     methods(Static)
-        function [Archive,Scale] = update(Archive,Evaluated,Generated,W,Problem,pairsPerDirection,priority,FixedScale)
-            if nargin<6; pairsPerDirection = 1; end
-            if nargin<7; priority = 'quality'; end
-            if nargin<8; FixedScale = []; end
-            span = decisionSpan(Problem); neighbors = referenceNeighborhoods(W);
-            if isempty(Archive); Archive = emptyArchive(Problem.D,Problem.M); end
-            Historical = Archive;
-            [fx,fy,ix,iy] = evaluatedRows(Evaluated,zeros(0,Problem.D),Problem);
-            [gx,gy,gf] = feedbackRows(Generated,Problem);
-            if isempty(gx)
-                ofx = fx; ofy = fy; oix = ix; oiy = iy;
-            else
-                [ofx,ofy,oix,oiy] = evaluatedRows(Evaluated,gx,Problem);
+        function [Archive,Scale] = update(Archive,Evaluated,W,Problem,FixedScale,SelectedP1)
+            if isempty(Archive); Archive=emptyArchive(Problem.D,Problem.M); end
+            span=decisionSpan(Problem); neighbors=referenceNeighborhoods(W);
+            [fx,fy,ix,iy]=evaluatedRows(Evaluated,Problem);
+            [~,Scale]=GANCMOReference(zeros(0,Problem.M),W,FixedScale);
+            Archive=refresh(Archive,W,Scale,Problem);
+            Historical=Archive;
+            fx=[fx;Historical.xf]; fy=[fy;Historical.yf];
+            ix=[ix;Historical.xi]; iy=[iy;Historical.yi];
+            [fx,rows]=unique(fx,'rows','stable'); fy=fy(rows,:);
+            [ix,rows]=unique(ix,'rows','stable'); iy=iy(rows,:);
+            fronts=zeros(0,1);
+            if ~isempty(fy); fronts=reshape(NDSort(fy,inf),[],1); end
+            validF=fronts==1;
+            validI=~dominatedByAny(iy,fy(fronts==1,:),Scale,1e-12);
+            % P1 membership affects pair-front filtering, never endpoint eligibility.
+            [pfx,pfy,~,~]=evaluatedRows(SelectedP1,Problem);
+            assert(all(ismember(pfx,fx,'rows')),'GANCMO:P1Pool');
+            % Clean existing pairs once. A surviving endpoint may be re-paired.
+            Archive=subsetArchive(Archive,find(validArchiveRows(Archive,size(W,1),Problem)));
+            [foundF,f]=ismember(Archive.xf,fx,'rows');
+            [foundI,i]=ismember(Archive.xi,ix,'rows');
+            assert(all(foundF & foundI),'GANCMO:FrontPool');
+            Archive=subsetArchive(Archive,find(validF(f) & validI(i)));
+            frefs=GANCMOReference(fy,W,Scale); irefs=GANCMOReference(iy,W,Scale);
+            % One nearest legal I per F is sufficient for the per-direction minimum.
+            % New/old F and I share this pool: no sequential endpoint mutations.
+            eligibleF=find(validF); count=numel(eligibleF); Candidate=emptyArchive(Problem.D,Problem.M);
+            Candidate.id=Historical.nextId+(0:count-1)'; Candidate.ref=zeros(count,1);
+            Candidate.xf=zeros(count,Problem.D); Candidate.xi=zeros(count,Problem.D);
+            Candidate.yf=zeros(count,Problem.M); Candidate.yi=zeros(count,Problem.M);
+            Candidate.gap=zeros(count,1); Candidate.active=false(count,1); used=false(count,1);
+            for k=1:count
+                f=eligibleF(k); ref=frefs(f);
+                local=find(neighbors(ref,irefs)' & validI);
+                decisionGap2=sum(((ix(local,:)-fx(f,:))./span).^2,2);
+                possible=decisionGap2>1e-24; local=local(possible); decisionGap2=decisionGap2(possible);
+                if isempty(local); continue; end
+                objectiveGap2=sum((iy(local,:)-fy(f,:)).^2,2);
+                [~,best]=min(objectiveGap2); i=local(best);
+                Candidate.ref(k)=ref; Candidate.xf(k,:)=fx(f,:); Candidate.yf(k,:)=fy(f,:);
+                Candidate.xi(k,:)=ix(i,:); Candidate.yi(k,:)=iy(i,:);
+                Candidate.gap(k)=sqrt(decisionGap2(best)); used(k)=true;
             end
-            [~,Scale] = GANCMOReference([fy;iy;Archive.yf;Archive.yi],W,FixedScale);
-            Archive = refresh(Archive,W,Scale,Problem);
-            ordinaryX = [ofx;oix;Historical.xf;Historical.xi];
-            ordinaryY = [ofy;oiy;Historical.yf;Historical.yi];
-            ordinaryFeasible = [true(size(ofx,1),1);false(size(oix,1),1); ...
-                true(size(Historical.xf,1),1);false(size(Historical.xi,1),1)];
-            Archive = tightenRows(Archive,gx,gy,gf,W,Scale,span,neighbors,priority);
-            Archive = tightenRows(Archive,ordinaryX,ordinaryY,ordinaryFeasible,W,Scale,span,neighbors,priority);
-            Archive = refresh(Archive,W,Scale,Problem);
-            fx = [fx;Historical.xf]; fy = [fy;Historical.yf];
-            ix = [ix;Historical.xi]; iy = [iy;Historical.yi];
-            [fx,uniqueRows] = unique(fx,'rows','stable'); fy = fy(uniqueRows,:);
-            [ix,uniqueRows] = unique(ix,'rows','stable'); iy = iy(uniqueRows,:);
-            fronts = zeros(0,1);
-            if ~isempty(fy); fronts = reshape(NDSort(fy,inf),[],1); end
-            feasibleEligible = fronts==1;
-            infeasibleEligible = ~dominatedByAny(iy,fy(fronts==1,:),Scale,1e-12);
-            frefs = GANCMOReference(fy,W,Scale); irefs = GANCMOReference(iy,W,Scale);
-            Candidate = emptyArchive(Problem.D,Problem.M);
-            Candidate.ref = zeros(size(fx,1),1);
-            Candidate.xf = zeros(size(fx)); Candidate.yf = zeros(size(fy));
-            Candidate.xi = zeros(size(fx)); Candidate.yi = zeros(size(fy));
-            Candidate.gap = zeros(size(fx,1),1); count = 0;
-            for ref = reshape(unique(frefs(feasibleEligible)),1,[])
-                candidates = find(frefs==ref & feasibleEligible);
-                local = find(neighbors(ref,irefs)' & infeasibleEligible);
-                for f = reshape(candidates,1,[])
-                    gaps = sqrt(sum(((ix(local,:)-fx(f,:))./span).^2,2));
-                    admissible = gaps>1e-12; eligible = local(admissible); gaps = gaps(admissible);
-                    if isempty(eligible); continue; end
-                    if strcmp(priority,'objective_gap')
-                        objectiveGap = vecnorm(iy(eligible,:)-fy(f,:),2,2);
-                        [~,order] = sortrows([objectiveGap,gaps,eligible]); j = order(1);
-                        gap = gaps(j);
-                    else
-                        [gap,j] = min(gaps);
-                    end
-                    count = count+1;
-                    Candidate.ref(count) = ref;
-                    Candidate.xf(count,:) = fx(f,:); Candidate.yf(count,:) = fy(f,:);
-                    Candidate.xi(count,:) = ix(eligible(j),:); Candidate.yi(count,:) = iy(eligible(j),:);
-                    Candidate.gap(count) = gap;
-                end
-            end
-            firstNewId = Archive.nextId;
-            Candidate.id = firstNewId+(0:size(fx,1)-1)';
-            Candidate.active = false(size(fx,1),1);
-            Candidate = subsetArchive(Candidate,(1:count)');
-            Archive = appendArchive(Archive,Candidate);
-            Archive = refresh(Archive,W,Scale,Problem);
-            Archive = subsetArchive(Archive,find(validArchiveRows(Archive,size(W,1),Problem)));
-            [~,byId] = sort(Archive.id);
-            [~,distinct] = unique([Archive.ref(byId),Archive.xf(byId,:),Archive.xi(byId,:)],'rows','stable');
-            Archive = subsetArchive(Archive,sort(byId(distinct)));
-            % Tightened lineages can merge. Retain legal historical alternatives
-            % for capacity competition; never fill a slot with an invalid pair.
-            if numel(Archive.id)<min(500,numel(Historical.id))
-                Reserve = refresh(Historical,W,Scale,Problem);
-                Reserve = subsetArchive(Reserve,find(validArchiveRows(Reserve,size(W,1),Problem)));
-                [~,distinct] = unique([Reserve.ref,Reserve.xf,Reserve.xi],'rows','stable');
-                Reserve = subsetArchive(Reserve,distinct);
-                duplicate = ismember([Reserve.ref,Reserve.xf,Reserve.xi], ...
-                    [Archive.ref,Archive.xf,Archive.xi],'rows');
-                Reserve = subsetArchive(Reserve,find(~duplicate));
-                Reserve.id = firstNewId+numel(Candidate.id)+(0:numel(Reserve.id)-1)';
-                Reserve.active(:) = false; Archive = appendArchive(Archive,Reserve);
-            end
-            [foundF,whereF] = ismember(Archive.xf,fx,'rows');
-            [foundI,whereI] = ismember(Archive.xi,ix,'rows');
-            assert(all(foundF & foundI),'GANCMO:FrontPool','An archive endpoint is missing from the evaluated pool.');
-            Archive = subsetArchive(Archive,find(feasibleEligible(whereF) & infeasibleEligible(whereI)));
-            Archive = retainArchive(Archive,W,Scale,pairsPerDirection,priority);
-            new = Archive.id>=firstNewId; added = nnz(new);
-            Archive.id(new) = firstNewId+(0:added-1)'; Archive.nextId = firstNewId+added;
+            Candidate=subsetArchive(Candidate,find(used));
+            Archive=appendArchive(Archive,Candidate);
+            % Existing rows come first, preserving IDs and exact incumbent ties.
+            [~,uniqueRows]=unique([Archive.ref,Archive.xf,Archive.xi],'rows','stable');
+            Archive=subsetArchive(Archive,uniqueRows);
+            Archive.nextId=Historical.nextId+count;
+            Archive.relevance=struct('xF',pfx,'yF',pfy);
+            Archive=retainPairFront(Archive,W,Scale);
+            Archive=chooseNearest(Archive,Historical,W,Scale);
+            Archive.relevance.activeRef=Archive.ref(Archive.active);
+            Archive.relevance.activeXF=Archive.xf(Archive.active,:);
         end
 
-        function Data = training(Archive,W,Scale,Problem,maxObjectiveGap)
-            if nargin<5; maxObjectiveGap = Inf; end
+        function Data = training(Archive,W,Scale,Problem)
             rows = find(Archive.active & all(isfinite(Archive.xf),2) & ...
-                all(isfinite(Archive.xi),2) & Archive.ref>=1 & Archive.ref<=size(W,1) & ...
-                vecnorm(Archive.yf-Archive.yi,2,2)<=maxObjectiveGap);
-            % Readiness for training only. Archive eligibility and retention
-            % are unchanged; this uses previously evaluated objectives.
+                all(isfinite(Archive.xi),2) & Archive.ref>=1 & Archive.ref<=size(W,1));
+            % Every legal active pair is available; no objective-distance gate.
             Data = struct('xF',zeros(0,Problem.D),'xI',zeros(0,Problem.D), ...
                 'cF',zeros(0,Problem.M+1),'cI',zeros(0,Problem.M+1), ...
-                'ref',Archive.ref(rows),'count',numel(rows),'directions',double(W));
+                'ref',Archive.ref(rows),'count',numel(rows));
             if ~isempty(rows)
                 lower = double(Problem.lower); span = decisionSpan(Problem);
                 Data.xF = (Archive.xf(rows,:)-lower)./span;
@@ -123,72 +87,59 @@ function Archive = appendArchive(Archive,Other)
     end
 end
 
-function Archive = retainArchive(Archive,W,Scale,pairsPerDirection,priority)
-    Archive.active(:) = false; rank = zeros(numel(Archive.id),1);
+function Archive = retainPairFront(Archive,W,Scale)
+% Retain the current-P1 membership, objective-quality and proximity tradeoff.
+% Historical close pairs remain alternatives when current P1 lacks a close pair.
+    keep = false(numel(Archive.id),1);
     for ref = reshape(unique(Archive.ref),1,[])
         rows = find(Archive.ref==ref);
         quality = max(normalizeObjectives(Archive.yf(rows,:),Scale)./(double(W(ref,:))+1e-12),[],2);
-        if strcmp(priority,'objective_gap')
-            objectiveGap = vecnorm(Archive.yf(rows,:)-Archive.yi(rows,:),2,2);
-            keys = [objectiveGap,quality,Archive.gap(rows),Archive.id(rows)];
-        elseif strcmp(priority,'gap')
-            keys = [Archive.gap(rows),quality,Archive.id(rows)];
-        else
-            keys = [quality,Archive.gap(rows),Archive.id(rows)];
+        objectiveGap = vecnorm(Archive.yf(rows,:)-Archive.yi(rows,:),2,2);
+        current = ismember(Archive.xf(rows,:),Archive.relevance.xF,'rows');
+        front = NDSort([double(~current),quality,objectiveGap],1);
+        keep(rows) = reshape(front,[],1)==1;
+    end
+    Archive = subsetArchive(Archive,find(keep));
+end
+
+function Archive=chooseNearest(Archive,Historical,W,Scale)
+% Existing pair-front/capacity remain; nearest distance decides the active pair.
+    oldIds=Historical.id(Historical.active); Archive.active(:)=false;
+    rank=zeros(numel(Archive.id),1); gaps2=sum((Archive.yf-Archive.yi).^2,2);
+    n=size(W,1);
+    T=struct('ref',(1:n)','oldId',zeros(n,1),'oldGap2',nan(n,1), ...
+        'oldLegal',false(n,1),'newId',zeros(n,1),'newGap2',nan(n,1), ...
+        'minimumLegalGap2',nan(n,1),'action',zeros(n,1));
+    % action: 0 empty,1 first fill,2 shorter replacement,3 keep,4 rebuild.
+    for ref=1:n
+        old=find(Historical.active & Historical.ref==ref);
+        assert(numel(old)<=1,'GANCMO:DuplicateActiveDirection');
+        if ~isempty(old)
+            T.oldId(ref)=Historical.id(old);
+            T.oldGap2(ref)=sum((Historical.yf(old,:)-Historical.yi(old,:)).^2);
+            T.oldLegal(ref)=any(Archive.id==T.oldId(ref));
         end
-        [~,order] = sortrows(keys);
-        rank(rows(order)) = (1:numel(rows))';
-        Archive.active(rows(order(1:min(pairsPerDirection,numel(rows))))) = true;
+        local=find(Archive.ref==ref);
+        if isempty(local); continue; end
+        quality=max(normalizeObjectives(Archive.yf(local,:),Scale)./(W(ref,:)+1e-12),[],2);
+        [~,order]=sortrows([gaps2(local),~ismember(Archive.id(local),oldIds), ...
+            quality,Archive.gap(local),Archive.id(local)]);
+        rank(local(order))=(1:numel(local))'; chosen=local(order(1));
+        Archive.active(chosen)=true; T.newId(ref)=Archive.id(chosen);
+        T.newGap2(ref)=gaps2(chosen); T.minimumLegalGap2(ref)=min(gaps2(local));
+        if isempty(old); T.action(ref)=1;
+        elseif ~T.oldLegal(ref); T.action(ref)=4;
+        elseif T.newId(ref)==T.oldId(ref); T.action(ref)=3;
+        else
+            assert(T.newGap2(ref)<T.oldGap2(ref),'GANCMO:NoncontractingReplacement');
+            T.action(ref)=2;
+        end
     end
     if numel(Archive.id)>500
-        [~,order] = sortrows([~Archive.active,rank,Archive.ref,Archive.id]);
-        Archive = subsetArchive(Archive,sort(order(1:500)));
+        [~,order]=sortrows([~Archive.active,rank,Archive.ref,Archive.id]);
+        Archive=subsetArchive(Archive,sort(order(1:500)));
     end
-end
-
-function Archive = tightenRows(Archive,X,Y,feasible,W,Scale,span,neighbors,priority)
-% Preserve sequential tightening: later endpoints see earlier improvements.
-    if isempty(X) || isempty(Archive.id); return; end
-    refs = GANCMOReference(Y,W,Scale); localRows = cell(size(W,1),1);
-    for ref = reshape(unique(refs),1,[])
-        localRows{ref} = find(neighbors(ref,Archive.ref)');
-    end
-    for k = 1:size(X,1)
-        local = localRows{refs(k)};
-        if feasible(k)
-            gap = sqrt(sum(((X(k,:)-Archive.xi(local,:))./span).^2,2));
-        else
-            gap = sqrt(sum(((Archive.xf(local,:)-X(k,:))./span).^2,2));
-        end
-        if strcmp(priority,'objective_gap')
-            oldObjectiveGap = vecnorm(Archive.yf(local,:)-Archive.yi(local,:),2,2);
-            otherY = Archive.yf(local,:);
-            if feasible(k); otherY = Archive.yi(local,:); end
-            newObjectiveGap = vecnorm(otherY-Y(k,:),2,2);
-            accepted = gap>0 & (newObjectiveGap<oldObjectiveGap-1e-12 | ...
-                (abs(newObjectiveGap-oldObjectiveGap)<=1e-12 & gap<Archive.gap(local)-1e-12));
-        else
-            accepted = ~(gap<=0 | gap>=Archive.gap(local)-1e-12);
-        end
-        rows = local(accepted);
-        if feasible(k)
-            Archive.xf(rows,:) = repmat(X(k,:),numel(rows),1);
-            Archive.yf(rows,:) = repmat(Y(k,:),numel(rows),1);
-        else
-            Archive.xi(rows,:) = repmat(X(k,:),numel(rows),1);
-            Archive.yi(rows,:) = repmat(Y(k,:),numel(rows),1);
-        end
-        Archive.gap(rows) = gap(accepted);
-    end
-end
-
-function [X,Y,feasible] = feedbackRows(Population,Problem)
-    X = zeros(0,Problem.D); Y = zeros(0,Problem.M); feasible = false(0,1);
-    if isempty(Population); return; end
-    X = double(Population.decs); Y = double(Population.objs); C = double(Population.cons);
-    valid = all(isfinite(X),2) & all(isfinite(Y),2) & all(isfinite(C),2) & ...
-        all(X>=double(Problem.lower)-1e-12,2) & all(X<=double(Problem.upper)+1e-12,2);
-    X = X(valid,:); Y = Y(valid,:); feasible = constraintViolation(C(valid,:))<=0;
+    Archive.transition=T;
 end
 
 function Archive = refresh(Archive,W,Scale,Problem)
@@ -198,7 +149,7 @@ function Archive = refresh(Archive,W,Scale,Problem)
 end
 
 function [FeasX,FeasY,InfX,InfY] = evaluatedRows( ...
-        Population,Excluded,Problem)
+        Population,Problem)
 %EVALUATEDROWS Split all ordinary Union rows by true feasibility.
 
     FeasX = zeros(0,Problem.D);
@@ -216,9 +167,6 @@ function [FeasX,FeasY,InfX,InfY] = evaluatedRows( ...
     valid = all(isfinite(X),2) & all(isfinite(Y),2) & ...
         all(isfinite(C),2) & all(X >= lower-1e-12,2) & ...
         all(X <= upper+1e-12,2);
-    if ~isempty(Excluded)
-        valid = valid & ~ismember(X,double(Excluded),'rows');
-    end
     X = X(valid,:);
     Y = Y(valid,:);
     C = C(valid,:);

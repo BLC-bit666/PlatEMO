@@ -1,7 +1,5 @@
 function [Ref,Scale,Yn] = GANCMOReference(Y,W,Scale)
 %GANCMOREFERENCE Assign objectives under one reusable scale.
-%   REF = GANCMOREFERENCE(Y,W) min-max normalizes Y and assigns
-%   each row to the reference vector with maximum cosine similarity.
 %   REF = GANCMOREFERENCE(Y,W,SCALE) reuses SCALE.minimum and
 %   SCALE.span so rows produced in adjacent generations retain the same
 %   reference-frame definition.
@@ -18,33 +16,19 @@ function [Ref,Scale,Yn] = GANCMOReference(Y,W,Scale)
             'Objective rows and reference vectors must have equal width.');
     end
 
-    if nargin < 3 || isempty(Scale)
-        if isempty(Y)
-            minimum = zeros(1,objectiveCount);
-            span = ones(1,objectiveCount);
-        else
-            minimum = min(Y,[],1);
-            span = max(Y,[],1)-minimum;
-            invalid = ~isfinite(minimum) | ~isfinite(span);
-            minimum(invalid) = 0;
-            span(invalid) = 1;
-            span(span <= eps) = 1;
-        end
-    else
-        if ~isstruct(Scale) || ~isfield(Scale,'minimum') || ...
-                ~isfield(Scale,'span')
-            error('GANCMO:InvalidReferenceScale', ...
-                'Reference scale must contain minimum and span.');
-        end
-        minimum = reshape(double(Scale.minimum),1,[]);
-        span = reshape(double(Scale.span),1,[]);
-        if numel(minimum) ~= objectiveCount || ...
-                numel(span) ~= objectiveCount || ...
-                any(~isfinite(minimum)) || any(~isfinite(span)) || ...
-                any(span <= 0)
-            error('GANCMO:InvalidReferenceScale', ...
-                'Reference scale must be finite, positive, and match Y.');
-        end
+    if ~isstruct(Scale) || ~isfield(Scale,'minimum') || ...
+            ~isfield(Scale,'span')
+        error('GANCMO:InvalidReferenceScale', ...
+            'Reference scale must contain minimum and span.');
+    end
+    minimum = reshape(double(Scale.minimum),1,[]);
+    span = reshape(double(Scale.span),1,[]);
+    if numel(minimum) ~= objectiveCount || ...
+            numel(span) ~= objectiveCount || ...
+            any(~isfinite(minimum)) || any(~isfinite(span)) || ...
+            any(span <= 0)
+        error('GANCMO:InvalidReferenceScale', ...
+            'Reference scale must be finite, positive, and match Y.');
     end
     Scale = struct('minimum',minimum,'span',span);
     Yn = (Y-minimum)./span;
