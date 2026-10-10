@@ -1,8 +1,8 @@
 function [Ref,Scale,Yn] = GANCMOReference(Y,W,Scale)
-%GANCMOREFERENCE Assign objectives under one reusable scale.
-%   REF = GANCMOREFERENCE(Y,W,SCALE) reuses SCALE.minimum and
-%   SCALE.span so rows produced in adjacent generations retain the same
-%   reference-frame definition.
+%GANCMOREFERENCE Assign objectives under the supplied reference frame.
+%   Mainline SCALE.minimum is the historical ideal point; SCALE.span is one.
+%   Reuse this snapshot for all endpoints in an archive update/training query.
+%   W stays fixed while a new origin can change an old endpoint's direction.
 
 %------------------------------- Copyright --------------------------------
 % Copyright (c) 2026 BIMK Group. You are free to use PlatEMO for research.

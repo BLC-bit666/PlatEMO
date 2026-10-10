@@ -1,15 +1,15 @@
 classdef GANCMOArchive
-% Unified endpoint eligibility, pair-front filtering and nearest legal pairing.
+% Unified endpoint eligibility, pair fronts and quality-first direction guides.
     methods(Static)
-        function [Archive,Scale] = update(Archive,Evaluated,W,Problem,FixedScale,SelectedP1)
+        function [Archive,Scale,Guide] = update(Archive,Evaluated,W,Problem,ReferenceScale,SelectedP1,Guide)
             if isempty(Archive); Archive=emptyArchive(Problem.D,Problem.M); end
             span=decisionSpan(Problem); neighbors=referenceNeighborhoods(W);
             [fx,fy,ix,iy]=evaluatedRows(Evaluated,Problem);
-            [~,Scale]=GANCMOReference(zeros(0,Problem.M),W,FixedScale);
-            Archive=refresh(Archive,W,Scale,Problem);
-            Historical=Archive;
-            fx=[fx;Historical.xf]; fy=[fy;Historical.yf];
-            ix=[ix;Historical.xi]; iy=[iy;Historical.yi];
+            [~,Scale]=GANCMOReference(zeros(0,Problem.M),W,ReferenceScale);
+            Archive.ref=GANCMOReference(Archive.yf,W,Scale);
+            previous=[Archive.ref(Guide,:),Archive.xf(Guide,:),Archive.xi(Guide,:)];
+            fx=[fx;Archive.xf]; fy=[fy;Archive.yf];
+            ix=[ix;Archive.xi]; iy=[iy;Archive.yi];
             [fx,rows]=unique(fx,'rows','stable'); fy=fy(rows,:);
             [ix,rows]=unique(ix,'rows','stable'); iy=iy(rows,:);
             fronts=zeros(0,1);
@@ -17,54 +17,54 @@ classdef GANCMOArchive
             validF=fronts==1;
             validI=~dominatedByAny(iy,fy(fronts==1,:),Scale,1e-12);
             % P1 membership affects pair-front filtering, never endpoint eligibility.
-            [pfx,pfy,~,~]=evaluatedRows(SelectedP1,Problem);
+            [pfx,~,~,~]=evaluatedRows(SelectedP1,Problem);
             assert(all(ismember(pfx,fx,'rows')),'GANCMO:P1Pool');
-            % Clean existing pairs once. A surviving endpoint may be re-paired.
+            frefs=GANCMOReference(fy,W,Scale); irefs=GANCMOReference(iy,W,Scale);
+            % A moving origin can separate an old pair's directions. Keep
+            % its endpoints in the common pool even when the pair is removed.
             Archive=subsetArchive(Archive,find(validArchiveRows(Archive,size(W,1),Problem)));
             [foundF,f]=ismember(Archive.xf,fx,'rows');
             [foundI,i]=ismember(Archive.xi,ix,'rows');
             assert(all(foundF & foundI),'GANCMO:FrontPool');
-            Archive=subsetArchive(Archive,find(validF(f) & validI(i)));
-            frefs=GANCMOReference(fy,W,Scale); irefs=GANCMOReference(iy,W,Scale);
-            % One nearest legal I per F is sufficient for the per-direction minimum.
+            adjacent=neighbors(sub2ind(size(neighbors),frefs(f),irefs(i)));
+            Archive=subsetArchive(Archive,find(validF(f) & validI(i) & adjacent));
+            % For each F, keep its nearest legal I as a new candidate pair.
             % New/old F and I share this pool: no sequential endpoint mutations.
             eligibleF=find(validF); count=numel(eligibleF); Candidate=emptyArchive(Problem.D,Problem.M);
-            Candidate.id=Historical.nextId+(0:count-1)'; Candidate.ref=zeros(count,1);
+            Candidate.ref=zeros(count,1);
             Candidate.xf=zeros(count,Problem.D); Candidate.xi=zeros(count,Problem.D);
             Candidate.yf=zeros(count,Problem.M); Candidate.yi=zeros(count,Problem.M);
-            Candidate.gap=zeros(count,1); Candidate.active=false(count,1); used=false(count,1);
+            used=false(count,1);
             for k=1:count
                 f=eligibleF(k); ref=frefs(f);
                 local=find(neighbors(ref,irefs)' & validI);
                 decisionGap2=sum(((ix(local,:)-fx(f,:))./span).^2,2);
-                possible=decisionGap2>1e-24; local=local(possible); decisionGap2=decisionGap2(possible);
+                local=local(decisionGap2>1e-24);
                 if isempty(local); continue; end
                 objectiveGap2=sum((iy(local,:)-fy(f,:)).^2,2);
                 [~,best]=min(objectiveGap2); i=local(best);
                 Candidate.ref(k)=ref; Candidate.xf(k,:)=fx(f,:); Candidate.yf(k,:)=fy(f,:);
                 Candidate.xi(k,:)=ix(i,:); Candidate.yi(k,:)=iy(i,:);
-                Candidate.gap(k)=sqrt(decisionGap2(best)); used(k)=true;
+                used(k)=true;
             end
             Candidate=subsetArchive(Candidate,find(used));
             Archive=appendArchive(Archive,Candidate);
-            % Existing rows come first, preserving IDs and exact incumbent ties.
+            % Existing rows stay first, preserving the age order for exact ties.
             [~,uniqueRows]=unique([Archive.ref,Archive.xf,Archive.xi],'rows','stable');
             Archive=subsetArchive(Archive,uniqueRows);
-            Archive.nextId=Historical.nextId+count;
-            Archive.relevance=struct('xF',pfx,'yF',pfy);
-            Archive=retainPairFront(Archive,W,Scale);
-            Archive=chooseNearest(Archive,Historical,W,Scale);
-            Archive.relevance.activeRef=Archive.ref(Archive.active);
-            Archive.relevance.activeXF=Archive.xf(Archive.active,:);
+            Archive=retainPairFront(Archive,W,Scale,pfx);
+            [Archive,Guide]=retainCapacity(Archive,previous,W,Scale,Problem);
         end
 
-        function Data = training(Archive,W,Scale,Problem)
-            rows = find(Archive.active & all(isfinite(Archive.xf),2) & ...
-                all(isfinite(Archive.xi),2) & Archive.ref>=1 & Archive.ref<=size(W,1));
-            % Every legal active pair is available; no objective-distance gate.
+        function Data = training(Archive,W,Scale,Problem,rows)
+            if nargin<5; rows=(1:numel(Archive.ref))'; end
+            legal=all(isfinite(Archive.xf(rows,:)),2) & all(isfinite(Archive.xi(rows,:)),2) & ...
+                Archive.ref(rows,:)>=1 & Archive.ref(rows,:)<=size(W,1);
+            rows=rows(legal);
+            % All stored pairs train; an explicit subset supplies direction guides.
             Data = struct('xF',zeros(0,Problem.D),'xI',zeros(0,Problem.D), ...
                 'cF',zeros(0,Problem.M+1),'cI',zeros(0,Problem.M+1), ...
-                'ref',Archive.ref(rows),'count',numel(rows));
+                'ref',Archive.ref(rows,:),'count',numel(rows));
             if ~isempty(rows)
                 lower = double(Problem.lower); span = decisionSpan(Problem);
                 Data.xF = (Archive.xf(rows,:)-lower)./span;
@@ -75,77 +75,51 @@ classdef GANCMOArchive
                 Data.cI = [double(W(refI,:)),zeros(Data.count,1)];
             end
             assert(size(unique([Data.ref,Data.xF,Data.xI],'rows'),1)==Data.count, ...
-                'GANCMO:DuplicateTrainingPair','Active pairs must be distinct.');
+                'GANCMO:DuplicateTrainingPair','Training pairs must be distinct.');
         end
     end
 end
 
 function Archive = appendArchive(Archive,Other)
-    fields = {'id','ref','xf','yf','xi','yi','gap','active'};
+    fields = {'ref','xf','yf','xi','yi'};
     for k = 1:numel(fields)
         Archive.(fields{k}) = [Archive.(fields{k});Other.(fields{k})];
     end
 end
 
-function Archive = retainPairFront(Archive,W,Scale)
+function Archive = retainPairFront(Archive,W,Scale,currentF)
 % Retain the current-P1 membership, objective-quality and proximity tradeoff.
 % Historical close pairs remain alternatives when current P1 lacks a close pair.
-    keep = false(numel(Archive.id),1);
+    keep = false(numel(Archive.ref),1);
     for ref = reshape(unique(Archive.ref),1,[])
         rows = find(Archive.ref==ref);
         quality = max(normalizeObjectives(Archive.yf(rows,:),Scale)./(double(W(ref,:))+1e-12),[],2);
         objectiveGap = vecnorm(Archive.yf(rows,:)-Archive.yi(rows,:),2,2);
-        current = ismember(Archive.xf(rows,:),Archive.relevance.xF,'rows');
+        current = ismember(Archive.xf(rows,:),currentF,'rows');
         front = NDSort([double(~current),quality,objectiveGap],1);
         keep(rows) = reshape(front,[],1)==1;
     end
     Archive = subsetArchive(Archive,find(keep));
 end
 
-function Archive=chooseNearest(Archive,Historical,W,Scale)
-% Existing pair-front/capacity remain; nearest distance decides the active pair.
-    oldIds=Historical.id(Historical.active); Archive.active(:)=false;
-    rank=zeros(numel(Archive.id),1); gaps2=sum((Archive.yf-Archive.yi).^2,2);
-    n=size(W,1);
-    T=struct('ref',(1:n)','oldId',zeros(n,1),'oldGap2',nan(n,1), ...
-        'oldLegal',false(n,1),'newId',zeros(n,1),'newGap2',nan(n,1), ...
-        'minimumLegalGap2',nan(n,1),'action',zeros(n,1));
-    % action: 0 empty,1 first fill,2 shorter replacement,3 keep,4 rebuild.
-    for ref=1:n
-        old=find(Historical.active & Historical.ref==ref);
-        assert(numel(old)<=1,'GANCMO:DuplicateActiveDirection');
-        if ~isempty(old)
-            T.oldId(ref)=Historical.id(old);
-            T.oldGap2(ref)=sum((Historical.yf(old,:)-Historical.yi(old,:)).^2);
-            T.oldLegal(ref)=any(Archive.id==T.oldId(ref));
-        end
+function [Archive,Guide]=retainCapacity(Archive,previous,W,Scale,Problem)
+% F quality first, then objective gap; exact ties keep the previous guide.
+    count=numel(Archive.ref); rows=(1:count)'; rank=zeros(count,1);
+    gaps2=sum((Archive.yf-Archive.yi).^2,2);
+    decisionGap=sqrt(sum(((Archive.xf-Archive.xi)./decisionSpan(Problem)).^2,2));
+    incumbent=ismember([Archive.ref,Archive.xf,Archive.xi],previous,'rows');
+    for ref=reshape(unique(Archive.ref),1,[])
         local=find(Archive.ref==ref);
-        if isempty(local); continue; end
+        % Several previous guides may migrate into the same current direction.
         quality=max(normalizeObjectives(Archive.yf(local,:),Scale)./(W(ref,:)+1e-12),[],2);
-        [~,order]=sortrows([gaps2(local),~ismember(Archive.id(local),oldIds), ...
-            quality,Archive.gap(local),Archive.id(local)]);
-        rank(local(order))=(1:numel(local))'; chosen=local(order(1));
-        Archive.active(chosen)=true; T.newId(ref)=Archive.id(chosen);
-        T.newGap2(ref)=gaps2(chosen); T.minimumLegalGap2(ref)=min(gaps2(local));
-        if isempty(old); T.action(ref)=1;
-        elseif ~T.oldLegal(ref); T.action(ref)=4;
-        elseif T.newId(ref)==T.oldId(ref); T.action(ref)=3;
-        else
-            assert(T.newGap2(ref)<T.oldGap2(ref),'GANCMO:NoncontractingReplacement');
-            T.action(ref)=2;
-        end
+        [~,order]=sortrows([quality,gaps2(local),~incumbent(local),decisionGap(local),local]);
+        rank(local(order))=(1:numel(local))';
     end
-    if numel(Archive.id)>500
-        [~,order]=sortrows([~Archive.active,rank,Archive.ref,Archive.id]);
-        Archive=subsetArchive(Archive,sort(order(1:500)));
+    if count>500
+        [~,order]=sortrows([rank~=1,rank,Archive.ref,rows]);
+        rows=sort(order(1:500)); Archive=subsetArchive(Archive,rows);
     end
-    Archive.transition=T;
-end
-
-function Archive = refresh(Archive,W,Scale,Problem)
-    if isempty(Archive.id); return; end
-    Archive.ref = GANCMOReference(Archive.yf,W,Scale);
-    Archive.gap = sqrt(sum(((double(Archive.xf)-double(Archive.xi))./decisionSpan(Problem)).^2,2));
+    Guide=find(rank(rows)==1);
 end
 
 function [FeasX,FeasY,InfX,InfY] = evaluatedRows( ...
@@ -186,24 +160,22 @@ end
 function valid = validArchiveRows(Archive,refCount,Problem)
 %VALIDARCHIVEROWS Geometry validity; endpoint roles certify opposite real labels.
     lower = double(Problem.lower); upper = double(Problem.upper);
-    valid = isfinite(Archive.id) & Archive.id > 0 & Archive.id == fix(Archive.id) & ...
-        Archive.ref >= 1 & Archive.ref <= refCount & ...
-        isfinite(Archive.gap) & Archive.gap > 0 & ...
+    gap=sqrt(sum(((double(Archive.xf)-double(Archive.xi))./decisionSpan(Problem)).^2,2));
+    valid = Archive.ref >= 1 & Archive.ref <= refCount & isfinite(gap) & gap > 0 & ...
         all(isfinite([Archive.xf,Archive.xi,Archive.yf,Archive.yi]),2) & ...
         all(Archive.xf >= lower-1e-12 & Archive.xf <= upper+1e-12,2) & ...
         all(Archive.xi >= lower-1e-12 & Archive.xi <= upper+1e-12,2);
 end
 
 function Archive = emptyArchive(D,M)
-%EMPTYARCHIVE Six semantic fields plus derived gap/active caches and ID allocator.
-    Archive = struct('id',zeros(0,1),'ref',zeros(0,1), ...
-        'xf',zeros(0,D),'yf',zeros(0,M),'xi',zeros(0,D),'yi',zeros(0,M), ...
-        'gap',zeros(0,1),'active',false(0,1),'nextId',1);
+%EMPTYARCHIVE Only direction and the two evaluated endpoints are stored.
+    Archive = struct('ref',zeros(0,1),'xf',zeros(0,D),'yf',zeros(0,M), ...
+        'xi',zeros(0,D),'yi',zeros(0,M));
 end
 
 function Archive = subsetArchive(Archive,rows)
-%SUBSETARCHIVE Preserve stable IDs and their allocator.
-    fields = {'id','ref','xf','yf','xi','yi','gap','active'};
+%SUBSETARCHIVE Preserve row order, including older rows before newer rows.
+    fields = {'ref','xf','yf','xi','yi'};
     for k = 1:numel(fields)
         Archive.(fields{k}) = Archive.(fields{k})(rows,:);
     end

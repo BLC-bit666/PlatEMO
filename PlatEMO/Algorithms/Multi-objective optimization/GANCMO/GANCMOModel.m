@@ -1,9 +1,7 @@
 classdef GANCMOModel
 % Conditional WGAN-GP, with online training budgets expressed in G updates.
     methods(Static)
-        function [Model,Info] = train(Model,Data,D,generation,S)
-            Info = struct('attempted',false,'updated',false, ...
-                'failed',false,'updatesG',0,'updatesC',0,'batchSize',0,'trainingPairs',0);
+        function Model = train(Model,Data,D,generation,S)
             minimum = S.minimumPairs;
             if ~isempty(Model); minimum = S.minimumPairsContinue; end
             if Data.count<minimum; return; end
@@ -11,7 +9,7 @@ classdef GANCMOModel
                     generation-Model.lastTrainGeneration<S.trainInterval
                 return;
             end
-            Previous = Model; Info.attempted = true;
+            Previous = Model;
             if isempty(Model)
                 C = size(Data.cF,2);
                 Model = struct('ready',false,'lastData',[],'lastTrainGeneration',-Inf, ...
@@ -26,14 +24,9 @@ classdef GANCMOModel
             % Advance the caller-owned training stream across events.
             % The outer stream scope restores the independent search stream.
             try
-                if isempty(Previous)
-                    Model.initialTrainingData = Data;
-                end
-                Info.trainingPairs = Data.count;
                 Training = prepareTrainingArrays(Data);
-                % One active F per direction: covering F already requires 2K rows.
+                % Cover direction groups on both sides, regardless of pair count.
                 batch = 2*max(cellfun(@numel,Training.sideGroups));
-                Info.batchSize = batch;
                 % Network topology stays fixed. Reuse parameter cells during this
                 % event instead of traversing network layers at every Adam step.
                 State = Model;
@@ -49,10 +42,8 @@ classdef GANCMOModel
                     rate = trainingRate(Model,update,updates);
                     for critic = 1:S.criticSteps
                         State = updateCritic(State,Training,idx,rate);
-                        Info.updatesC = Info.updatesC+1;
                     end
                     State = updateGenerator(State,Training,idx,rate);
-                    Info.updatesG = Info.updatesG+1;
                 end
                 assertFinite(State.netG); assertFinite(State.netC);
                 Model.netG.Learnables.Value = State.netG;
@@ -65,13 +56,12 @@ classdef GANCMOModel
                 Model.iterG=State.iterG; Model.iterC=State.iterC;
             catch err
                 if strcmp(err.identifier,'GANCMO:NonfiniteTraining')
-                    Info.failed = true; Model = Previous; return;
+                    Model = Previous; return;
                 end
                 rethrow(err);
             end
-            % Retain the existing change trigger on all available pairs.
+            % The full retained archive controls the next content-change trigger.
             Model.ready = true; Model.lastData = Data; Model.lastTrainGeneration = generation;
-            Info.updated = true;
         end
 
         function Dec = sample(Model,Conditions,Problem)
@@ -115,14 +105,14 @@ function rate = trainingRate(Model,update,updates)
 end
 
 function Model = updateCritic(Model,T,idx,rate)
-    persistent acceleratedForward
-    if isempty(acceleratedForward); acceleratedForward = dlaccelerate(@generatorForward); end
     Real = T.real(:,idx); Cond = T.conditions(:,idx); n = numel(idx);
     Z = single(Model.settings.noiseSigma*randn(size(T.real,1),n)); dlCond = dlarray(Cond,'CB');
-    fake = extractdata(acceleratedForward(Model.netG,dlarray(Z,'CB'),dlCond));
+    fake = extractdata(generatorForward(Model.netG,dlarray(Z,'CB'),dlCond));
     epsilon = rand(1,n,'single'); hat = epsilon.*Real+(1-epsilon).*fake;
-    gradients = dlfeval(@criticGradients,Model.netC,dlarray(Real,'CB'),dlCond, ...
-        fake,dlarray(hat,'CB'),single(10));
+    % Differentiate only the critic parameters and interpolated decisions.
+    evaluate = @(netC,dlHat) criticGradients(netC,dlarray(Real,'CB'),dlCond, ...
+        fake,dlHat,single(10));
+    gradients = dlfeval(evaluate,Model.netC,dlarray(hat,'CB'));
     assertFinite(gradients); Model.iterC = Model.iterC+1;
     [Model.netC,Model.avgC,Model.avgSqC] = adamupdate(Model.netC,gradients, ...
         Model.avgC,Model.avgSqC,Model.iterC,rate,0,.9);
@@ -131,8 +121,11 @@ end
 function Model = updateGenerator(Model,T,idx,rate)
     C = dlarray(T.conditions(:,idx),'CB');
     Z = dlarray(single(Model.settings.noiseSigma*randn(size(T.real,1),numel(idx))),'CB');
-    gradients=dlfeval(@generatorGradients,Model.netG,Model.netC,C,Z, ...
+    % Critic parameters, sampled inputs and training pools are constants
+    % during a G update. Their values still enter the same forward/loss.
+    evaluate = @(netG) generatorGradients(netG,Model.netC,C,Z, ...
         T,idx,Model.settings.endpointWeight);
+    gradients=dlfeval(evaluate,Model.netG);
     assertFinite(gradients); Model.iterG = Model.iterG+1;
     [Model.netG,Model.avgG,Model.avgSqG] = adamupdate(Model.netG,gradients, ...
         Model.avgG,Model.avgSqG,Model.iterG,rate,0,.9);
@@ -218,6 +211,13 @@ function gradients = generatorGradients(netG,netC,C,Z,T,idx,endpointWeight)
 end
 
 function output = generatorForward(V,dlZ,dlC)
+% Cache only the forward primitives; gradient/loss evaluation is unchanged.
+    persistent forward
+    if isempty(forward); forward=dlaccelerate(@generatorEvaluation); end
+    output=forward(V,dlZ,dlC);
+end
+
+function output = generatorEvaluation(V,dlZ,dlC)
 % Noise and condition jointly enter the learned nonlinear hidden layer.
     output=fullyconnect(sin(fullyconnect([dlZ;dlC],V{1},V{2})),V{3},V{4});
 end
@@ -227,6 +227,8 @@ function delta = changesSince(Data,Previous,D)
 
     refs = union(Data.ref,Previous.ref);
     changes = ones(numel(refs),1);
+    changedNow = relabelledEndpoints(Data,Previous);
+    changedOld = relabelledEndpoints(Previous,Data);
     for k = 1:numel(refs)
         now = find(Data.ref == refs(k));
         old = find(Previous.ref == refs(k));
@@ -238,12 +240,25 @@ function delta = changesSince(Data,Previous,D)
             pdist2(Data.xI(now,:),Previous.xI(old,:)));
         movement = movement./max(oldGap',1e-3*sqrt(D));
         changes(k) = min(1,.5*(mean(min(movement,[],2))+mean(min(movement,[],1))));
-        if ~isequal(unique([Data.cF(now,:),Data.cI(now,:)],'rows'), ...
+        if any(changedNow(now)) || any(changedOld(old)) || ...
+                ~isequal(unique([Data.cF(now,:),Data.cI(now,:)],'rows'), ...
                 unique([Previous.cF(old,:),Previous.cI(old,:)],'rows'))
             changes(k) = 1; % The actual input condition also changed.
         end
     end
     delta = sum(changes)/max(1,numel(refs));
+end
+
+function changed = relabelledEndpoints(Data,Other)
+% A retained endpoint can change condition without changing the condition set.
+% Compare each true side separately; do not relabel the last-training snapshot.
+    changed = false(numel(Data.ref),1);
+    for side = {'F','I'}
+        X = Data.(['x',side{1}]); C = Data.(['c',side{1}]);
+        otherX = Other.(['x',side{1}]); otherC = Other.(['c',side{1}]);
+        [found,where] = ismember(X,otherX,'rows');
+        changed(found) = changed(found) | any(C(found,:)~=otherC(where(found),:),2);
+    end
 end
 
 
@@ -274,6 +289,12 @@ function netC = createCritic(inputDim,hidden)
 end
 
 function output = criticForward(V,X)
+    persistent forward
+    if isempty(forward); forward=dlaccelerate(@criticEvaluation); end
+    output=forward(V,X);
+end
+
+function output = criticEvaluation(V,X)
 % Same fully connected / leaky ReLU primitives, without graph dispatch.
     output=fullyconnect(leakyrelu(fullyconnect(X,V{1},V{2}),.2),V{3},V{4});
 end
