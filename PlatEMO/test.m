@@ -1,6 +1,6 @@
 clc; clear;
 
-%% GANCMO coverage-0.04 mainline; run this campaign only when requested.
+%% Run the selected algorithm; GANCMO uses the fixed 8/8 mainline.
 nWorker = 10;
 popSize = 100;
 maxFE   = 150000;
@@ -13,64 +13,67 @@ proNames = {
     'LIRCMOP13_BC','LIRCMOP14_BC'};
 
 rootPath = fileparts(mfilename('fullpath'));
-cd(rootPath);
-addRuntimePaths(rootPath);
+runExperiment(rootPath,nWorker,popSize,maxFE,runs,algName,proNames);
 
-%% ===== Flatten problem x run tasks and resume completed runs =====
-tasks = cell(0,2);
-for p = 1:numel(proNames)
-    for r = runs
-        tasks(end+1,:) = {proNames{p},r}; %#ok<SAGROW>
-    end
-end
-% Keep prior fixed-quota results separate from the selected adaptive mainline.
-dataDir = fullfile(rootPath,'Data','PairGuideCoverage');
-[~,~] = mkdir(dataDir);
-todo = true(size(tasks,1),1);
-for t = 1:size(tasks,1)
-    files = dir(fullfile(dataDir,sprintf('%s_%s_M*_D30_%d.mat', ...
-        algName,tasks{t,1},tasks{t,2})));
-    todo(t) = isempty(files);
-end
-tasks = tasks(todo,:);
-fprintf('GANCMO remaining tasks: %d\n',size(tasks,1));
-if isempty(tasks)
-    disp('ALL GANCMO TASKS DONE');
-    return;
-end
-
-pool = gcp('nocreate');
-ownsPool = isempty(pool);
-if ownsPool
-    pool = parpool("Processes",nWorker);
-elseif pool.NumWorkers ~= nWorker
-    error('GANCMO:WorkerCount', ...
-        'Existing pool must contain exactly %d workers.',nWorker);
-end
-poolCleanup = onCleanup(@()closeOwnedPool(ownsPool));
-
-nTask = size(tasks,1);
-taskProblems = tasks(:,1);
-taskRuns = cell2mat(tasks(:,2));
-parfor t = 1:nTask
-    addRuntimePaths(rootPath);
+function runExperiment(rootPath,nWorker,popSize,maxFE,runs,algName,proNames)
     cd(rootPath);
-    rng(taskRuns(t),'twister');
-    problem = str2func(taskProblems{t});
-    fprintf('Running %s on %s run %d\n', ...
-        algName,taskProblems{t},taskRuns(t));
-    Problem = problem('N',popSize,'D',30,'maxFE',maxFE);
-    Algorithm = GANCMO( ...
-        'save',0,'run',taskRuns(t), ...
-        'metName',{'IGD','HV','Feasible_rate'});
-    Algorithm.Solve(Problem);
-    Algorithm.CalMetric('IGD');
-    Algorithm.CalMetric('HV');
-    Algorithm.CalMetric('Feasible_rate');
-    saveGANCMOResult(dataDir,Algorithm,Problem,taskRuns(t));
-end
+    addRuntimePaths(rootPath);
 
-disp('ALL GANCMO TASKS DONE');
+    % Flatten problem x run tasks and resume completed runs.
+    tasks = cell(0,2);
+    for p = 1:numel(proNames)
+        for r = runs
+            tasks(end+1,:) = {proNames{p},r}; %#ok<SAGROW>
+        end
+    end
+    dataDir = fullfile(rootPath,'Data',algName);
+    [~,~] = mkdir(dataDir);
+    todo = true(size(tasks,1),1);
+    for t = 1:size(tasks,1)
+        files = dir(fullfile(dataDir,sprintf('%s_%s_M*_D30_%d.mat', ...
+            algName,tasks{t,1},tasks{t,2})));
+        todo(t) = isempty(files);
+    end
+    tasks = tasks(todo,:);
+    fprintf('%s remaining tasks: %d\n',algName,size(tasks,1));
+    if isempty(tasks)
+        fprintf('ALL %s TASKS DONE\n',algName);
+        return;
+    end
+
+    pool = gcp('nocreate');
+    if isempty(pool)
+        pool = parpool("Processes",nWorker);
+        poolCleanup = onCleanup(@()delete(pool)); %#ok<NASGU>
+    elseif pool.NumWorkers ~= nWorker
+        error('Experiment:WorkerCount', ...
+            'Existing pool must contain exactly %d workers.',nWorker);
+    end
+
+    nTask = size(tasks,1);
+    taskProblems = tasks(:,1);
+    taskRuns = cell2mat(tasks(:,2));
+    parfor t = 1:nTask
+        addRuntimePaths(rootPath);
+        cd(rootPath);
+        rng(taskRuns(t),'twister');
+        problem = str2func(taskProblems{t});
+        algorithm = str2func(algName);
+        fprintf('Running %s on %s run %d\n', ...
+            algName,taskProblems{t},taskRuns(t));
+        Problem = problem('N',popSize,'D',30,'maxFE',maxFE);
+        Algorithm = algorithm( ...
+            'save',0,'run',taskRuns(t), ...
+            'metName',{'IGD','HV','Feasible_rate'});
+        Algorithm.Solve(Problem);
+        Algorithm.CalMetric('IGD');
+        Algorithm.CalMetric('HV');
+        Algorithm.CalMetric('Feasible_rate');
+        saveResult(dataDir,Algorithm,Problem,taskRuns(t));
+    end
+
+    fprintf('ALL %s TASKS DONE\n',algName);
+end
 
 function addRuntimePaths(rootPath)
     for folder = {'Algorithms','Problems','Metrics'}
@@ -78,17 +81,8 @@ function addRuntimePaths(rootPath)
     end
 end
 
-function closeOwnedPool(ownsPool)
-    if ownsPool
-        pool = gcp('nocreate');
-        if ~isempty(pool)
-            delete(pool);
-        end
-    end
-end
-
-function saveGANCMOResult(dataDir,Algorithm,Problem,run)
-%SAVEGANCMORESULT Save GANCMO results under its own name.
+function saveResult(dataDir,Algorithm,Problem,run)
+%SAVERESULT Save the final population and metrics under the algorithm name.
 
     result = Algorithm.result;
     metric = Algorithm.metric;

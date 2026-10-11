@@ -35,7 +35,7 @@ classdef GANCMO < ALGORITHM
             Scale = struct('minimum',min([P1.objs;P2.objs],[],1), ...
                 'span',ones(1,Problem.M));
             [Archive,Scale,Guide] = GANCMOArchive.update([], ...
-                [P1,P2],W,Problem,Scale,P1,[]);
+                [P1,P2],W,Problem,Scale);
             Model = []; generation = 0; batch = Problem.N;
             while Algorithm.NotTerminated(P1)
                 generation = generation+1; beforeFE = Problem.FE;
@@ -49,7 +49,7 @@ classdef GANCMO < ALGORITHM
                     scope = streamScope(trainStream); %#ok<NASGU>
                     Model = GANCMOModel.train(Model,Data,Problem.D,generation,S);
                     clear scope;
-                    if ~isempty(Model) && Model.ready
+                    if ~isempty(Model)
                         scope = streamScope(queryStream); %#ok<NASGU>
                         q = GANCMOCandidates(Model,Archive,W,P1,P2,Problem,quota,S,GuideData);
                         clear scope;
@@ -66,8 +66,7 @@ classdef GANCMO < ALGORITHM
                 DE1 = O1(1:numel(O1)-numel(Generated));
                 [P1,F1] = GANCMOSelection([P1,O1,O2],Problem.N,true);
                 [P2,F2] = GANCMOSelection([P2,DE1,O2],Problem.N,false);
-                [Archive,Scale,Guide] = GANCMOArchive.update(Archive,Union,W,Problem, ...
-                    Scale,P1,Guide);
+                [Archive,Scale,Guide] = GANCMOArchive.update(Archive,Union,W,Problem,Scale);
             end
         end
     end

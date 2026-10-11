@@ -32,22 +32,27 @@ function test_GANCMO_mainline
             else; assert(isequal(recorded,A.result{end,2}.decs) && isequal(state,rng)); end
         end
     end
-    S=GANCMOSettings; M=GANCMOModel.train([],struct('count',7),30,1,S);
-    assert(isempty(M),'The initial gate must be eight pairs.');
+    S=GANCMOSettings; before=rng;
+    for count=[0 7]
+        data=struct('count',5*count,'ref',repelem((1:count)',5));
+        M=GANCMOModel.train([],data,30,1,S);
+        assert(isempty(M) && isequal(rng,before), ...
+            'Even 35 pairs on seven F directions must not start training or consume RNG.');
+    end
     % Each stored pair is legal data; guides only choose candidate geometry.
     W=[1 0;0 1]; fixed=struct('minimum',[0 0],'span',[1 1]);
-    P=struct('D',2,'M',2,'lower',[0 0],'upper',[1 1]);
+    P=struct('N',100,'D',2,'M',2,'lower',[0 0],'upper',[1 1]);
     pop=SOLUTION([.2 .2;.8 .8],[1 1;.9 .9],[0;1]);
-    [A,scale,gA]=GANCMOArchive.update([],pop,W,P,fixed,pop([]),[]);
+    [A,scale,gA]=GANCMOArchive.update([],pop,W,P,fixed);
     assert(numel(gA)==1 && isequal(scale,fixed));
     near=SOLUTION([.7 .7],[.95 .95],1);
-    [B,~,gB]=GANCMOArchive.update(A,near,W,P,fixed,pop([]),gA);
+    [B,~,gB]=GANCMOArchive.update(A,near,W,P,fixed);
     assert(isequal(B.xf(gB,:),[.2 .2]) && isequal(B.xi(gB,:),[.7 .7]));
     tie=SOLUTION([.6 .6],[.95 .95],1);
-    [C,~,gC]=GANCMOArchive.update(B,tie,W,P,fixed,pop([]),gB);
-    assert(isequal(C.xi(gC,:),B.xi(gB,:)),'Exact quality/gap ties keep the previous guide.');
+    [C,~,gC]=GANCMOArchive.update(B,tie,W,P,fixed);
+    assert(isequal(C.xi(gC,:),[.6 .6]),'Equal-distance I ties use decision order, not the old pair.');
     strong=SOLUTION([.1 .1;.85 .85],[.5 .5;.3 .3],[0;1]);
-    [D,~,gD]=GANCMOArchive.update(C,strong,W,P,fixed,pop([]),gC);
+    [D,~,gD]=GANCMOArchive.update(C,strong,W,P,fixed);
     assert(isequal(D.xf(gD,:),[.1 .1]) && isequal(D.xi(gD,:),[.85 .85]));
     data=GANCMOArchive.training(D,W,scale,P);
     assert(data.count==numel(D.ref) && all(data.cF(:,end)==1) && all(data.cI(:,end)==0));
@@ -65,7 +70,7 @@ function test_GANCMO_mainline
         P=struct('D',dimensions,'M',objectives,'lower',zeros(1,dimensions),'upper',ones(1,dimensions));
         component=S; component.initialG=2; component.updateG=1;
         M=GANCMOModel.train([],data,P.D,1,component);
-        assert(M.iterG==2 && M.iterC==4 && M.ready);
+        assert(M.iterG==2 && M.iterC==4);
         assert(M.netG.Layers(1).InputSize==P.D+P.M+1 && M.netC.Layers(1).InputSize==P.D+P.M+1);
         assert(isequal(size(M.netG.Learnables.Value{1}),[S.generatorHidden P.D+P.M+1]), ...
             'Noise and condition must both enter the first learned layer.');
@@ -102,87 +107,146 @@ function test_GANCMO_mainline
         assert(continued.iterG==M.iterG+1 && continued.iterC==M.iterC+2);
         assert(any(beforeNoise~=afterNoise,'all'),'Continuation must train the noise input weights.');
     end
-    fprintf('PASS GANCMO: joint nonlinear noise input, continuation, direct offspring, independent P2, exact FE/RNG, gate=8 and quality-first guides and all-pair training\n');
+    fprintf('PASS GANCMO: joint nonlinear noise input, continuation, direct offspring, independent P2, exact FE/RNG, eight-direction initial gate, quality-first guides and all-pair training\n');
 end
 
 function testArchiveRules
-% Legal storage, quality-first guides, exact ties and capacity all remain distinct.
-    P=struct('D',2,'M',2,'lower',[0 0],'upper',[1 1]);
+% Endpoint eligibility, pair-independent rebuilding and hard direction limits.
+    P=struct('N',100,'D',2,'M',2,'lower',[0 0],'upper',[1 1]);
     fixed=struct('minimum',[0 0],'span',[1 1]); W=[1 2;2 3];
     pool=SOLUTION([.1 .1;.2 .2;.7 .7;.8 .8], ...
         [1 2;2 3;.5 3;1.01 2.01],[0;0;1;1]);
-    A=GANCMOArchive.update([],pool,W,P,fixed,pool(1:2),[]);
+    A=GANCMOArchive.update([],pool,W,P,fixed);
     assert(numel(A.ref)==1 && isequal(A.xf,pool(1).dec), ...
-        'A dominated F remains ineligible even when it belongs to P1.');
+        'A dominated feasible endpoint is ineligible.');
     assert(isequal(A.xi,pool(3).dec),'An I dominated by the feasible front is excluded.');
     W=[.5 .5];
     pool=SOLUTION([.1 .1;.2 .2;.3 .3;.6 .1;.6 .2;.6 .3], ...
         [1 3;2 2;3 1;.9 3;1.5 2;2.5 1],[0;0;0;1;1;1]);
-    [A,~,guide]=GANCMOArchive.update([],pool,W,P,fixed,pool(2:3),[]);
-    assert(numel(A.ref)==2 && all(ismember(pool(1:2).decs,A.xf,'rows')));
+    [A,~,guide]=GANCMOArchive.update([],pool,W,P,fixed);
+    assert(numel(A.ref)==3 && isequal(A.xf,pool(1:3).decs), ...
+        'All nondominated F endpoints fit; pair-front filtering must not delete them.');
     assert(isequal(A.xf(guide,:),pool(2).dec), ...
         'A better F wins even when another legal pair has a smaller gap.');
     allData=GANCMOArchive.training(A,W,fixed,P);
     guideData=GANCMOArchive.training(A,W,fixed,P,guide);
-    assert(allData.count==2 && guideData.count==1 && isequal(allData.xF,A.xf));
+    assert(allData.count==3 && guideData.count==1 && isequal(allData.xF,A.xf));
+    % Alter only old pair links, row order and old direction identifiers.
+    shuffled=A; shuffled.xi=A.xi(end:-1:1,:); shuffled.yi=A.yi(end:-1:1,:);
+    shuffled.ref(:)=999; before=rng;
+    [rebuilt,~,rebuiltGuide]=GANCMOArchive.update(shuffled,pool([]),W,P,fixed);
+    [permuted,~,permutedGuide]=GANCMOArchive.update([],pool(end:-1:1),W,P,fixed);
+    assert(isequal(rebuilt,A) && isequal(permuted,A) && ...
+        isequal(rebuiltGuide,guide) && isequal(permutedGuide,guide) && isequal(rng,before), ...
+        'The endpoint pool, not old pair identities or input order, determines the archive.');
     % Equal F quality: objective gap breaks the tie.
     tied=SOLUTION([.1 .1;.3 .3;.6 .1;.6 .3],[1 3;3 1;.8 3;2.5 1],[0;0;1;1]);
-    [B,~,gB]=GANCMOArchive.update([],tied,W,P,fixed,tied(2),[]);
+    [B,~,gB]=GANCMOArchive.update([],tied,W,P,fixed);
     assert(isequal(B.xf(gB,:),tied(1).dec));
-    % A previous guide removed by the pair front cannot win a later tie.
-    first=SOLUTION([.1 .1;.6 .1],[1 3;.5 3],[0;1]);
-    [A,~,gA]=GANCMOArchive.update([],first,W,P,fixed,first(1),[]);
-    next=SOLUTION([.3 .3;.6 .3],[3 1;2.5 1],[0;1]);
-    [B,~,gB]=GANCMOArchive.update(A,next,W,P,fixed,next(1),gA);
-    assert(numel(B.ref)==1 && isequal(B.xf(gB,:),next(1).dec));
-    % Six hundred nondominated quality/gap tradeoffs exercise the capacity limit.
+    % The same eligible I may support distinct F endpoints.
+    shared=SOLUTION([.1 .1;.3 .3;.6 .1],[1 3;3 1;.5 .5],[0;0;1]);
+    B=GANCMOArchive.update([],shared,W,P,fixed);
+    assert(numel(B.ref)==2 && isequal(B.xi,repmat(shared(3).dec,2,1)));
+    % Invalid stored endpoints cannot bypass numerical/bound checks.
+    broken=A; broken.xf(1,1)=NaN; broken.xi(2,1)=2;
+    B=GANCMOArchive.update(broken,pool([]),W,P,fixed);
+    assert(all(isfinite([B.xf,B.yf,B.xi,B.yi]),'all') && ...
+        all([B.xf,B.xi]>=0 & [B.xf,B.xi]<=1,'all'));
+    % A crowded direction is capped at five even when global space is available.
     n=600; k=(1:n)'; xf=[k/(n+1),.25*ones(n,1)]; xi=[k/(n+1),.75*ones(n,1)];
     yf=[k,n+1-k]; yi=yf-[1e-4*k,zeros(n,1)];
     pool=SOLUTION([xf;xi],[yf;yi],[zeros(n,1);ones(n,1)]); W=[1 .001];
-    [A,~,guide]=GANCMOArchive.update([],pool,W,P,fixed,pool([]),[]);
-    assert(numel(A.ref)==500 && numel(guide)==1 && isequal(A.xf(guide,:),xf(end,:)));
-    data=GANCMOArchive.training(A,W,fixed,P); assert(data.count==500);
-    fprintf('PASS archive: legal five-field storage, quality/gap priority, all-pair data and capacity 500\n');
+    [A,~,guide]=GANCMOArchive.update([],pool,W,P,fixed);
+    assert(numel(A.ref)==5 && numel(guide)==1 && isequal(A.xf,xf(end-4:end,:)) && ...
+        isequal(A.xf(guide,:),xf(end,:)));
+    data=GANCMOArchive.training(A,W,fixed,P); assert(data.count==5);
+    % Six feasible endpoints in every direction: exactly five survive per ray.
+    for shape=[2 3;12 2;12 3;100 2;100 3]'
+        P.N=shape(1); P.M=shape(2); [W,~]=UniformPoint(P.N,P.M); R=size(W,1);
+        frame=struct('minimum',zeros(1,P.M),'span',ones(1,P.M));
+        yf=repelem(W,6,1); offset=repmat((1:6)',R,1)*1e-9;
+        yf(:,1)=yf(:,1)+offset; yf(:,2)=yf(:,2)-offset; yi=yf-1e-7;
+        n=size(yf,1); xf=[(1:n)'/(n+1),.25*ones(n,1)]; xi=[xf(:,1),.75*ones(n,1)];
+        pool=SOLUTION([xf;xi],[yf;yi],[zeros(n,1);ones(n,1)]);
+        [A,~,guide]=GANCMOArchive.update([],pool,W,P,frame);
+        assert(numel(A.ref)==5*R && numel(guide)==R && ...
+            all(accumarray(A.ref,1,[R 1])==5));
+        if R>P.N
+            assert(numel(A.ref)>5*P.N,'Actual direction count sets capacity; no separate 5N cap.');
+        end
+        sparse=GANCMOArchive.update([],pool([1:6,n+(1:6)]),W,P,frame);
+        assert(numel(sparse.ref)==5 && numel(unique(sparse.ref))==1, ...
+            'Empty directions must not lend slots to a crowded direction.');
+        if P.N==100 && P.M==3; assert(numel(A.ref)==455); end
+        if P.N==100 && P.M==2
+            moved=frame; moved.minimum=[-1e6 -2e6];
+            merged=GANCMOArchive.update(A,pool([]),W,P,moved);
+            assert(numel(merged.ref)==5 && numel(unique(merged.ref))==1, ...
+                'The hard limit must also hold after many directions merge under a new origin.');
+        end
+    end
+    fprintf('PASS archive: F/I eligibility, rebuilt pairs, canonical ties, all-pair training and hard five-per-direction limit\n');
 end
 
 function testAllPairTriggers(S)
-% Several pairs may share a direction. Every pair counts toward training.
-    D=3; x=repmat((.1:.1:.8)',1,D);
-    data=struct('count',8,'ref',ones(8,1),'xF',x,'xI',x+.005, ...
-        'cF',repmat([1 0 1],8,1),'cI',repmat([1 0 0],8,1));
+% Gates count occupied F directions; all pairs still train and trigger updates.
+    D=3; W=UniformPoint(8,2); refs=repelem((1:8)',3);
+    x=repmat(linspace(.05,.85,24)',1,D);
+    data=struct('count',24,'ref',refs,'xF',x,'xI',x+.005, ...
+        'cF',[W(refs,:),ones(24,1)],'cI',repmat([W(1,:),0],24,1));
     S.initialG=1; S.updateG=1;
     model=GANCMOModel.train([],data,D,1,S);
-    assert(model.ready && model.iterG==1 && model.iterC==2);
+    assert(model.iterG==1 && model.iterC==2);
     assert(isequal(model.lastData,data));
     same=GANCMOModel.train(model,data,D,2,S); assert(same.iterG==model.iterG);
-    changed=data; changed.xF(2:end,:)=changed.xF(2:end,:)+.025;
-    changed.xI(2:end,:)=changed.xI(2:end,:)+.025;
+    changed=data; nonGuide=find(mod((1:24)',3)~=1);
+    changed.xF(nonGuide,:)=changed.xF(nonGuide,:)+.025;
+    changed.xI(nonGuide,:)=changed.xI(nonGuide,:)+.025;
     updated=GANCMOModel.train(model,changed,D,2,S);
     assert(updated.iterG==model.iterG+1 && updated.lastTrainGeneration==2 && isequal(updated.lastData,changed), ...
         'Changes to non-guide pairs must trigger continuation before the interval.');
     % Moving the origin can relabel a retained I while both condition groups
     % remain present. Endpoint geometry and the condition set alone miss this.
-    labelled=data; labelled.cI(5:8,:)=repmat([0 1 0],4,1);
-    labelModel=GANCMOModel.train([],labelled,D,1,S); assert(labelModel.ready);
+    labelled=data; labelled.cI(3:3:24,:)=repmat([W(2,:),0],8,1);
+    labelModel=GANCMOModel.train([],labelled,D,1,S); assert(~isempty(labelModel));
     reordered=labelled;
     for field={'ref','xF','xI','cF','cI'}
         reordered.(field{1})=reordered.(field{1})(end:-1:1,:);
     end
     same=GANCMOModel.train(labelModel,reordered,D,2,S);
     assert(same.iterG==labelModel.iterG,'Row order must not count as an endpoint condition change.');
-    relabelled=labelled; relabelled.cI(1,:)=labelled.cI(5,:);
+    relabelled=labelled; relabelled.cI([1 4],:)=repmat(labelled.cI(3,:),2,1);
     assert(isequal(unique(labelled.cI,'rows'),unique(relabelled.cI,'rows')));
     updated=GANCMOModel.train(labelModel,relabelled,D,2,S);
     assert(updated.iterG==labelModel.iterG+1 && isequal(updated.lastData,relabelled) && ...
         isequal(labelModel.lastData,labelled), ...
         'Retained endpoint relabelling must trigger training without rewriting its old snapshot.');
-    for field={'ref','xF','xI','cF','cI'}; data.(field{1})=data.(field{1})(1:2,:); end
-    data.count=2;
+    for count=[1 2 7]
+        small=data; rows=data.ref<=count;
+        for field={'ref','xF','xI','cF','cI'}
+            small.(field{1})=data.(field{1})(rows,:);
+        end
+        small.count=nnz(rows);
+        before=rng; same=GANCMOModel.train(model,small,D,21,S);
+        assert(isequal(same,model) && isequal(rng,before), ...
+            'Fewer than eight F directions must preserve the model, Adam and RNG even after 20 generations.');
+    end
+    P=struct('D',D,'M',2,'lower',zeros(1,D),'upper',ones(1,D));
+    before=rng; expected=GANCMOModel.sample(model,data.cF,P); expectedRng=rng;
+    rng(before); actual=GANCMOModel.sample(same,data.cF,P);
+    assert(isequal(expected,actual) && isequal(rng,expectedRng), ...
+        'A model skipped by the direction gate must remain usable for identical queries.');
+    for field={'ref','xF','xI','cF','cI'}; data.(field{1})=data.(field{1})(1:3:24,:); end
+    data.count=8;
     updated=GANCMOModel.train(model,data,D,21,S);
-    assert(updated.iterG==model.iterG+1 && updated.lastData.count==2,'Two pairs in one direction permit continuation.');
-    data.count=1;
-    same=GANCMOModel.train(model,data,D,21,S); assert(same.iterG==model.iterG);
-    fprintf('PASS training: all-pair gates, geometric/condition changes and immutable training snapshots\n');
+    assert(updated.iterG==model.iterG+1 && isequal(updated.lastData,data), ...
+        'Eight pairs on eight distinct F directions permit continuation.');
+    before=rng; same=GANCMOModel.train(updated,data,D,22,S);
+    assert(isequal(same,updated) && isequal(rng,before));
+    continued=GANCMOModel.train(updated,data,D,41,S);
+    assert(continued.iterG==updated.iterG+1 && continued.lastTrainGeneration==41, ...
+        'Unchanged data on eight F directions still train after the 20-generation interval.');
+    fprintf('PASS training: eight/eight-direction gates, all-pair geometric/condition changes and immutable training snapshots\n');
 end
 
 function testCandidateSelection(S)
@@ -242,10 +306,10 @@ function testCandidateSelection(S)
     [manyW,~]=UniformPoint(100,2); Data=GANCMOArchive.training(A,manyW,fixed,P);
     q=GANCMOCandidates(M,A,manyW,empty,empty,P,40,S,Data);
     assert(size(q,1)==40 && size(unique(q,'rows'),1)==40);
-    M.ready=false; before=rng;
-    q=GANCMOCandidates(M,A,manyW,empty,empty,P,2,S,Data);
+    before=rng;
+    q=GANCMOCandidates([],A,manyW,empty,empty,P,2,S,Data);
     assert(isempty(q) && isequal(rng,before));
-    M.ready=true; q=GANCMOCandidates(M,A,manyW,empty,empty,P,0,S,Data);
+    q=GANCMOCandidates(M,A,manyW,empty,empty,P,0,S,Data);
     assert(isempty(q) && isequal(rng,before));
     fprintf('PASS candidates: guide box, F/critic ranking, shared quota, deduplication and no oracle calls\n');
 end
@@ -257,7 +321,7 @@ function M = candidateModel(point,S,spread)
         functionLayer(@sin,'Formattable',true,'Name','sine'); ...
         fullyConnectedLayer(D,'Weights',single(spread)*ones(D,1,'single'), ...
         'Bias',single(2*point-1),'Name','out')];
-    M=struct('ready',true,'lastData',struct('ref',[1;2]), ...
+    M=struct('lastData',struct('ref',[1;2]), ...
         'settings',S,'netG',dlnetwork(layers));
     weights=zeros(1,D+3,'single'); weights(1)=1; weights(D+1)=10; weights(end)=.25;
     layers=[featureInputLayer(D+3,'Normalization','none','Name','in'); ...

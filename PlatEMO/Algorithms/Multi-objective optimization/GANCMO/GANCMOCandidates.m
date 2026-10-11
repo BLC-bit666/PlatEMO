@@ -1,7 +1,7 @@
 function Dec = GANCMOCandidates(Model,Archive,W,P1,P2,Problem,quota,S,GuideData)
 % Uniform queries; represented directions use guide-F distance, others critic rank.
     Dec = zeros(0,Problem.D);
-    if quota<=0 || isempty(Model) || ~Model.ready; return; end
+    if quota<=0 || isempty(Model); return; end
     assert(numel(unique(GuideData.ref))==GuideData.count,'GANCMO:DuplicateDirectionGuide');
     directionCount = size(W,1);
     total = max(S.candidateCount,quota);

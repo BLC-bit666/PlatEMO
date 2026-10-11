@@ -82,11 +82,11 @@ function [A,P,seen,endState] = runSequence(N,Y,C,record)
 end
 
 function testArchiveMigration
-    P=struct('D',2,'M',2,'lower',[0 0],'upper',[1 1]); [W,~]=UniformPoint(10,2);
+    P=struct('N',10,'D',2,'M',2,'lower',[0 0],'upper',[1 1]); [W,~]=UniformPoint(10,2);
     old=struct('minimum',[1 1],'span',[1 1]); moved=struct('minimum',[0 1],'span',[1 1]);
     pool=SOLUTION([.2 .2;.8 .8],[2 4;1.7 4.6],[0;1]); empty=pool([]); before=rng;
-    [A,~,gA]=GANCMOArchive.update([],pool,W,P,old,empty,[]);
-    [B,scale,gB]=GANCMOArchive.update(A,empty,W,P,moved,empty,gA);
+    A=GANCMOArchive.update([],pool,W,P,old);
+    [B,scale,gB]=GANCMOArchive.update(A,empty,W,P,moved);
     assert(A.ref==3 && B.ref==5 && isscalar(gB) && isequal(scale,moved));
     assert(isequal(A.xf,B.xf) && isequal(A.xi,B.xi) && isequal(A.yf,B.yf) && isequal(A.yi,B.yi));
     data=GANCMOArchive.training(B,W,scale,P);
@@ -98,25 +98,25 @@ function testArchiveMigration
     % An old pair ceases to satisfy the unchanged five-direction neighborhood.
     old.minimum=[0 0]; moved.minimum=[-100 0];
     pool=SOLUTION([.2 .2;.8 .8],[100 100;1 1],[0;1]);
-    [A,~,gA]=GANCMOArchive.update([],pool,W,P,old,empty,[]);
-    B=GANCMOArchive.update(A,empty,W,P,moved,empty,gA);
-    assert(isempty(B.ref),'An old pair outside the current neighborhood must be removed.');
-    % Removing that pair must not remove its endpoints from the same update's pool.
+    A=GANCMOArchive.update([],pool,W,P,old);
+    B=GANCMOArchive.update(A,empty,W,P,moved);
+    assert(isempty(B.ref),'Rebuilding must not retain a pair outside the current neighborhood.');
+    % Both historical endpoints can independently find new partners.
     incoming=SOLUTION([.3 .3;.7 .7],[100.1 .1;99.9 99.9],[0;1]);
-    B=GANCMOArchive.update(A,incoming,W,P,moved,empty,gA);
+    B=GANCMOArchive.update(A,incoming,W,P,moved);
     [found,rows]=ismember([.2 .2;.3 .3],B.xf,'rows');
     assert(all(found) && isequal(B.xi(rows,:),[.7 .7;.8 .8]));
 
-    % Two old guides merge into one direction; both quality/gap tradeoffs survive.
+    % Two F endpoints migrate to one direction; choose its best current guide.
     pool=SOLUTION([.1 .1;.2 .2;.7 .7;.8 .8],[1 3;3 1;.75 3;3 .875],[0;0;1;1]);
-    [A,~,gA]=GANCMOArchive.update([],pool,W,P,old,empty,[]);
+    [A,~,gA]=GANCMOArchive.update([],pool,W,P,old);
     assert(numel(gA)==2);
     moved.minimum=[-1000 -2000];
-    [B,~,gB]=GANCMOArchive.update(A,empty,W,P,moved,empty,gA);
+    [B,~,gB]=GANCMOArchive.update(A,empty,W,P,moved);
     assert(numel(B.ref)==2 && all(B.ref==4) && isscalar(gB) && isequal(B.xf(gB,:),[.1 .1]));
-    [C,~,gC]=GANCMOArchive.update(B,empty,W,P,moved,empty,gB);
+    [C,~,gC]=GANCMOArchive.update(B,empty,W,P,moved);
     assert(isequal(C,B) && isequal(gC,gB) && isequal(rng,before));
-    fprintf('PASS archive migration: endpoint conditions, zero vector, old-pair legality, re-pairing and merged guides\n');
+    fprintf('PASS archive migration: endpoint conditions, zero vector, current neighborhoods, rebuilt pairs and migrated guides\n');
 end
 
 function restore(oldPath,oldRng)

@@ -2,17 +2,16 @@ classdef GANCMOModel
 % Conditional WGAN-GP, with online training budgets expressed in G updates.
     methods(Static)
         function Model = train(Model,Data,D,generation,S)
-            minimum = S.minimumPairs;
-            if ~isempty(Model); minimum = S.minimumPairsContinue; end
-            if Data.count<minimum; return; end
-            if ~isempty(Model) && changesSince(Data,Model.lastData,D)<S.changeThreshold && ...
-                    generation-Model.lastTrainGeneration<S.trainInterval
+            % Initial and continued training share the occupied-F-direction gate.
+            if numel(unique(Data.ref))<S.minimumDirections; return; end
+            if ~isempty(Model) && generation-Model.lastTrainGeneration<S.trainInterval && ...
+                    changesSince(Data,Model.lastData,D)<S.changeThreshold
                 return;
             end
             Previous = Model;
             if isempty(Model)
                 C = size(Data.cF,2);
-                Model = struct('ready',false,'lastData',[],'lastTrainGeneration',-Inf, ...
+                Model = struct('lastData',[],'lastTrainGeneration',-Inf, ...
                     'settings',S, ...
                     'avgG',[],'avgSqG',[],'avgC',[],'avgSqC',[],'iterG',0,'iterC',0);
                 Model.netG = createGenerator(C,D,S);
@@ -61,7 +60,7 @@ classdef GANCMOModel
                 rethrow(err);
             end
             % The full retained archive controls the next content-change trigger.
-            Model.ready = true; Model.lastData = Data; Model.lastTrainGeneration = generation;
+            Model.lastData = Data; Model.lastTrainGeneration = generation;
         end
 
         function Dec = sample(Model,Conditions,Problem)
@@ -235,16 +234,16 @@ function delta = changesSince(Data,Previous,D)
         if isempty(now) || isempty(old)
             continue;
         end
+        if any(changedNow(now)) || any(changedOld(old)) || ...
+                ~isequal(unique([Data.cF(now,:),Data.cI(now,:)],'rows'), ...
+                unique([Previous.cF(old,:),Previous.cI(old,:)],'rows'))
+            continue; % The condition changed; this direction already contributes one.
+        end
         oldGap = vecnorm(Previous.xI(old,:)-Previous.xF(old,:),2,2);
         movement = max(pdist2(Data.xF(now,:),Previous.xF(old,:)), ...
             pdist2(Data.xI(now,:),Previous.xI(old,:)));
         movement = movement./max(oldGap',1e-3*sqrt(D));
         changes(k) = min(1,.5*(mean(min(movement,[],2))+mean(min(movement,[],1))));
-        if any(changedNow(now)) || any(changedOld(old)) || ...
-                ~isequal(unique([Data.cF(now,:),Data.cI(now,:)],'rows'), ...
-                unique([Previous.cF(old,:),Previous.cI(old,:)],'rows'))
-            changes(k) = 1; % The actual input condition also changed.
-        end
     end
     delta = sum(changes)/max(1,numel(refs));
 end
