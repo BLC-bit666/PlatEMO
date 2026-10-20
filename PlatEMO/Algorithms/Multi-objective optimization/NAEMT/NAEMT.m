@@ -72,8 +72,7 @@ classdef NAEMT < ALGORITHM
                 if ~isnan(accuracy) && accuracy < alpha && ~all(all(Population1.cons<=0,2))
                     Archive = CollectArchive(ArchiveWindow);
                     archiveFeasible = all(Archive.cons<=0,2);
-                    if sum(archiveFeasible) >= sampleQuota && ...
-                            sum(~archiveFeasible) >= sampleQuota
+                    if any(archiveFeasible) && any(~archiveFeasible)
                         [DataX,DataY] = NAEMTUpdateData(DataX,DataY,Archive,N1,sampleQuota);
                         Model         = NAEMTTrainModel(DataX,DataY,Model);
                     end

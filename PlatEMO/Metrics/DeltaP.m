@@ -17,7 +17,7 @@ function score = DeltaP(Population,optimum)
 %--------------------------------------------------------------------------
 
     PopObj = Population.best.objs;
-    if size(PopObj,2) ~= size(optimum,2)
+    if isempty(optimum) || size(PopObj,2) ~= size(optimum,2)
         score = nan;
     else
         Distance = pdist2(optimum,PopObj);

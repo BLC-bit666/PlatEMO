@@ -12,10 +12,9 @@ function [DataX,DataY] = NAEMTUpdateData(DataX,DataY,Archive,N1,quota)
     feasible        = all(Archive.cons<=0,2);
     feasibleIndex  = find(feasible);
     infeasibleIndex = find(~feasible);
-    if numel(feasibleIndex) < quota || numel(infeasibleIndex) < quota
+    if isempty(feasibleIndex) || isempty(infeasibleIndex)
         error('NAEMT:InsufficientArchiveClass', ...
-            ['The archive must contain the paper-prescribed quota of both ' ...
-             'feasible and infeasible samples.']);
+            'The archive must contain both feasible and infeasible samples.');
     end
     feasibleIndex   = SampleClass(feasibleIndex,quota);
     infeasibleIndex = SampleClass(infeasibleIndex,quota);
@@ -35,7 +34,13 @@ function [DataX,DataY] = NAEMTUpdateData(DataX,DataY,Archive,N1,quota)
 end
 
 function index = SampleClass(candidates,quota)
-% Select the paper-prescribed quota without synthesizing duplicate samples.
+% Preserve the fixed quota even when a class is rare. Replacement for a
+% short class is a documented completion of the paper's unspecified case,
+% fixed before calibration; it is not a tunable parameter.
 
-    index = candidates(randperm(numel(candidates),quota));
+    if numel(candidates) >= quota
+        index = candidates(randperm(numel(candidates),quota));
+    else
+        index = candidates(randi(numel(candidates),1,quota));
+    end
 end

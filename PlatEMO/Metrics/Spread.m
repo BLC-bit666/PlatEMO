@@ -16,7 +16,7 @@ function score = Spread(Population,optimum)
 %--------------------------------------------------------------------------
 
     PopObj = Population.best.objs;
-    if size(PopObj,2) ~= size(optimum,2)
+    if isempty(optimum) || size(PopObj,2) ~= size(optimum,2)
         score = nan;
     else
         Dis1  = pdist2(PopObj,PopObj);

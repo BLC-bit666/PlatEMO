@@ -1,7 +1,7 @@
 classdef GANCMOArchive
 % Rebuild nearest legal pairs from endpoint pools; at most five per direction.
     methods(Static)
-        function [Archive,Scale,Guide] = update(Archive,Evaluated,W,Problem,ReferenceScale)
+        function [Archive,Scale] = update(Archive,Evaluated,W,Problem,ReferenceScale)
             if isempty(Archive); Archive=emptyArchive(Problem.D,Problem.M); end
             span=decisionSpan(Problem); neighbors=referenceNeighborhoods(W);
             [fx,fy,ix,iy]=evaluatedRows(Evaluated,Problem);
@@ -21,9 +21,15 @@ classdef GANCMOArchive
             Candidate.xf=zeros(count,Problem.D); Candidate.xi=zeros(count,Problem.D);
             Candidate.yf=zeros(count,Problem.M); Candidate.yi=zeros(count,Problem.M);
             used=false(count,1);
+            % Legal I membership is shared by all F endpoints on this ray.
+            % Rebuild this lookup on every archive update under the current Z.
+            localByRef=cell(size(W,1),1);
+            for ref=reshape(unique(frefs(eligibleF)),1,[])
+                localByRef{ref}=find(neighbors(ref,irefs)' & validI);
+            end
             for k=1:count
                 f=eligibleF(k); ref=frefs(f);
-                local=find(neighbors(ref,irefs)' & validI);
+                local=localByRef{ref};
                 decisionGap2=sum(((ix(local,:)-fx(f,:))./span).^2,2);
                 local=local(decisionGap2>1e-24);
                 if isempty(local); continue; end
@@ -34,15 +40,15 @@ classdef GANCMOArchive
                 used(k)=true;
             end
             Candidate=subsetArchive(Candidate,find(used));
-            [Archive,Guide]=retainCapacity(Candidate,W,Scale,Problem);
+            Archive=retainCapacity(Candidate,W,Scale,Problem);
         end
 
-        function Data = training(Archive,W,Scale,Problem,rows)
-            if nargin<5; rows=(1:numel(Archive.ref))'; end
+        function Data = training(Archive,W,Scale,Problem)
+            rows=(1:numel(Archive.ref))';
             legal=all(isfinite(Archive.xf(rows,:)),2) & all(isfinite(Archive.xi(rows,:)),2) & ...
                 Archive.ref(rows,:)>=1 & Archive.ref(rows,:)<=size(W,1);
             rows=rows(legal);
-            % All stored pairs train; an explicit subset supplies direction guides.
+            % All valid stored pairs participate in training.
             Data = struct('xF',zeros(0,Problem.D),'xI',zeros(0,Problem.D), ...
                 'cF',zeros(0,Problem.M+1),'cI',zeros(0,Problem.M+1), ...
                 'ref',Archive.ref(rows,:),'count',numel(rows));
@@ -55,13 +61,11 @@ classdef GANCMOArchive
                 Data.cF = [double(W(refF,:)),ones(Data.count,1)];
                 Data.cI = [double(W(refI,:)),zeros(Data.count,1)];
             end
-            assert(size(unique([Data.ref,Data.xF,Data.xI],'rows'),1)==Data.count, ...
-                'GANCMO:DuplicateTrainingPair','Training pairs must be distinct.');
         end
     end
 end
 
-function [Archive,Guide]=retainCapacity(Archive,W,Scale,Problem)
+function Archive=retainCapacity(Archive,W,Scale,Problem)
 % Each direction keeps its best five; empty slots are never transferred.
     S=GANCMOSettings; limit=S.pairsPerDirection;
     count=numel(Archive.ref); rows=(1:count)'; rank=zeros(count,1);
@@ -75,7 +79,6 @@ function [Archive,Guide]=retainCapacity(Archive,W,Scale,Problem)
     end
     rows=rows(rank<=limit);
     Archive=subsetArchive(Archive,rows);
-    Guide=find(rank(rows)==1);
 end
 
 function [FeasX,FeasY,InfX,InfY] = evaluatedRows( ...

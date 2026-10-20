@@ -17,7 +17,7 @@ function score = GD(Population,optimum)
 %--------------------------------------------------------------------------
 
     PopObj = Population.best.objs;
-    if size(PopObj,2) ~= size(optimum,2)
+    if isempty(optimum) || size(PopObj,2) ~= size(optimum,2)
         score = nan;
     else
         Distance = min(pdist2(PopObj,optimum),[],2);

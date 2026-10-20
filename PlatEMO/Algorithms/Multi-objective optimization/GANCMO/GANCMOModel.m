@@ -1,31 +1,29 @@
 classdef GANCMOModel
-% Conditional WGAN-GP, with online training budgets expressed in G updates.
+% Conditional WGAN-GP trained in complete shuffled endpoint epochs.
     methods(Static)
-        function Model = train(Model,Data,D,generation,S)
-            % Initial and continued training share the occupied-F-direction gate.
+        function Model = train(Model,Data,D,S)
+            % The caller checks archive change; this method enforces training eligibility.
             if numel(unique(Data.ref))<S.minimumDirections; return; end
-            if ~isempty(Model) && generation-Model.lastTrainGeneration<S.trainInterval && ...
-                    changesSince(Data,Model.lastData,D)<S.changeThreshold
-                return;
-            end
-            Previous = Model;
+            if isempty(Data.xF) || isempty(Data.xI) || ~all(isfinite([Data.xF;Data.xI]),'all'); return; end
+            Previous = Model; initial = isempty(Model);
             if isempty(Model)
                 C = size(Data.cF,2);
-                Model = struct('lastData',[],'lastTrainGeneration',-Inf, ...
-                    'settings',S, ...
+                Model = struct('lastData',[],'settings',S, ...
                     'avgG',[],'avgSqG',[],'avgC',[],'avgSqC',[],'iterG',0,'iterC',0);
                 Model.netG = createGenerator(C,D,S);
                 Model.netC = createCritic(D+C,S.criticHidden);
-                updates = S.initialG;
+                epochs = S.initialEpochs;
             else
-                updates = S.updateG;
+                epochs = S.updateEpochs;
             end
             % Advance the caller-owned training stream across events.
             % The outer stream scope restores the independent search stream.
             try
                 Training = prepareTrainingArrays(Data);
-                % Cover direction groups on both sides, regardless of pair count.
-                batch = 2*max(cellfun(@numel,Training.sideGroups));
+                if ~initial
+                    epochs = min(epochs,floor(S.maxContinuationGUpdates/Training.batchesPerEpoch));
+                end
+                assert(epochs>=1,'GANCMO:EpochBudget','The budget must allow one complete epoch.');
                 % Network topology stays fixed. Reuse parameter cells during this
                 % event instead of traversing network layers at every Adam step.
                 State = Model;
@@ -36,13 +34,17 @@ classdef GANCMOModel
                         State.(field{1}) = State.(field{1}).Value;
                     end
                 end
-                for update = 1:updates
-                    idx = balancedEndpointBatch(Training,batch);
-                    rate = trainingRate(Model,update,updates);
-                    for critic = 1:S.criticSteps
-                        State = updateCritic(State,Training,idx,rate);
+                % Both networks use the same fixed rate in every training event.
+                rate = Model.settings.learningRate;
+                for epoch = 1:epochs
+                    batches = epochBatches(Training);
+                    for batch = 1:Training.batchesPerEpoch
+                        idx = batches{batch}; weights = Training.batchWeights{batch};
+                        for critic = 1:S.criticSteps
+                            State = updateCritic(State,Training,idx,weights,rate);
+                        end
+                        State = updateGenerator(State,Training,idx,weights,rate);
                     end
-                    State = updateGenerator(State,Training,idx,rate);
                 end
                 assertFinite(State.netG); assertFinite(State.netC);
                 Model.netG.Learnables.Value = State.netG;
@@ -59,35 +61,28 @@ classdef GANCMOModel
                 end
                 rethrow(err);
             end
-            % The full retained archive controls the next content-change trigger.
-            Model.lastData = Data; Model.lastTrainGeneration = generation;
+            % Keep the last successful training snapshot; failures roll back it too.
+            Model.lastData = Data;
         end
 
-        function Dec = sample(Model,Conditions,Problem)
+        function Dec = sample(Model,Conditions,Problem,Noise)
             assert(size(Conditions,2)==Problem.M+1 && all(isfinite(Conditions),'all') && ...
                 all(ismember(Conditions(:,end),[0 1])),'GANCMO:BadQueryCondition', ...
                 'Expected finite [reference, binary side] conditions.');
-            Z = Model.settings.noiseSigma*randn(size(Conditions,1),Problem.D);
+            if nargin<4
+                Noise = Model.settings.noiseSigma*randn(size(Conditions,1),Problem.D);
+            else
+                assert(isequal(size(Noise),[size(Conditions,1),Problem.D]) && all(isfinite(Noise),'all'), ...
+                    'GANCMO:BadQueryNoise','Expected one finite D-dimensional noise row per condition.');
+            end
             Conditions = encodeConditions(double(Conditions));
-            generated = generatorForward(Model.netG.Learnables.Value,dlarray(single(Z'),'CB'), ...
+            generated = generatorForward(Model.netG.Learnables.Value,dlarray(single(Noise'),'CB'), ...
                 dlarray(single(double(Conditions)'),'CB'));
             normalized = (double(extractdata(generated))'+1)/2;
             normalized = min(1,max(0,normalized));
             Dec = double(Problem.lower)+normalized.*(double(Problem.upper)-double(Problem.lower));
         end
 
-        function Scores = score(Model,Dec,Conditions,Problem)
-        % Conditional critic ranking only: no oracle calls, training or RNG.
-            assert(size(Dec,2)==Problem.D && size(Conditions,2)==Problem.M+1 && ...
-                size(Dec,1)==size(Conditions,1) && all(isfinite(Dec),'all'), ...
-                'GANCMO:BadScoreInput','Expected finite decisions and matching conditions.');
-            Conditions = encodeConditions(double(Conditions));
-            if isempty(Dec); Scores = zeros(0,1); return; end
-            span = double(Problem.upper)-double(Problem.lower); span(span<=eps) = 1;
-            normalized = (double(Dec)-double(Problem.lower))./span;
-            input = dlarray(single([2*normalized-1,Conditions]'),'CB');
-            Scores = double(extractdata(criticForward(Model.netC.Learnables.Value,input)))';
-        end
     end
 end
 
@@ -97,33 +92,27 @@ function assertFinite(values)
     end
 end
 
-function rate = trainingRate(Model,update,updates)
-% Each training event decays from 1e-3 to 1e-6.
-    rate = Model.settings.learningRate* ...
-        Model.settings.learningRateDecay^((update-1)/max(1,updates-1));
-end
-
-function Model = updateCritic(Model,T,idx,rate)
+function Model = updateCritic(Model,T,idx,weights,rate)
     Real = T.real(:,idx); Cond = T.conditions(:,idx); n = numel(idx);
     Z = single(Model.settings.noiseSigma*randn(size(T.real,1),n)); dlCond = dlarray(Cond,'CB');
     fake = extractdata(generatorForward(Model.netG,dlarray(Z,'CB'),dlCond));
     epsilon = rand(1,n,'single'); hat = epsilon.*Real+(1-epsilon).*fake;
     % Differentiate only the critic parameters and interpolated decisions.
     evaluate = @(netC,dlHat) criticGradients(netC,dlarray(Real,'CB'),dlCond, ...
-        fake,dlHat,single(10));
+        fake,dlHat,weights,single(10));
     gradients = dlfeval(evaluate,Model.netC,dlarray(hat,'CB'));
     assertFinite(gradients); Model.iterC = Model.iterC+1;
     [Model.netC,Model.avgC,Model.avgSqC] = adamupdate(Model.netC,gradients, ...
         Model.avgC,Model.avgSqC,Model.iterC,rate,0,.9);
 end
 
-function Model = updateGenerator(Model,T,idx,rate)
+function Model = updateGenerator(Model,T,idx,weights,rate)
     C = dlarray(T.conditions(:,idx),'CB');
     Z = dlarray(single(Model.settings.noiseSigma*randn(size(T.real,1),numel(idx))),'CB');
     % Critic parameters, sampled inputs and training pools are constants
     % during a G update. Their values still enter the same forward/loss.
     evaluate = @(netG) generatorGradients(netG,Model.netC,C,Z, ...
-        T,idx,Model.settings.endpointWeight);
+        T,idx,weights,Model.settings.endpointWeight);
     gradients=dlfeval(evaluate,Model.netG);
     assertFinite(gradients); Model.iterG = Model.iterG+1;
     [Model.netG,Model.avgG,Model.avgSqG] = adamupdate(Model.netG,gradients, ...
@@ -148,6 +137,17 @@ function T = prepareTrainingArrays(Data)
     % A singleton group has exactly one possible nearest target. Reuse the
     % sampled endpoint directly; retain the original nearest rule otherwise.
     T.multiGroups=find(cellfun(@numel,T.groupRows)>1);
+    T.sideRows={find(C(:,end)==1)',find(C(:,end)==0)'};
+    countF=numel(T.sideRows{1}); countI=numel(T.sideRows{2});
+    nominal=2*max(cellfun(@numel,T.sideGroups));
+    T.batchesPerEpoch=min(ceil((countF+countI)/nominal),min(countF,countI));
+    K=T.batchesPerEpoch;
+    T.cutsF=floor((0:K)*countF/K); T.cutsI=floor((0:K)*countI/K);
+    T.batchWeights=cell(1,K);
+    for k=1:K
+        nF=T.cutsF(k+1)-T.cutsF(k); nI=T.cutsI(k+1)-T.cutsI(k);
+        T.batchWeights{k}=single([repmat((nF+nI)/(2*nF),1,nF),repmat((nF+nI)/(2*nI),1,nI)]);
+    end
 end
 
 function C = encodeConditions(C)
@@ -158,23 +158,17 @@ function C = encodeConditions(C)
     C(:,1:end-1) = direction./max(vecnorm(direction,2,2),eps);
 end
 
-function idx = balancedEndpointBatch(T,count)
-%BALANCEDENDPOINTBATCH Equal sides, uniform direction groups within each side.
-    idx = zeros(1,count); half = count/2;
-    for side = 0:1
-        groups = T.sideGroups{side+1}; groupCount = numel(groups);
-        order = zeros(ceil(half/groupCount)*groupCount,1);
-        for first = 1:groupCount:numel(order)
-            order(first:first+groupCount-1) = groups(randperm(groupCount));
-        end
-        for k = 1:half
-            rows = T.groupRows{order(k)};
-            idx(side*half+k) = rows(randi(numel(rows)));
-        end
+function batches = epochBatches(T)
+% Every unique endpoint is scheduled once, including both tail slices.
+    orderF=T.sideRows{1}(randperm(numel(T.sideRows{1})));
+    orderI=T.sideRows{2}(randperm(numel(T.sideRows{2})));
+    batches=cell(1,T.batchesPerEpoch);
+    for k=1:T.batchesPerEpoch
+        batches{k}=[orderF(T.cutsF(k)+1:T.cutsF(k+1)),orderI(T.cutsI(k)+1:T.cutsI(k+1))];
     end
 end
 
-function gradients = criticGradients(netC,dlReal,dlCond,fake,dlHat,gpLambda)
+function gradients = criticGradients(netC,dlReal,dlCond,fake,dlHat,weights,gpLambda)
 %CRITICGRADIENTS Wasserstein loss plus input gradient penalty.
 
     dlFake = dlarray(fake,'CB');
@@ -184,15 +178,15 @@ function gradients = criticGradients(netC,dlReal,dlCond,fake,dlHat,gpLambda)
     hatGradient = dlgradient(sum(hatScore,'all'),dlHat, ...
         'EnableHigherDerivatives',true);
     gradientNorm = sqrt(sum(hatGradient.^2,1)+single(1e-12));
-    penalty = mean((gradientNorm-1).^2,'all');
-    loss = mean(fakeScore,'all')-mean(realScore,'all')+gpLambda*penalty;
+    penalty = mean((gradientNorm-1).^2.*weights,'all');
+    loss = mean((fakeScore-realScore).*weights,'all')+gpLambda*penalty;
     gradients = dlgradient(loss,netC, ...
         'EnableHigherDerivatives',false);
 end
 
-function gradients = generatorGradients(netG,netC,C,Z,T,idx,endpointWeight)
+function gradients = generatorGradients(netG,netC,C,Z,T,idx,weights,endpointWeight)
     output = generatorForward(netG,Z,C);
-    loss = -mean(criticForward(netC,[output;C]),'all');
+    loss = -mean(criticForward(netC,[output;C]).*weights,'all');
     % Singleton condition groups have no nearest-target search to perform.
     % Multiple endpoints retain the original double-precision distance rule.
     values=double(extractdata(output))';
@@ -205,7 +199,7 @@ function gradients = generatorGradients(netG,netC,C,Z,T,idx,endpointWeight)
         target(:,columns)=T.real(:,rows(nearest));
     end
     distance=sqrt(mean((output-dlarray(target,'CB')).^2,1)+single(1e-8));
-    loss=loss+single(endpointWeight)*mean(distance,'all');
+    loss=loss+single(endpointWeight)*mean(distance.*weights,'all');
     gradients=dlgradient(loss,netG,'EnableHigherDerivatives',false);
 end
 
@@ -220,46 +214,6 @@ function output = generatorEvaluation(V,dlZ,dlC)
 % Noise and condition jointly enter the learned nonlinear hidden layer.
     output=fullyconnect(sin(fullyconnect([dlZ;dlC],V{1},V{2})),V{3},V{4});
 end
-
-function delta = changesSince(Data,Previous,D)
-%CHANGESSINCE Content change over the union of reference directions.
-
-    refs = union(Data.ref,Previous.ref);
-    changes = ones(numel(refs),1);
-    changedNow = relabelledEndpoints(Data,Previous);
-    changedOld = relabelledEndpoints(Previous,Data);
-    for k = 1:numel(refs)
-        now = find(Data.ref == refs(k));
-        old = find(Previous.ref == refs(k));
-        if isempty(now) || isempty(old)
-            continue;
-        end
-        if any(changedNow(now)) || any(changedOld(old)) || ...
-                ~isequal(unique([Data.cF(now,:),Data.cI(now,:)],'rows'), ...
-                unique([Previous.cF(old,:),Previous.cI(old,:)],'rows'))
-            continue; % The condition changed; this direction already contributes one.
-        end
-        oldGap = vecnorm(Previous.xI(old,:)-Previous.xF(old,:),2,2);
-        movement = max(pdist2(Data.xF(now,:),Previous.xF(old,:)), ...
-            pdist2(Data.xI(now,:),Previous.xI(old,:)));
-        movement = movement./max(oldGap',1e-3*sqrt(D));
-        changes(k) = min(1,.5*(mean(min(movement,[],2))+mean(min(movement,[],1))));
-    end
-    delta = sum(changes)/max(1,numel(refs));
-end
-
-function changed = relabelledEndpoints(Data,Other)
-% A retained endpoint can change condition without changing the condition set.
-% Compare each true side separately; do not relabel the last-training snapshot.
-    changed = false(numel(Data.ref),1);
-    for side = {'F','I'}
-        X = Data.(['x',side{1}]); C = Data.(['c',side{1}]);
-        otherX = Other.(['x',side{1}]); otherC = Other.(['c',side{1}]);
-        [found,where] = ismember(X,otherX,'rows');
-        changed(found) = changed(found) | any(C(found,:)~=otherC(where(found),:),2);
-    end
-end
-
 
 function netG = createGenerator(C,D,S)
 % One joint input [D-dimensional noise; M-dimensional direction; true side].

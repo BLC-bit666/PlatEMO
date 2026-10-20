@@ -33,11 +33,11 @@ function Fitness = GANCMOFitness(PopObj,PopCon)
     Raw = Strength'*double(Dominate);
 
     %% Calculate density and final fitness
-    squaredNorm = sum(PopObj.^2,2);
-    Distance2 = max(squaredNorm + squaredNorm' - 2*(PopObj*PopObj'),0);
-    Distance2(1:N+1:end) = inf;
+    % Direct differences preserve distances between near-coincident points.
+    Distance = pdist2(PopObj,PopObj);
+    Distance(1:N+1:end) = inf;
     kth = max(1,min(N,floor(sqrt(N))));
-    Nearest2 = mink(Distance2,kth,2);
-    Density = 1./(sqrt(Nearest2(:,end))+2);
+    Nearest = mink(Distance,kth,2);
+    Density = 1./(Nearest(:,end)+2);
     Fitness = Raw + Density';
 end

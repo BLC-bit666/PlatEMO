@@ -24,6 +24,9 @@ function Model = NAEMTTrainModel(DataX,DataY,Model)
         net.layers{1}.transferFcn  = 'poslin';
         net.layers{2}.transferFcn  = 'logsig';
         net.performFcn             = 'crossentropy';
+        % A constant initial label must not remove the only output neuron.
+        % Otherwise subsequent training cannot learn the opposite class.
+        net.outputs{2}.processFcns = {};
         net.divideFcn              = 'dividerand';
         net.divideMode             = 'sample';
         net.divideParam.trainRatio = 0.8;
@@ -41,6 +44,10 @@ function Model = NAEMTTrainModel(DataX,DataY,Model)
                 'Warm-start retraining requires a previously trained NA-EMT network.');
         end
         net = Model.Net;
+        if net.layers{2}.size ~= 1
+            error('NAEMT:InvalidOutputDimension', ...
+                'The MLP must retain one output neuron, including for single-class data.');
+        end
         if net.inputs{1}.size ~= size(DataX,2)
             error('NAEMT:InconsistentInputDimension', ...
                 'The updated training data must match the existing network input size.');

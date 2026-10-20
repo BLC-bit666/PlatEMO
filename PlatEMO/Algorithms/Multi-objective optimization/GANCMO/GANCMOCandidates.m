@@ -1,58 +1,31 @@
-function Dec = GANCMOCandidates(Model,Archive,W,P1,P2,Problem,quota,S,GuideData)
-% Uniform queries; represented directions use guide-F distance, others critic rank.
-    Dec = zeros(0,Problem.D);
+function Dec = GANCMOCandidates(Model,W,Problem,quota,allowUse)
+% One candidate per visited direction; send finite proposals directly to evaluation.
+    if nargin<5; allowUse=true; end
+    Dec=zeros(0,Problem.D);
     if quota<=0 || isempty(Model); return; end
-    assert(numel(unique(GuideData.ref))==GuideData.count,'GANCMO:DuplicateDirectionGuide');
-    directionCount = size(W,1);
-    total = max(S.candidateCount,quota);
-    % Randomize the remainder allocation as well as the candidate order.
-    refs = repmat(randperm(directionCount)',ceil(total/directionCount),1);
-    refs = refs(1:total); refs = refs(randperm(total));
-    X = GANCMOModel.sample(Model,[double(W(refs,:)),ones(total,1)],Problem);
-    finite = all(isfinite(X),2);
-    X = min(Problem.upper,max(Problem.lower,X));
-    span = Problem.upper-Problem.lower; span(span<=eps) = 1;
-    Z = (double(X)-Problem.lower)./span;
-    Current = [P1,P2];
-    base = ([double(Current.decs);Archive.xf;Archive.xi]-Problem.lower)./span;
-    pairedDirection = false(directionCount,1); pairedDirection(GuideData.ref) = true;
-    hasPair = pairedDirection(refs); valid = finite;
-    if GuideData.count>0
-        % Only paired request directions are constrained by the common box.
-        endpoints = [GuideData.xF;GuideData.xI];
-        lower = min(endpoints,[],1); upper = max(endpoints,[],1);
-        valid(hasPair) = valid(hasPair) & all(Z(hasPair,:)>=lower-1e-12 & Z(hasPair,:)<=upper+1e-12,2);
-    end
-    if ~isempty(base); valid = valid & min(pdist2(Z,base),[],2)>1e-6; end
-    queues = cell(directionCount,1); criticScore = nan(total,1);
-    unpaired = find(valid & ~hasPair);
-    if ~isempty(unpaired)
-        criticScore(unpaired) = GANCMOModel.score(Model,X(unpaired,:), ...
-            [double(W(refs(unpaired),:)),ones(numel(unpaired),1)],Problem);
-        valid(unpaired) = isfinite(criticScore(unpaired));
-    end
-    for j = 1:directionCount
-        rows = find(refs==j & valid);
-        if isempty(rows); continue; end
-        if pairedDirection(j)
-            F = GuideData.xF(GuideData.ref==j,:);
-            rank = min(pdist2(Z(rows,:),F),[],2);
-        else
-            rank = -criticScore(rows);
+    directionCount=size(W,1);
+    % Preserve the tested single-candidate noise mapping and query stream.
+    refs=randperm(directionCount)'; refs=refs(randperm(directionCount));
+    noise=Model.settings.noiseSigma*randn(directionCount,Problem.D);
+    directionOrder=randperm(directionCount);
+    if ~allowUse; return; end
+    Dec=zeros(quota,Problem.D);count=0;next=1;
+    while count<quota && next<=directionCount
+        last=min(directionCount,next+max(8,quota-count)-1);
+        directions=directionOrder(next:last);next=last+1;
+        slots=find(ismember(refs,directions));
+        % Repeated padding inputs retain the numerical kernel; their outputs
+        % are discarded and do not create additional candidates or evaluations.
+        sampleSlots=[slots;repmat(slots(end),max(0,min(16,directionCount)-numel(slots)),1)];
+        X=GANCMOModel.sample(Model,[double(W(refs(sampleSlots),:)),ones(numel(sampleSlots),1)],Problem,noise(sampleSlots,:));
+        X=X(1:numel(slots),:);
+        valid=all(isfinite(X),2);X=min(Problem.upper,max(Problem.lower,X));
+        for ref=directions
+            row=find(refs(slots)==ref & valid,1);
+            if isempty(row);continue;end
+            count=count+1;Dec(count,:)=double(X(row,:));
+            if count>=quota;break;end
         end
-        [~,order] = sortrows([rank,rows]); queues{j} = rows(order);
     end
-    chosen = zeros(quota,1); count = 0;
-    % One representative per request direction, with equal access to G slots.
-    % If its best point duplicates an earlier choice, try its next candidate.
-    for j = randperm(directionCount)
-        for k = reshape(queues{j},1,[])
-            if count>0 && any(vecnorm(Z(chosen(1:count),:)-Z(k,:),2,2)<=1e-6)
-                continue;
-            end
-            count = count+1; chosen(count) = k; break;
-        end
-        if count>=quota; break; end
-    end
-    chosen = chosen(1:count); Dec = double(X(chosen,:));
+    Dec=Dec(1:count,:);
 end

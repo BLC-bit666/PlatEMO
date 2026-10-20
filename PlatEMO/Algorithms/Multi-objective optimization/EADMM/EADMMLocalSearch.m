@@ -1,5 +1,7 @@
-function Checked = EADMMLocalSearch(Problem,Archive,Population)
+function Checked = EADMMLocalSearch(Problem,Archive,Population,localN)
 % Solve EADMM's discrepancy subproblem with MATLAB's genetic algorithm.
+
+    if nargin < 4; localN = EADMMValidateSetup(Problem); end
 
     PopCon = Population.cons;
     ell    = size(PopCon,2);
@@ -10,7 +12,7 @@ function Checked = EADMMLocalSearch(Problem,Archive,Population)
     gamma  = sum(all(PopCon<=0,2));
     rho    = gamma/numel(Population)*ell;
 
-    options = R2021aGAOptions(Problem.D);
+    options = R2021aGAOptions(Problem.D,localN);
     Checked = [];
     center  = [];
 
@@ -33,14 +35,8 @@ function Checked = EADMMLocalSearch(Problem,Archive,Population)
     end
 end
 
-function options = R2021aGAOptions(D)
-% Explicit fallback settings inferred from MATLAB R2021a GA defaults.
-
-    if D <= 5
-        populationSize = 50;
-    else
-        populationSize = 200;
-    end
+function options = R2021aGAOptions(D,populationSize)
+% Only the paper's local population size is exposed; other options stay fixed.
     maxGenerations = 100*D;
 
     options = optimoptions('ga', ...

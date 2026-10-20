@@ -2,6 +2,7 @@ classdef EADMMIBEA < ALGORITHM
 % <2024> <multi/many> <real> <constrained>
 % EADMM with IBEA as the backbone algorithm
 % kappa --- 0.05 --- Fitness scaling factor of IBEA
+% localN --- 0 --- Local GA population size (0 uses inferred R2021a default)
 
 %------------------------------- Reference --------------------------------
 % S. Li, K. Li, W. Li, and M. Yang. Evolutionary alternating direction
@@ -20,9 +21,9 @@ classdef EADMMIBEA < ALGORITHM
     methods
         function main(Algorithm,Problem)
             %% Parameter setting
-            kappa = Algorithm.ParameterSet(0.05);
+            [kappa,localN] = Algorithm.ParameterSet(0.05,0);
             validateattributes(kappa,{'numeric'},{'scalar','real','finite','positive'});
-            EADMMValidateSetup(Problem);
+            localN = EADMMValidateSetup(Problem,localN);
 
             %% Initialize the constrained and unconstrained populations
             Population1 = Problem.Initialization();
@@ -49,7 +50,7 @@ classdef EADMMIBEA < ALGORITHM
                 % Module 3, Steps 3 to 5.
                 Archive = EADMMTemporaryArchive(Offspring1,Population1,Population2);
                 if ~isempty(Archive)
-                    Checked = EADMMLocalSearch(Problem,Archive,Population1);
+                    Checked = EADMMLocalSearch(Problem,Archive,Population1,localN);
                     if ~isempty(Checked)
                         Population1 = EADMMIBEAConstrainedUpdate(Population1,Checked,Problem.N,kappa);
                         Population2 = EADMMIBEASelection([Population2,Checked],Problem.N,kappa);

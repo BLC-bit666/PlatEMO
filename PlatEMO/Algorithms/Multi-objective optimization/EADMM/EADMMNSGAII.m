@@ -1,6 +1,7 @@
 classdef EADMMNSGAII < ALGORITHM
 % <2024> <multi/many> <real> <constrained>
 % EADMM with NSGA-II as the backbone algorithm
+% localN --- 0 --- Local GA population size (0 uses inferred R2021a default)
 
 %------------------------------- Reference --------------------------------
 % S. Li, K. Li, W. Li, and M. Yang. Evolutionary alternating direction
@@ -19,7 +20,8 @@ classdef EADMMNSGAII < ALGORITHM
     methods
         function main(Algorithm,Problem)
             %% Check dependencies and the two-population initialization
-            EADMMValidateSetup(Problem);
+            localN = Algorithm.ParameterSet(0);
+            localN = EADMMValidateSetup(Problem,localN);
 
             %% Initialize the constrained and unconstrained populations
             Population1 = Problem.Initialization();
@@ -46,7 +48,7 @@ classdef EADMMNSGAII < ALGORITHM
                 % offspring and solve the discrepancy subproblem around each.
                 Archive = EADMMTemporaryArchive(Offspring1,Population1,Population2);
                 if ~isempty(Archive)
-                    Checked = EADMMLocalSearch(Problem,Archive,Population1);
+                    Checked = EADMMLocalSearch(Problem,Archive,Population1,localN);
 
                     % Module 3, Step 5: feed local-search results to both tasks.
                     if ~isempty(Checked)

@@ -1,6 +1,7 @@
 classdef EADMMMOEAD < ALGORITHM
 % <2024> <multi/many> <real> <constrained>
 % EADMM with MOEA/D as the backbone algorithm
+% localN --- 0 --- Local GA population size (0 uses inferred R2021a default)
 
 %------------------------------- Reference --------------------------------
 % S. Li, K. Li, W. Li, and M. Yang. Evolutionary alternating direction
@@ -28,7 +29,8 @@ classdef EADMMMOEAD < ALGORITHM
             W         = max(W,1e-6);
             W         = W./sum(W,2);
             Problem.N = actualN;
-            EADMMValidateSetup(Problem);
+            localN = Algorithm.ParameterSet(0);
+            localN = EADMMValidateSetup(Problem,localN);
             T = max(2,ceil(Problem.N/10));
             [~,B] = sort(pdist2(W,W),2);
             B = B(:,1:min(T,Problem.N));
@@ -85,7 +87,7 @@ classdef EADMMMOEAD < ALGORITHM
                 [Archive,archivePosition] = EADMMTemporaryArchive(Offspring1,Population1,Population2);
                 if ~isempty(Archive)
                     archiveSource = sourceIndex(archivePosition);
-                    Checked       = EADMMLocalSearch(Problem,Archive,Population1);
+                    Checked       = EADMMLocalSearch(Problem,Archive,Population1,localN);
 
                     % Module 3, Step 5: a local solution inherits the
                     % subproblem of the main-task offspring that spawned it.

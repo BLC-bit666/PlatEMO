@@ -37,7 +37,7 @@ end
 function Del = truncateByObjectiveDistance(PopObj,K)
 %TRUNCATEBYOBJECTIVEDISTANCE Remove crowded nondominated solutions.
 
-    Distance = pairDistance(PopObj,PopObj);
+    Distance = pdist2(PopObj,PopObj);
     count = size(Distance,1);
     Distance(1:count+1:end) = inf;
     Del = false(1,size(PopObj,1));
@@ -49,11 +49,4 @@ function Del = truncateByObjectiveDistance(PopObj,K)
         Del(Remain(Rank(1))) = true;
         deletedCount = deletedCount+1;
     end
-end
-
-function D = pairDistance(A,B)
-%PAIRDISTANCE Calculate Euclidean distances without an extra toolbox.
-
-    D2 = max(sum(A.^2,2)+sum(B.^2,2)'-2*(A*B'),0);
-    D = sqrt(D2);
 end
