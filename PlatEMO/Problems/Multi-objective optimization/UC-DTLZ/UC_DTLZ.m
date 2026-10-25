@@ -4,6 +4,7 @@ classdef UC_DTLZ < PROBLEM
 % ucType         --- 1 --- UC family (1, or 2 with DTLZ1)
 % constraintType --- 1 --- C1, C2, or C3
 % dtlz           --- 1 --- DTLZ1, DTLZ2, or DTLZ3
+% referenceMode  --- 1 --- 1: unfiltered NBI paper comparison; 0: feasible PF
 %
 % DOI: 10.1109/TEVC.2024.3425629. Supplement Appendix A, Eqs. (1)--(10),(40).
 % UC2-DTLZ2/3 and UC3--UC5 remain unavailable because their printed
@@ -13,6 +14,7 @@ classdef UC_DTLZ < PROBLEM
         ucType;
         constraintType;
         dtlz;
+        referenceMode;
         objectiveQueries = 0;
         constraintQueries = 0;
     end
@@ -47,11 +49,15 @@ classdef UC_DTLZ < PROBLEM
             % Named subclasses fix the variant; the original parameterized
             % UC_DTLZ entry remains available for existing callers.
             if nargin == 1
-                [ucType,constraintType,dtlz] = obj.ParameterSet(1,1,1);
+                [ucType,constraintType,dtlz,referenceMode] = obj.ParameterSet(1,1,1,1);
+            else
+                referenceMode = obj.ParameterSet(1);
             end
             obj.ucType = ucType;
             obj.constraintType = constraintType;
             obj.dtlz = dtlz;
+            validateattributes(referenceMode,{'numeric'},{'scalar','real','finite','integer','>=',0,'<=',1});
+            obj.referenceMode = referenceMode;
             valid = [1,1;2,1;2,3;3,1;3,2;3,3];
             assert(ismember([obj.constraintType,obj.dtlz],valid,'rows'), ...
                 'UC_DTLZ:UnsupportedCombination','Invalid C/DTLZ combination.');
@@ -91,10 +97,12 @@ classdef UC_DTLZ < PROBLEM
                 C = [C,base.*double(rand(size(X,1),1)<0.5)]; %#ok<AGROW>
             end
         end
-        function [R,info] = GetOptimum(obj,N)
+        function [R,info] = GetOptimum(obj,N,referenceMode)
             % Main paper IV-C specifies NBI. Point count, mapping and
             % feasibility filtering below are explicit local conventions;
             % the authors' original reference files are unavailable.
+            if nargin<3; referenceMode = obj.referenceMode; end
+            validateattributes(referenceMode,{'numeric'},{'scalar','real','finite','integer','>=',0,'<=',1});
             W = UniformPoint(N,obj.M,'NBI');
             if obj.dtlz == 1
                 % UniformPoint clips zero weights to 1e-6. Restore the
@@ -103,9 +111,19 @@ classdef UC_DTLZ < PROBLEM
             else
                 R = W./sqrt(sum(W.^2,2));
             end
+            if referenceMode == 1
+                % Adopted for numerical paper comparison on 2026-10-24.
+                % Agreement with table values does not verify author files.
+                info = struct('method','NBI','referenceMode','unfiltered', ...
+                    'requestedPoints',N,'candidateCount',size(R,1), ...
+                    'coveredPatches',NaN,'totalPatches',NaN,'available',true, ...
+                    'reason','user_adopted_paper_comparison');
+                return;
+            end
             x1 = 1-R(:,end)./sum(R,2);
             R = R(all(BaseConstraints(obj,R,x1)==0,2),:);
-            info = struct('method','NBI','requestedPoints',N,'candidateCount',size(R,1), ...
+            info = struct('method','NBI','referenceMode','feasible', ...
+                'requestedPoints',N,'candidateCount',size(R,1), ...
                 'coveredPatches',1,'totalPatches',1,'available',true,'reason','');
             if obj.constraintType == 3
                 if obj.dtlz == 1
@@ -135,7 +153,9 @@ classdef UC_DTLZ < PROBLEM
             end
         end
         function R = GetPF(obj)
-            if obj.M <= 3; R = obj.GetOptimum(10000); else; R = []; end
+            % A plot of the feasible front is distinct from the adopted
+            % paper-comparison reference, which may include infeasible points.
+            if obj.M <= 3; R = obj.GetOptimum(10000,0); else; R = []; end
         end
     end
 end

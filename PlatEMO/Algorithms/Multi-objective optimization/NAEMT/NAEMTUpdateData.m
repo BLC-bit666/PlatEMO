@@ -34,9 +34,7 @@ function [DataX,DataY] = NAEMTUpdateData(DataX,DataY,Archive,N1,quota)
 end
 
 function index = SampleClass(candidates,quota)
-% Preserve the fixed quota even when a class is rare. Replacement for a
-% short class is a documented completion of the paper's unspecified case,
-% fixed before calibration; it is not a tunable parameter.
+% Sample with replacement when a nonempty class is smaller than its quota.
 
     if numel(candidates) >= quota
         index = candidates(randperm(numel(candidates),quota));

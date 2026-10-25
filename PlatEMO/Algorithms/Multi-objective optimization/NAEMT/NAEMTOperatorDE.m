@@ -1,11 +1,20 @@
 function Offspring = NAEMTOperatorDE(Problem,Parent,Parameter)
-% DE/current-to-rand/1 followed by polynomial mutation.
+% DE/current-to-rand/1 followed by polynomial mutation; K=1 gives rand/1.
 
     if nargin > 2
-        [CR,F,proM,disM] = deal(Parameter{:});
+        if numel(Parameter) < 4 || numel(Parameter) > 5
+            error('NAEMT:InvalidDEParameters','Expected {CR,F,proM,disM[,K]}.');
+        end
+        [CR,F,proM,disM] = deal(Parameter{1:4});
+        if numel(Parameter) == 5
+            K = Parameter{5};
+        else
+            K = F;
+        end
     else
-        [CR,F,proM,disM] = deal(1,0.5,1,20);
+        [CR,F,proM,disM,K] = deal(1,0.5,1,20,1);
     end
+    validateattributes(K,{'numeric'},{'scalar','real','finite','>=',0,'<=',1});
     if isa(Parent(1),'SOLUTION')
         evaluated = true;
         ParentDec = Parent.decs;
@@ -23,7 +32,7 @@ function Offspring = NAEMTOperatorDE(Problem,Parent,Parameter)
     for i = 1 : N
         candidates = [1:i-1,i+1:N];
         selected   = candidates(randperm(N-1,3));
-        Donor(i,:) = ParentDec(i,:) + F.*(ParentDec(selected(1),:)-ParentDec(i,:)) ...
+        Donor(i,:) = ParentDec(i,:) + K.*(ParentDec(selected(1),:)-ParentDec(i,:)) ...
                    + F.*(ParentDec(selected(2),:)-ParentDec(selected(3),:));
     end
 

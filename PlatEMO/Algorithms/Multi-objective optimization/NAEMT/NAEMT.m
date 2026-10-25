@@ -1,9 +1,10 @@
 classdef NAEMT < ALGORITHM
 % <2025> <multi> <real> <constrained>
 % Network-assisted evolutionary multitask framework
-% alpha   --- 0.9  --- Accuracy threshold for retraining the MLP
-% epsilon --- 0.5  --- Probability threshold in CDPPV
+% alpha   --- 1                  --- Accuracy threshold for retraining the MLP
+% epsilon --- 0.9999999999999998 --- Probability threshold in CDPPV
 % N1      --- 1000 --- Size of the MLP training set
+% K       --- 1    --- DE attraction coefficient (1 gives DE/rand/1)
 
 %------------------------------- Reference --------------------------------
 % J. Ma, Y. Zhang, R. Zheng, C. He, A. W. Mohamed, M. Zuo, H. Li, and
@@ -23,10 +24,11 @@ classdef NAEMT < ALGORITHM
     methods
         function main(Algorithm,Problem)
             %% Parameter setting
-            [alpha,epsilon,N1] = Algorithm.ParameterSet(0.9,0.5,1000);
+            [alpha,epsilon,N1,K] = Algorithm.ParameterSet(1,1-eps(1),1000,1);
             validateattributes(alpha,{'numeric'},{'scalar','real','>=',0,'<=',1});
             validateattributes(epsilon,{'numeric'},{'scalar','real','>',0,'<',1});
             validateattributes(N1,{'numeric'},{'scalar','real','finite','integer','>=',2});
+            validateattributes(K,{'numeric'},{'scalar','real','finite','>=',0,'<=',1});
             CR            = 1;
             F             = 0.5;
             proM          = 1;
@@ -55,8 +57,8 @@ classdef NAEMT < ALGORITHM
 
             %% Optimization
             while Algorithm.NotTerminated(Population1)
-                Offspring1 = NAEMTOperatorDE(Problem,Population1,{CR,F,proM,disM});
-                Offspring2 = NAEMTOperatorDE(Problem,Population2,{CR,F,proM,disM});
+                Offspring1 = NAEMTOperatorDE(Problem,Population1,{CR,F,proM,disM,K});
+                Offspring2 = NAEMTOperatorDE(Problem,Population2,{CR,F,proM,disM,K});
                 ValueO1    = InfeasibleSolutionValues(Model,Offspring1);
                 ValueO2    = InfeasibleSolutionValues(Model,Offspring2);
 
@@ -75,6 +77,7 @@ classdef NAEMT < ALGORITHM
                     if any(archiveFeasible) && any(~archiveFeasible)
                         [DataX,DataY] = NAEMTUpdateData(DataX,DataY,Archive,N1,sampleQuota);
                         Model         = NAEMTTrainModel(DataX,DataY,Model);
+                        Value1        = InfeasibleSolutionValues(Model,Population1);
                     end
                 end
             end
@@ -83,7 +86,7 @@ classdef NAEMT < ALGORITHM
 end
 
 function Value = InfeasibleSolutionValues(Model,Population)
-% Predict each newly generated infeasible solution once.
+% Use the current model for offspring and for parents after retraining.
 
     Value      = ones(numel(Population),1);
     infeasible = ~all(Population.cons<=0,2);
@@ -104,8 +107,7 @@ function accuracy = AccuracyOnFeasibleOffspring(Model,Offspring)
         end
         accuracy  = 1 - mean(abs(1-predicted));
     else
-        % The paper does not define accuracy when no feasible offspring
-        % exists. NaN explicitly denotes the absence of an observable label.
+        % No feasible offspring means accuracy is unobserved.
         accuracy = NaN;
     end
 end

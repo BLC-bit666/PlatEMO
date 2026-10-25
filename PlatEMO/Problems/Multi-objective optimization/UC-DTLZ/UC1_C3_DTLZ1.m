@@ -1,6 +1,7 @@
 classdef UC1_C3_DTLZ1 < UC_DTLZ
 % <2024> <multi/many> <real> <constrained>
 % UC1-C3-DTLZ1 with the five noisy binary copies in supplement Eq. (40)
+% referenceMode --- 1 --- 1: unfiltered NBI paper comparison; 0: feasible PF
 %
 %------------------------------- Reference --------------------------------
 % S. Li, K. Li, W. Li, and M. Yang. Evolutionary alternating direction method

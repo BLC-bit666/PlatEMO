@@ -2,6 +2,7 @@ classdef EADMMMOEAD < ALGORITHM
 % <2024> <multi/many> <real> <constrained>
 % EADMM with MOEA/D as the backbone algorithm
 % localN --- 0 --- Local GA population size (0 uses inferred R2021a default)
+% weightFloor --- 1e-4 --- Positive lower bound of NBI weights
 
 %------------------------------- Reference --------------------------------
 % S. Li, K. Li, W. Li, and M. Yang. Evolutionary alternating direction
@@ -21,15 +22,13 @@ classdef EADMMMOEAD < ALGORITHM
         function main(Algorithm,Problem)
             %% Generate shared weight vectors and neighbourhoods
             requestedN = Problem.N;
-            [W,actualN] = UniformPoint(requestedN,Problem.M,'MUD');
-            if actualN ~= requestedN
-                error('EADMMMOEAD:PopulationSizeMismatch', ...
-                    'The weight generator must preserve the requested population size.');
-            end
-            W         = max(W,1e-6);
+            [W,actualN] = UniformPoint(requestedN,Problem.M,'NBI');
+            [localN,weightFloor] = Algorithm.ParameterSet(0,1e-4);
+            validateattributes(weightFloor,{'numeric'}, ...
+                {'scalar','real','finite','>',0,'<',1});
+            W         = max(W,weightFloor);
             W         = W./sum(W,2);
             Problem.N = actualN;
-            localN = Algorithm.ParameterSet(0);
             localN = EADMMValidateSetup(Problem,localN);
             T = max(2,ceil(Problem.N/10));
             [~,B] = sort(pdist2(W,W),2);
@@ -55,6 +54,7 @@ classdef EADMMMOEAD < ALGORITHM
                 for a = 1 : nSubproblem
                     k       = sourceIndex(a);
                     parents = B(k,randperm(size(B,2)));
+                    parents = [k,parents(parents~=k)];
                     child   = OperatorGAhalf(Problem,Population1(parents(1:2)),{1,20,1,20});
                     Offspring1{a} = child;
                     Z1          = min([Population1.objs;child.obj],[],1);
@@ -66,6 +66,7 @@ classdef EADMMMOEAD < ALGORITHM
                 for a = 1 : nSubproblem
                     k       = sourceIndex(a);
                     parents = B(k,randperm(size(B,2)));
+                    parents = [k,parents(parents~=k)];
                     child   = OperatorGAhalf(Problem,Population2(parents(1:2)),{1,20,1,20});
                     Offspring2{a} = child;
                     Z2          = min(Z2,child.obj);

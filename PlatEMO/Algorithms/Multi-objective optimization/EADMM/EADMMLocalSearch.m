@@ -13,23 +13,32 @@ function Checked = EADMMLocalSearch(Problem,Archive,Population,localN)
     rho    = gamma/numel(Population)*ell;
 
     options = R2021aGAOptions(Problem.D,localN);
-    Checked = [];
+    Checked = cell(1,numel(Archive));
     center  = [];
+    metadata = metaclass(Problem);
+    repairMethod = metadata.MethodList(strcmp({metadata.MethodList.Name},'CalDec'));
+    defaultRepair = strcmp(repairMethod.DefiningClass.Name,'PROBLEM');
 
     for i = 1 : numel(Archive)
         center  = Archive(i).dec;
         bestDec = ga(@EvaluateCandidate,Problem.D,[],[],[],[], ...
                      Problem.lower,Problem.upper,[],options);
-        solution = Problem.Evaluation(reshape(bestDec,1,[]));
-        if isempty(Checked)
-            Checked = solution;
-        else
-            Checked(end+1) = solution; %#ok<AGROW>
-        end
+        Checked{i} = Problem.Evaluation(reshape(bestDec,1,[]));
     end
+    Checked = [Checked{:}];
 
     function value = EvaluateCandidate(x)
-        x     = Problem.CalDec(reshape(x,1,[]));
+        x = reshape(x,1,[]);
+        if defaultRepair
+            % The base CalDec repairs one row here. Preserve min/max order
+            % and read current bounds/encoding on every constraint query.
+            x = max(min(x,Problem.upper),Problem.lower);
+            encoding = Problem.encoding;
+            index = encoding==2 | encoding==3 | encoding==4;
+            x(:,index) = round(x(:,index));
+        else
+            x = Problem.CalDec(x);
+        end
         con   = Problem.CalCon(x);
         value = sum(~(con<=0),2) + rho.*sum((x-center).^2,2);
     end
