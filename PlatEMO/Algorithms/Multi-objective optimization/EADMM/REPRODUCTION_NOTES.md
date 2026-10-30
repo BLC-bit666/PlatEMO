@@ -77,3 +77,7 @@ M5的UC1-C3-DTLZ2/3各3次校准重复均值为0.45613349、0.45644056，论文�
 ## 主线冻结与执行提速
 
 用户已接受上述复现程度并要求冻结算法与 IGD，仅清理和提速。当前 MOEA/D 流程与固定设置集中列于 [README.md](README.md)。共享局部搜索预分配结果，并仅对继承平台默认 `CalDec` 的问题内联相同的单行修复操作；自定义修复仍调用原方法。GA 选项、约束查询、外层 FE、随机调用、问题和参考集不变。完整预算与逐代状态核验、独立计时见 `Experiments/NAEMT_EADMM_ExactSpeed_20261024/REPORT.md`。本次未对其他 EADMM 骨架作新的性能宣称。
+
+## 2026-10-31 算子扩展接口
+
+当前入口新增第一参数type（1=GA，默认；2=DE）。原有算子机制保留，仅新增缺少的一侧；新增模式不是论文原始配置。NAEMT原DE对应type=2，EADMMMOEAD原外层GA对应type=1；EADMM内部局部ga保持不变。参数位置、实际调用与本次验证以当前README及 `Experiments/Comparators_PreserveOperators_20261031/REPORT.md` 为准，不用旧默认值解释新接口。

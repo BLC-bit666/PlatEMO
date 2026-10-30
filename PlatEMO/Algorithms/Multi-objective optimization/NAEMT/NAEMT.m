@@ -1,6 +1,7 @@
 classdef NAEMT < ALGORITHM
 % <2025> <multi> <real> <constrained>
 % Network-assisted evolutionary multitask framework
+% type    --- 1                  --- Type of operator (1. GA 2. DE)
 % alpha   --- 1                  --- Accuracy threshold for retraining the MLP
 % epsilon --- 0.9999999999999998 --- Probability threshold in CDPPV
 % N1      --- 1000 --- Size of the MLP training set
@@ -24,7 +25,15 @@ classdef NAEMT < ALGORITHM
     methods
         function main(Algorithm,Problem)
             %% Parameter setting
-            [alpha,epsilon,N1,K] = Algorithm.ParameterSet(1,1-eps(1),1000,1);
+            [type,alpha,epsilon,N1,K] = Algorithm.ParameterSet(1,1,1-eps(1),1000,1);
+            assert(isnumeric(type) && isscalar(type) && isreal(type) && ismember(type,[1 2]), ...
+                'NAEMT:BadOperatorType','type must be 1 (GA) or 2 (DE).');
+            utility = fullfile(fileparts(which('ALGORITHM')),'Utility functions');
+            addpath(utility,'-begin');
+            for name = {'TournamentSelection','OperatorGA','OperatorGAhalf','OperatorDE'}
+                assert(strcmp(which(name{1}),fullfile(utility,[name{1},'.m'])), ...
+                    'NAEMT:ShadowedOperator','Expected the native Utility functions implementation of %s.',name{1});
+            end
             validateattributes(alpha,{'numeric'},{'scalar','real','>=',0,'<=',1});
             validateattributes(epsilon,{'numeric'},{'scalar','real','>',0,'<',1});
             validateattributes(N1,{'numeric'},{'scalar','real','finite','integer','>=',2});
@@ -57,8 +66,13 @@ classdef NAEMT < ALGORITHM
 
             %% Optimization
             while Algorithm.NotTerminated(Population1)
-                Offspring1 = NAEMTOperatorDE(Problem,Population1,{CR,F,proM,disM,K});
-                Offspring2 = NAEMTOperatorDE(Problem,Population2,{CR,F,proM,disM,K});
+                if type==1
+                    Offspring1 = gaOffspring(Problem,Population1);
+                    Offspring2 = gaOffspring(Problem,Population2);
+                else
+                    Offspring1 = NAEMTOperatorDE(Problem,Population1,{CR,F,proM,disM,K});
+                    Offspring2 = NAEMTOperatorDE(Problem,Population2,{CR,F,proM,disM,K});
+                end
                 ValueO1    = InfeasibleSolutionValues(Model,Offspring1);
                 ValueO2    = InfeasibleSolutionValues(Model,Offspring2);
 
@@ -121,4 +135,16 @@ function Archive = CollectArchive(ArchiveWindow)
     else
         Archive = [nonempty{:}];
     end
+end
+
+function Offspring = gaOffspring(Problem,Population)
+% Add native GA while retaining the original algorithm's random mating style.
+    N = numel(Population);
+    assert(N>=3,'NAEMT:GAPopulationTooSmall','GA mating needs two distinct non-current parents.');
+    parents = zeros(N,2);
+    for i = 1:N
+        candidates = [1:i-1,i+1:N];
+        parents(i,:) = candidates(randperm(N-1,2));
+    end
+    Offspring = OperatorGAhalf(Problem,[Population(parents(:,1)),Population(parents(:,2))]);
 end

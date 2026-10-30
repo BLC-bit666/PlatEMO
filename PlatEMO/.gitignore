@@ -33,7 +33,6 @@ codegen/
 
 # Local tests, test helpers, and experiment drivers
 /Tests/
-/test.m
 /test_*.m
 
 # Root-level research and visualization exports

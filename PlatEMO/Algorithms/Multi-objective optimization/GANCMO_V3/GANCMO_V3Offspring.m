@@ -1,22 +1,38 @@
-function [O1,O2] = GANCMO_V3Offspring(P,P1,P2,F1,F2,n1,n2,seed,generation)
-% Both populations use the unchanged DE parent selection and random streams.
+function [O1,O2] = GANCMO_V3Offspring(P,P1,P2,F1,F2,n1,n2,seed,generation,type)
+% Both populations use the selected native GA/DE operator; CGAN is absent.
     saved = RandStream.getGlobalStream;
     cleanup = onCleanup(@()RandStream.setGlobalStream(saved));
-    nDE = n1;
-    XDE = zeros(0,P.D);
-    if nDE>0
+    nVariation = n1;
+    XVariation = zeros(0,P.D);
+    if nVariation>0
         setStream(seed+1009*generation+2);
-        idx = parentIndices(P1,F1,nDE); X = double(P1.decs);
-        XDE = OperatorDE(P,X(idx(:,1),:),X(idx(:,2),:),X(idx(:,3),:));
+        if type==1
+            XVariation = gaDecisions(P,P1,F1,nVariation);
+        else
+            idx = parentIndices(P1,F1,nVariation); X = double(P1.decs);
+            XVariation = OperatorDE(P,X(idx(:,1),:),X(idx(:,2),:),X(idx(:,3),:));
+        end
     end
     O1 = P1([]);
-    if n1>0; O1 = P.Evaluation(XDE); end
+    if n1>0; O1 = P.Evaluation(XVariation); end
     O2 = P2([]);
     if n2>0
         setStream(seed+1009*generation+4);
-        idx = parentIndices(P2,F2,n2);
-        O2 = OperatorDE(P,P2(idx(:,1)),P2(idx(:,2)),P2(idx(:,3)));
+        if type==1
+            O2 = P.Evaluation(gaDecisions(P,P2,F2,n2));
+        else
+            idx = parentIndices(P2,F2,n2);
+            O2 = OperatorDE(P,P2(idx(:,1)),P2(idx(:,2)),P2(idx(:,3)));
+        end
     end
+end
+
+function X = gaDecisions(P,Population,Fitness,count)
+% Native OperatorGA returns pairs. Trim an odd surplus before any evaluation.
+    parents = TournamentSelection(2,2*ceil(count/2),Fitness);
+    decisions = double(Population.decs);
+    X = OperatorGA(P,decisions(parents,:));
+    X = X(1:count,:);
 end
 
 function setStream(seed)

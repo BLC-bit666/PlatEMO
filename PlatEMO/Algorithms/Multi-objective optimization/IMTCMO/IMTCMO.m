@@ -1,5 +1,6 @@
 classdef IMTCMO < ALGORITHM
 % <2024> <multi> <real/integer/label/binary/permutation> <constrained>
+% type --- 1 --- Type of operator (1. GA 2. DE)
 % Improved evolutionary multitasking-based CMOEA
 
 %------------------------------- Reference --------------------------------
@@ -20,6 +21,15 @@ classdef IMTCMO < ALGORITHM
 
     methods
         function main(Algorithm,Problem)
+            type = Algorithm.ParameterSet(1);
+            assert(isnumeric(type) && isscalar(type) && isreal(type) && ismember(type,[1 2]), ...
+                'IMTCMO:BadOperatorType','type must be 1 (GA) or 2 (DE).');
+            utility = fullfile(fileparts(which('ALGORITHM')),'Utility functions');
+            addpath(utility,'-begin');
+            for name = {'TournamentSelection','OperatorGA','OperatorGAhalf','OperatorDE'}
+                assert(strcmp(which(name{1}),fullfile(utility,[name{1},'.m'])), ...
+                    'IMTCMO:ShadowedOperator','Expected the native Utility functions implementation of %s.',name{1});
+            end
             %% Generate random population
             Population1 = Problem.Initialization();
             Fitness1    = CalFitness(Population1.objs,Population1.cons);
@@ -46,13 +56,21 @@ classdef IMTCMO < ALGORITHM
                 %% Offspring generation
                 MatingPool = [Population1(randsample(Problem.N,Problem.N))];
                 [Mate1,Mate2,Mate3]  = Neighbor_Pairing_Strategy(MatingPool,Zmin1);
-                Offspring1(1:Problem.N/2) = OperatorDE_rand_1(Problem,Mate1(1:Problem.N/2), Mate2(1:Problem.N/2), Mate3(1:Problem.N/2));
-                Offspring1(1+Problem.N/2:Problem.N) = OperatorDE_pbest_1_main(Population1, Problem.N/2, Problem, Fitness1, 0.1);
+                if type==1
+                    Offspring1 = OperatorGAhalf(Problem,[Mate1,Mate2]);
+                else
+                    Offspring1(1:Problem.N/2) = OperatorDE_rand_1(Problem,Mate1(1:Problem.N/2), Mate2(1:Problem.N/2), Mate3(1:Problem.N/2));
+                    Offspring1(1+Problem.N/2:Problem.N) = OperatorDE_pbest_1_main(Population1, Problem.N/2, Problem, Fitness1, 0.1);
+                end
 
                 MatingPool = [Population2(randsample(Problem.N,Problem.N))];
                 [Mate1,Mate2,Mate3]  = Neighbor_Pairing_Strategy(MatingPool,Zmin2);
-                Offspring2(1:Problem.N/2) = OperatorDE_rand_1(Problem,Mate1(1:Problem.N/2),Mate2(1:Problem.N/2),Mate3(1:Problem.N/2));
-                Offspring2(1+Problem.N/2:Problem.N) = OperatorDE_pbest_1_main(Population2, Problem.N/2, Problem, Fitness2, 0.1);
+                if type==1
+                    Offspring2 = OperatorGAhalf(Problem,[Mate1,Mate2]);
+                else
+                    Offspring2(1:Problem.N/2) = OperatorDE_rand_1(Problem,Mate1(1:Problem.N/2),Mate2(1:Problem.N/2),Mate3(1:Problem.N/2));
+                    Offspring2(1+Problem.N/2:Problem.N) = OperatorDE_pbest_1_main(Population2, Problem.N/2, Problem, Fitness2, 0.1);
+                end
 
                 Zmin1 = min([Zmin1;Offspring1.objs],[],1);
                 Zmin2 = min([Zmin2;Offspring2.objs],[],1);

@@ -2,7 +2,7 @@
 
 整理日期：2026-09-30。
 
-本目录归档 Liang 等（2023）《A Survey on Evolutionary Constrained Multiobjective Optimization》中，此前本地缺失且已找到原生 MATLAB 源码的两套基准。原作者代码保持原样，尚未适配当前 PlatEMO，尚未改成二元约束。
+本目录归档 Liang 等（2023）《A Survey on Evolutionary Constrained Multiobjective Optimization》中，此前本地缺失且已找到原生 MATLAB 源码的两套基准。原作者代码保持原样。2026-10-28 已在 `Multi-objective optimization/NCTP` 与 `NCTP_BC` 另行提供 NCTP 常规和二元适配；Eq-DTLZ 原包仍未适配。
 
 | 套件 | 综述引用 | 已确认的覆盖范围 | 目录 |
 | --- | --- | --- | --- |
@@ -17,7 +17,7 @@
 
 源码放在 `private` 下，是因为 PlatEMO 会通过 `genpath` 自动扫描问题目录。NCTP 原实验包含 `main.m`、`IGD.m` 等通用名称，Eq-DTLZ 使用旧版 PlatEMO 接口。MATLAB 路径检查已确认这些源码目录不会被 `genpath` 纳入，因此不会作为当前可运行问题加入 GUI，也不会遮蔽现有函数。不要把原实验目录整体加入 PlatEMO 路径。
 
-仅做源码归档和完整性核验；没有执行作者实验，也没有验证其在当前 PlatEMO 中的运行兼容性。后续接入时需单独迁移接口并核对公式、边界、约束和参考前沿。
+本目录中的原包仅做源码归档和完整性核验，不直接作为当前平台的问题入口。NCTP 的新适配、公式对照及运行兼容性验证见 [NCTP 适配说明](</Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Problems/Multi-objective optimization/NCTP/README.md>)；Eq-DTLZ 后续接入仍需单独迁移接口并核对定义。
 
 CTP 本轮确认的是 Python 实现；MODAct 的 MATLAB 文件只是 Python 调用接口；早期 CMOP 和 CZDT 尚未找到经核实的原生 MATLAB 包，因此此次不纳入。已有的 PlatEMO MATLAB 套件保持原样。
 

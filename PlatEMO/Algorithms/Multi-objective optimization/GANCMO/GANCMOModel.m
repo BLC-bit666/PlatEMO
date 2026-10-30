@@ -83,6 +83,18 @@ classdef GANCMOModel
             Dec = double(Problem.lower)+normalized.*(double(Problem.upper)-double(Problem.lower));
         end
 
+        function Scores = score(Model,Dec,Conditions,Problem)
+        % Conditional critic ranking only: no oracle calls, training or RNG.
+            assert(size(Dec,2)==Problem.D && size(Conditions,2)==Problem.M+1 && ...
+                size(Dec,1)==size(Conditions,1) && all(isfinite(Dec),'all'), ...
+                'GANCMO:BadScoreInput','Expected finite decisions and matching conditions.');
+            Conditions = encodeConditions(double(Conditions));
+            if isempty(Dec); Scores = zeros(0,1); return; end
+            span = double(Problem.upper)-double(Problem.lower); span(span<=eps) = 1;
+            normalized = (double(Dec)-double(Problem.lower))./span;
+            input = dlarray(single([2*normalized-1,Conditions]'),'CB');
+            Scores = double(extractdata(criticForward(Model.netC.Learnables.Value,input)))';
+        end
     end
 end
 

@@ -1,7 +1,7 @@
 classdef GANCMO_V4Archive
 % Rebuild nearest legal pairs from endpoint pools; at most five per direction.
     methods(Static)
-        function [Archive,Scale] = update(Archive,Evaluated,W,Problem,ReferenceScale)
+        function [Archive,Scale,Guide] = update(Archive,Evaluated,W,Problem,ReferenceScale)
             if isempty(Archive); Archive=emptyArchive(Problem.D,Problem.M); end
             span=decisionSpan(Problem); neighbors=referenceNeighborhoods(W);
             [fx,fy,ix,iy]=evaluatedRows(Evaluated,Problem);
@@ -40,7 +40,7 @@ classdef GANCMO_V4Archive
                 used(k)=true;
             end
             Candidate=subsetArchive(Candidate,find(used));
-            Archive=retainCapacity(Candidate,W,Scale,Problem);
+            [Archive,Guide]=retainCapacity(Candidate,W,Scale,Problem);
         end
 
         function Data = training(Archive,W,Scale,Problem)
@@ -65,7 +65,7 @@ classdef GANCMO_V4Archive
     end
 end
 
-function Archive=retainCapacity(Archive,W,Scale,Problem)
+function [Archive,Guide]=retainCapacity(Archive,W,Scale,Problem)
 % Each direction keeps its best five; empty slots are never transferred.
     S=GANCMO_V4Settings; limit=S.pairsPerDirection;
     count=numel(Archive.ref); rows=(1:count)'; rank=zeros(count,1);
@@ -79,6 +79,15 @@ function Archive=retainCapacity(Archive,W,Scale,Problem)
     end
     rows=rows(rank<=limit);
     Archive=subsetArchive(Archive,rows);
+    % Query guides use the shortest normalized decision gap among retained
+    % pairs; archive capacity ranking and all-pair training stay independent.
+    decisionGap=decisionGap(rows); refs=unique(Archive.ref);
+    Guide=zeros(numel(refs),1);
+    for k=1:numel(refs)
+        local=find(Archive.ref==refs(k));
+        [~,nearest]=min(decisionGap(local));
+        Guide(k)=local(nearest);
+    end
 end
 
 function [FeasX,FeasY,InfX,InfY] = evaluatedRows( ...

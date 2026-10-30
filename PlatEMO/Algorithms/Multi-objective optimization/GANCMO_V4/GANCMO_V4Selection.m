@@ -40,13 +40,17 @@ function Del = truncateByObjectiveDistance(PopObj,K)
     Distance = pdist2(PopObj,PopObj);
     count = size(Distance,1);
     Distance(1:count+1:end) = inf;
-    Del = false(1,size(PopObj,1));
-    deletedCount = 0;
-    while deletedCount < K
-        Remain = find(~Del);
-        Sorted = sort(Distance(Remain,Remain),2);
-        [~,Rank] = sortrows(Sorted);
-        Del(Remain(Rank(1))) = true;
-        deletedCount = deletedCount+1;
+    Del = false(1,count); Remain = 1:count;
+    % Removing a point only deletes a neighbor; the remaining order stays sorted.
+    [Sorted,Neighbors] = sort(Distance,2);
+    for deletedCount = 1:K
+        [~,Rank] = sortrows(Sorted); row = Rank(1); removed = Remain(row);
+        Del(removed) = true; Remain(row) = [];
+        if deletedCount==K; break; end
+        Sorted(row,:) = []; Neighbors(row,:) = [];
+        keep = Neighbors'~=removed;
+        values = Sorted'; neighbors = Neighbors';
+        Sorted = reshape(values(keep),numel(Remain),numel(Remain))';
+        Neighbors = reshape(neighbors(keep),numel(Remain),numel(Remain))';
     end
 end

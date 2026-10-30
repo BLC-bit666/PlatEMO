@@ -17,4 +17,4 @@
 
 各组 `main.m` 中的 12 个 case 对应该组 6 个问题的 30 维与 10 维配置。问题通过 `fit_cv(P,problem)` 计算，没有独立的 `NCTP1.m` 至 `NCTP18.m` 类文件。
 
-尚未改写原代码。接入当前 PlatEMO 时，应从原论文与作者包核对公式和变量边界，提取为 `PROBLEM` 类；作者程序中的批次约束归一化属于原实验处理，不应未经判断直接当作基准原始约束。第三方 Python 移植与作者包的部分参数不一致，本目录以作者下载包为来源。
+原代码保持不变。2026-10-28 已另行提供当前 PlatEMO 的 18 个常规类与 18 个 `_BC` 类，见 [适配说明](</Users/lanai/Code/Matlab/PlatEMO/PlatEMO/Problems/Multi-objective optimization/NCTP/README.md>)。适配保留作者目标、边界和约束，稳定化 g=0 目标表达，并将批次约束归一化留在算法层之外。第三方 Python 移植与作者包的部分参数不一致，本目录及新适配均以作者下载包为来源。

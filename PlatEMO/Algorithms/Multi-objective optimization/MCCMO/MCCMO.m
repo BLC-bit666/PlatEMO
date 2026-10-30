@@ -1,5 +1,6 @@
 classdef MCCMO< ALGORITHM
 % <2024> <multi> <real/integer/label/binary/permutation> <constrained>
+% type --- 1 --- Type of operator (1. GA 2. DE)
 % Multi-population coevolutionary constrained multi-objective optimization
 
 %------------------------------- Reference --------------------------------
@@ -18,6 +19,15 @@ classdef MCCMO< ALGORITHM
 
     methods
         function main(Algorithm,Problem)
+            type = Algorithm.ParameterSet(1);
+            assert(isnumeric(type) && isscalar(type) && isreal(type) && ismember(type,[1 2]), ...
+                'MCCMO:BadOperatorType','type must be 1 (GA) or 2 (DE).');
+            utility = fullfile(fileparts(which('ALGORITHM')),'Utility functions');
+            addpath(utility,'-begin');
+            for name = {'TournamentSelection','OperatorGA','OperatorGAhalf','OperatorDE'}
+                assert(strcmp(which(name{1}),fullfile(utility,[name{1},'.m'])), ...
+                    'MCCMO:ShadowedOperator','Expected the native Utility functions implementation of %s.',name{1});
+            end
             Pop0     = Problem.Initialization();
             Fit0     = CalFitness(Pop0.objs);
             totalcon = size(Pop0(1,1).con,2);
@@ -67,7 +77,7 @@ classdef MCCMO< ALGORITHM
                 Off     = [];
                 Offtemp = [];
                 
-                if contains( class(Problem),'RWMOP') || contains(class(Problem),'LIRCMOP') || contains(class(Problem),'DOC') || contains(class(Problem),'DASCMOP')
+                if type==2
                     for i = 1 : size(Pops,2)
                         Offtemp = [];
                         if size(Pops,2) > 1 && ~Pops{7,i}

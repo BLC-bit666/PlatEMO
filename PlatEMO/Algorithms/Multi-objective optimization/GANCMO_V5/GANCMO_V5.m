@@ -1,6 +1,7 @@
 classdef GANCMO_V5 < ALGORITHM
 % <2026> <multi> <real> <constrained>
-% Adversarial-only generator loss; conditional WGAN-GP and single offspring retained.
+% type --- 1 --- Type of operator (1. GA 2. DE)
+% Archive-screened CGAN candidates with progress-based variation mixing.
 % References: Tian et al., IEEE TEVC 25(1):102-116, 2021;
 % Gulrajani et al., Improved Training of Wasserstein GANs, NeurIPS 2017.
 % Copyright (c) 2026 BIMK Group. PlatEMO research-use and citation terms apply.
@@ -13,12 +14,18 @@ classdef GANCMO_V5 < ALGORITHM
         end
 
         function main(Algorithm,Problem)
+            type = Algorithm.ParameterSet(1);
+            assert(isnumeric(type) && isscalar(type) && isreal(type) && ismember(type,[1 2]), ...
+                'GANCMO_V5:BadOperatorType','type must be 1 (GA) or 2 (DE).');
             utility = fullfile(fileparts(which('ALGORITHM')),'Utility functions');
-            if ~startsWith(string(which('TournamentSelection')),string(utility)+filesep)
-                addpath(utility,'-begin');
+            addpath(utility,'-begin');
+            for name = {'TournamentSelection','OperatorGA','OperatorDE'}
+                assert(strcmp(which(name{1}),fullfile(utility,[name{1},'.m'])), ...
+                    'GANCMO_V5:ShadowedOperator','Expected the native Utility functions implementation of %s.',name{1});
             end
-            S = Algorithm.Settings;
             [W,~] = UniformPoint(max(2,round(Problem.N)),Problem.M);
+            Algorithm.Settings = GANCMO_V5Settings(size(W,1));
+            S = Algorithm.Settings;
             state = rng; data = state.State;
             if iscell(data); data = data{1}; end
             seed = mod(sum(double(data(1:min(16,numel(data))))),2^32-1);
@@ -34,7 +41,7 @@ classdef GANCMO_V5 < ALGORITHM
             if ~isempty(P2); F2 = GANCMO_V5Fitness(P2.objs); end
             Scale = struct('minimum',min([P1.objs;P2.objs],[],1), ...
                 'span',ones(1,Problem.M));
-            [Archive,Scale] = GANCMO_V5Archive.update([], ...
+            [Archive,Scale,Guide] = GANCMO_V5Archive.update([], ...
                 [P1,P2],W,Problem,Scale);
             Model = []; generation = 0; batch = Problem.N;
             Detection = []; useCGAN = false;
@@ -44,6 +51,9 @@ classdef GANCMO_V5 < ALGORITHM
                 n1 = min(Problem.N,ceil(budget/2)); n2 = min(Problem.N,floor(budget/2));
                 [~,quota] = GANCMO_V5Control(beforeFE,initialFE,Problem.maxFE,n1);
                 Data = GANCMO_V5Archive.training(Archive,W,Scale,Problem);
+                % Representatives reuse the same normalized endpoints.
+                GuideData = struct('xF',Data.xF(Guide,:), ...
+                    'ref',Data.ref(Guide),'count',numel(Guide));
                 q = zeros(0,Problem.D);
                 due = isempty(Model);
                 if ~due
@@ -61,21 +71,21 @@ classdef GANCMO_V5 < ALGORITHM
                 end
                 if quota>0 && ~isempty(Model)
                     scope = streamScope(queryStream); %#ok<NASGU>
-                    q = GANCMO_V5Candidates(Model,W,Problem,quota,useCGAN);
+                    q = GANCMO_V5Candidates(Model,Archive,W,P1,P2,Problem,quota,S,GuideData,useCGAN);
                     clear scope;
                 end
-                [O1,O2,Generated] = GANCMO_V5Offspring(Problem,P1,P2,F1,F2,n1,n2,q,seed,generation);
+                [O1,O2,Generated] = GANCMO_V5Offspring(Problem,P1,P2,F1,F2,n1,n2,q,seed,generation,type);
                 assert(Problem.FE-beforeFE==budget && Problem.FE<=Problem.maxFE, ...
                     'GANCMO_V5:EvaluationBudget','Incorrect true evaluation count.');
                 % Batch minimum equals updating the historical ideal point
                 % after every evaluated child, including infeasible/rejected ones.
                 Scale.minimum = min([Scale.minimum;O1.objs;O2.objs],[],1);
                 Union = [P1,P2,O1,O2];
-                % O1 contains DE first and direct CGAN offspring last.
-                DE1 = O1(1:numel(O1)-numel(Generated));
+                % O1 contains conventional offspring first and direct CGAN offspring last.
+                Variation1 = O1(1:numel(O1)-numel(Generated));
                 [P1,F1] = GANCMO_V5Selection([P1,O1,O2],Problem.N,true);
-                [P2,F2] = GANCMO_V5Selection([P2,DE1,O2],Problem.N,false);
-                [Archive,Scale] = GANCMO_V5Archive.update(Archive,Union,W,Problem,Scale);
+                [P2,F2] = GANCMO_V5Selection([P2,Variation1,O2],Problem.N,false);
+                [Archive,Scale,Guide] = GANCMO_V5Archive.update(Archive,Union,W,Problem,Scale);
             end
         end
     end

@@ -1,6 +1,7 @@
 classdef EADMMMOEAD < ALGORITHM
 % <2024> <multi/many> <real> <constrained>
 % EADMM with MOEA/D as the backbone algorithm
+% type --- 1 --- Type of outer operator (1. GA 2. DE)
 % localN --- 0 --- Local GA population size (0 uses inferred R2021a default)
 % weightFloor --- 1e-4 --- Positive lower bound of NBI weights
 
@@ -20,15 +21,25 @@ classdef EADMMMOEAD < ALGORITHM
 
     methods
         function main(Algorithm,Problem)
+            [type,localN,weightFloor] = Algorithm.ParameterSet(1,0,1e-4);
+            assert(isnumeric(type) && isscalar(type) && isreal(type) && ismember(type,[1 2]), ...
+                'EADMMMOEAD:BadOperatorType','type must be 1 (GA) or 2 (DE).');
+            utility = fullfile(fileparts(which('ALGORITHM')),'Utility functions');
+            addpath(utility,'-begin');
+            for name = {'TournamentSelection','OperatorGA','OperatorGAhalf','OperatorDE'}
+                assert(strcmp(which(name{1}),fullfile(utility,[name{1},'.m'])), ...
+                    'EADMMMOEAD:ShadowedOperator','Expected the native Utility functions implementation of %s.',name{1});
+            end
             %% Generate shared weight vectors and neighbourhoods
             requestedN = Problem.N;
             [W,actualN] = UniformPoint(requestedN,Problem.M,'NBI');
-            [localN,weightFloor] = Algorithm.ParameterSet(0,1e-4);
             validateattributes(weightFloor,{'numeric'}, ...
                 {'scalar','real','finite','>',0,'<',1});
             W         = max(W,weightFloor);
             W         = W./sum(W,2);
             Problem.N = actualN;
+            assert(type==1 || actualN>=3,'EADMMMOEAD:DEPopulationTooSmall', ...
+                'DE needs at least three distinct parents.');
             localN = EADMMValidateSetup(Problem,localN);
             T = max(2,ceil(Problem.N/10));
             [~,B] = sort(pdist2(W,W),2);
@@ -55,7 +66,7 @@ classdef EADMMMOEAD < ALGORITHM
                     k       = sourceIndex(a);
                     parents = B(k,randperm(size(B,2)));
                     parents = [k,parents(parents~=k)];
-                    child   = OperatorGAhalf(Problem,Population1(parents(1:2)),{1,20,1,20});
+                    child   = nativeOffspring(Problem,Population1,parents,type);
                     Offspring1{a} = child;
                     Z1          = min([Population1.objs;child.obj],[],1);
                     Population1 = EADMMMOEADConstrainedUpdate(Population1,child,B(k,:),W,Z1);
@@ -67,7 +78,7 @@ classdef EADMMMOEAD < ALGORITHM
                     k       = sourceIndex(a);
                     parents = B(k,randperm(size(B,2)));
                     parents = [k,parents(parents~=k)];
-                    child   = OperatorGAhalf(Problem,Population2(parents(1:2)),{1,20,1,20});
+                    child   = nativeOffspring(Problem,Population2,parents,type);
                     Offspring2{a} = child;
                     Z2          = min(Z2,child.obj);
                     Population2 = EADMMMOEADUnconstrainedUpdate(Population2,child,B(k,:),W,Z2);
@@ -102,5 +113,18 @@ classdef EADMMMOEAD < ALGORITHM
                 end
             end
         end
+    end
+end
+
+function child = nativeOffspring(Problem,Population,parents,type)
+% Preserve the source subproblem and its first neighbour as the primary pair.
+    if type==1
+        child = OperatorGAhalf(Problem,Population(parents(1:2)));
+    else
+        if numel(parents)<3
+            available = setdiff(1:numel(Population),parents,'stable');
+            parents(3) = available(randi(numel(available)));
+        end
+        child = OperatorDE(Problem,Population(parents(1)),Population(parents(2)),Population(parents(3)));
     end
 end

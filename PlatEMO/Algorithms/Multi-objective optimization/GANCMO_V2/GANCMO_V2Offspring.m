@@ -1,25 +1,41 @@
-function [O1,O2,Generated] = GANCMO_V2Offspring(P,P1,P2,F1,F2,n1,n2,q,seed,generation)
-% Direct CGAN offspring replace P1 DE slots; P2 remains ordinary DE.
+function [O1,O2,Generated] = GANCMO_V2Offspring(P,P1,P2,F1,F2,n1,n2,q,seed,generation,type)
+% Native GA/DE fills P1 slots around direct CGAN children; P2 uses only GA/DE.
     saved = RandStream.getGlobalStream;
     cleanup = onCleanup(@()RandStream.setGlobalStream(saved));
-    m = size(q,1); nDE = n1-m;
-    assert(nDE>=0 && all(isfinite(q),'all') && ...
+    m = size(q,1); nVariation = n1-m;
+    assert(nVariation>=0 && all(isfinite(q),'all') && ...
         all(q>=P.lower & q<=P.upper,'all'),'GANCMO_V2:BadDirectOffspring');
-    XDE = zeros(0,P.D);
-    if nDE>0
+    XVariation = zeros(0,P.D);
+    if nVariation>0
         setStream(seed+1009*generation+2);
-        idx = parentIndices(P1,F1,nDE); X = double(P1.decs);
-        XDE = OperatorDE(P,X(idx(:,1),:),X(idx(:,2),:),X(idx(:,3),:));
+        if type==1
+            XVariation = gaDecisions(P,P1,F1,nVariation);
+        else
+            idx = parentIndices(P1,F1,nVariation); X = double(P1.decs);
+            XVariation = OperatorDE(P,X(idx(:,1),:),X(idx(:,2),:),X(idx(:,3),:));
+        end
     end
     O1 = P1([]);
-    if n1>0; O1 = P.Evaluation([XDE;q]); end
-    Generated = O1(nDE+1:n1);
+    if n1>0; O1 = P.Evaluation([XVariation;q]); end
+    Generated = O1(nVariation+1:n1);
     O2 = P2([]);
     if n2>0
         setStream(seed+1009*generation+4);
-        idx = parentIndices(P2,F2,n2);
-        O2 = OperatorDE(P,P2(idx(:,1)),P2(idx(:,2)),P2(idx(:,3)));
+        if type==1
+            O2 = P.Evaluation(gaDecisions(P,P2,F2,n2));
+        else
+            idx = parentIndices(P2,F2,n2);
+            O2 = OperatorDE(P,P2(idx(:,1)),P2(idx(:,2)),P2(idx(:,3)));
+        end
     end
+end
+
+function X = gaDecisions(P,Population,Fitness,count)
+% Native OperatorGA returns pairs. Trim an odd surplus before any evaluation.
+    parents = TournamentSelection(2,2*ceil(count/2),Fitness);
+    decisions = double(Population.decs);
+    X = OperatorGA(P,decisions(parents,:));
+    X = X(1:count,:);
 end
 
 function setStream(seed)

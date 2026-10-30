@@ -1,9 +1,18 @@
 classdef DRMCMO < ALGORITHM
 % <multi> <real/integer/label/binary/permutation> <constrained>
+% type --- 1 --- Type of operator (1. GA 2. DE)
     methods
         function main(Algorithm,Problem)
            %% Parameter setting
             type = Algorithm.ParameterSet(1);
+            assert(isnumeric(type) && isscalar(type) && isreal(type) && ismember(type,[1 2]), ...
+                'DRMCMO:BadOperatorType','type must be 1 (GA) or 2 (DE).');
+            utility = fullfile(fileparts(which('ALGORITHM')),'Utility functions');
+            addpath(utility,'-begin');
+            for name = {'TournamentSelection','OperatorGA','OperatorGAhalf','OperatorDE'}
+                assert(strcmp(which(name{1}),fullfile(utility,[name{1},'.m'])), ...
+                    'DRMCMO:ShadowedOperator','Expected the native Utility functions implementation of %s.',name{1});
+            end
             %% Generate random population
             Population = Problem.Initialization();
             Zmin       = min(Population.objs,[],1);
