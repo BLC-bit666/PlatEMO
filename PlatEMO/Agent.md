@@ -38,11 +38,12 @@
 
 - 2026-10-31用户最终要求保留对比算法自带GA/DE机制，仅补充缺少的算子模式；此前“全部替换为原生默认”的方案已撤回。范围为DRMCMO、IMTCMO、MCCMO、MTCMO、NAEMT、EADMMMOEAD。统一第一参数type：1=GA（默认），2=DE。
 - DRMCMO保留原GA及原随机参数DE；MCCMO保留原GA/DE两条分支，仅改由type选择。IMTCMO保留双DE组合并新增原生GA；MTCMO保留原GA并新增原生DE；NAEMT保留原自定义DE及K并新增原生GA。新增分支调用Utility functions原生默认算子，不复制交叉/变异公式；每对子代数量需要时使用原生OperatorGAhalf。
-- EADMMMOEAD保留原外层GA，新增原生DE；用户明确要求内部MATLAB ga局部求解保持不变。原种群、环境选择、训练、存档、评价数量和整代终止机制不因统一接口另行更改。EADMM其他骨架入口不属于此次范围。
+- EADMMMOEAD保留原外层GA，新增原生DE；在2026-10-31的算子接口调整中按当时要求保持内部MATLAB ga不变。原种群、环境选择、训练、存档、评价数量和整代终止机制不因统一接口另行更改。EADMM其他骨架入口不属于此次范围。
+- 2026-11-02用户选用局部GA“200／20／5”：EADMMMOEAD的localN默认200，局部最多20代、停滞窗口5代，外层GA/DE共用。共享函数的旧三/四参数调用仍为100D/50，NSGA-II/IBEA保持旧预算。当前采用与验证见`Experiments/EADMM_LocalGA_Adopt_20261102`；原选型报告保留历史结果，不改写为满足原筛选门槛。
 - NAEMT参数顺序为 `{type,alpha,epsilon,N1,K}`，EADMMMOEAD为 `{type,localN,weightFloor}`。其他四个对比算法只增加/保留type。新增默认GA不意味着原DE算法的历史结果可以作为新默认结果。
 - 原算法对比按其原模式选type：IMTCMO/NAEMT选2；MTCMO/EADMMMOEAD选1；MCCMO在LIRCMOP/DASCMOP/DOC/RWMOP上选2、其他问题选1；DRMCMO保留所选原配置。统一GA或DE的扩展实验须单独标注，不能混用原模式结果。
 - 记录为 `Experiments/Comparators_PreserveOperators_20261031`，回归入口为 `Tests/test_ComparatorOperatorChoice.m`。原有模式与修改前快照核对种群、FE和RNG；新增模式检查实际算子路径、默认值和运行。该阶段没有改写实验名单或启动基准实验。
-- 2026-10-31后续用户授权修改test.m：algNames为两列配置，每行 `{算法名,type}`，不再对DRMCMO单独强制DE。proNames包含DASCMOP1–9_BC、LIRCMOP1–14_BC、FCP1–5_BC、DOC1–9_BC、SDC1–15_BC、LSCM1–12_BC，共64题。用户明确自行区分结果，保留原文件命名、存在即跳过规则，不自动添加type目录或结果标签。
+- 2026-10-31后续用户授权修改test.m：algNames为两列配置，每行 `{算法名,type}`，不再对DRMCMO单独强制DE。最新proNames按用户要求移除FCP_BC、DOC_BC、SDC_BC，包含DASCMOP1–9_BC、LIRCMOP1–14_BC、LSCM1–12_BC、NCTP1–18_BC，共53题。用户明确自行区分结果，保留原文件命名、存在即跳过规则，不自动添加type目录或结果标签。
 
 ## 修改与验证
 

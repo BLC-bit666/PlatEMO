@@ -2,7 +2,7 @@ classdef EADMMMOEAD < ALGORITHM
 % <2024> <multi/many> <real> <constrained>
 % EADMM with MOEA/D as the backbone algorithm
 % type --- 1 --- Type of outer operator (1. GA 2. DE)
-% localN --- 0 --- Local GA population size (0 uses inferred R2021a default)
+% localN --- 200 --- Local GA population size (0 uses inferred R2021a default)
 % weightFloor --- 1e-4 --- Positive lower bound of NBI weights
 
 %------------------------------- Reference --------------------------------
@@ -21,7 +21,7 @@ classdef EADMMMOEAD < ALGORITHM
 
     methods
         function main(Algorithm,Problem)
-            [type,localN,weightFloor] = Algorithm.ParameterSet(1,0,1e-4);
+            [type,localN,weightFloor] = Algorithm.ParameterSet(1,200,1e-4);
             assert(isnumeric(type) && isscalar(type) && isreal(type) && ismember(type,[1 2]), ...
                 'EADMMMOEAD:BadOperatorType','type must be 1 (GA) or 2 (DE).');
             utility = fullfile(fileparts(which('ALGORITHM')),'Utility functions');
@@ -99,7 +99,7 @@ classdef EADMMMOEAD < ALGORITHM
                 [Archive,archivePosition] = EADMMTemporaryArchive(Offspring1,Population1,Population2);
                 if ~isempty(Archive)
                     archiveSource = sourceIndex(archivePosition);
-                    Checked       = EADMMLocalSearch(Problem,Archive,Population1,localN);
+                    Checked       = EADMMLocalSearch(Problem,Archive,Population1,localN,20,5);
 
                     % Module 3, Step 5: a local solution inherits the
                     % subproblem of the main-task offspring that spawned it.

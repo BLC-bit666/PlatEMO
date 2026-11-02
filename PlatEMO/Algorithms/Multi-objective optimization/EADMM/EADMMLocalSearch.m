@@ -1,7 +1,9 @@
-function Checked = EADMMLocalSearch(Problem,Archive,Population,localN)
+function Checked = EADMMLocalSearch(Problem,Archive,Population,localN,maxGenerations,maxStallGenerations)
 % Solve EADMM's discrepancy subproblem with MATLAB's genetic algorithm.
 
     if nargin < 4; localN = EADMMValidateSetup(Problem); end
+    if nargin < 5; maxGenerations = 100*Problem.D; end
+    if nargin < 6; maxStallGenerations = 50; end
 
     PopCon = Population.cons;
     ell    = size(PopCon,2);
@@ -12,7 +14,7 @@ function Checked = EADMMLocalSearch(Problem,Archive,Population,localN)
     gamma  = sum(all(PopCon<=0,2));
     rho    = gamma/numel(Population)*ell;
 
-    options = R2021aGAOptions(Problem.D,localN);
+    options = LocalGAOptions(localN,maxGenerations,maxStallGenerations);
     Checked = cell(1,numel(Archive));
     center  = [];
     metadata = metaclass(Problem);
@@ -44,10 +46,8 @@ function Checked = EADMMLocalSearch(Problem,Archive,Population,localN)
     end
 end
 
-function options = R2021aGAOptions(D,populationSize)
-% Only the paper's local population size is exposed; other options stay fixed.
-    maxGenerations = 100*D;
-
+function options = LocalGAOptions(populationSize,maxGenerations,maxStallGenerations)
+% Preserve the GA operators while allowing each backbone to set its budget.
     options = optimoptions('ga', ...
         'ConstraintTolerance',1e-3, ...
         'CreationFcn',@gacreationuniform, ...
@@ -58,7 +58,7 @@ function options = R2021aGAOptions(D,populationSize)
         'FitnessScalingFcn',@fitscalingrank, ...
         'FunctionTolerance',1e-6, ...
         'MaxGenerations',maxGenerations, ...
-        'MaxStallGenerations',50, ...
+        'MaxStallGenerations',maxStallGenerations, ...
         'MutationFcn',@mutationadaptfeasible, ...
         'PopulationSize',populationSize, ...
         'SelectionFcn',@selectionstochunif, ...

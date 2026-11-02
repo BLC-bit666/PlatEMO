@@ -24,6 +24,7 @@ codegen/
 
 # Runtime, experiment, package, and temporary outputs
 /Data/
+/Data-*/
 /ExperimentData/
 /Experiments/
 /Deliverables/
