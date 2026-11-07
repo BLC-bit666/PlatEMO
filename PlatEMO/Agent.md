@@ -34,6 +34,12 @@
 - V3完全禁用CGAN及其专用存档、训练、查询、检测模块。两种群仅使用所选原生算子：type=1为纯GA，type=2为纯DE；不重新加入CGAN。其环境选择已同步当前主线的等价优化实现，删除版本前缀后源码一致。共同算子模式下，与关闭CGAN的主线保持初始化、FE分配、子代、选择及随机轨迹一致。V1/V2/V4/V5此前单候选实验仍为历史证据，不混作当前主线单因素结果。
 - 对应回归为 `Tests/test_GANCMO_ablations.m`、`Tests/test_GANCMO_operators.m`。新增公共主线机制应先对齐保留该机制的消融，再只保留各自目标差异；如用户明确冻结某版本，保留其冻结边界并说明。消融比较须使用同一type；历史DE结果对应type=2，不能当作新默认GA结果。不得擅自改变主线、根目录test.m、其他算法或既有实验结果。
 
+## 独立 K 参数实验
+
+- 2026-11-07用户授权从当前GANCMO复制 `GANCMO_K1`、`GANCMO_K10`、`GANCMO_K25`、`GANCMO_K100`、`GANCMO_K200` 五个自包含版本。除版本前缀命名外，唯一代码差异是各自Settings中的 `candidateCount=K*referenceCount`；K=50直接使用原GANCMO，不建立重复版本。
+- 保留端点损失权重50及全部主线机制，特别是K=1仍执行局部盒筛选、去重和原方向名额分配，不恢复历史单候选直接评价分支。各版本仍默认type=1使用GA、type=2使用DE，不与V1–V5叠加消融。
+- 实现及验证记录在 `Experiments/GANCMO_KVariants_20261107`；本次创建独立算法，不修改主线、V1–V5或根目录test.m，也不启动完整基准实验。
+
 ## 对比算法算子接口
 
 - 2026-10-31用户最终要求保留对比算法自带GA/DE机制，仅补充缺少的算子模式；此前“全部替换为原生默认”的方案已撤回。范围为DRMCMO、IMTCMO、MCCMO、MTCMO、NAEMT、EADMMMOEAD。统一第一参数type：1=GA（默认），2=DE。
