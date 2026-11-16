@@ -1,8 +1,47 @@
-#忽略的文件格式
-*.asv
-
-# 忽略的文件夹
-Data/*
-.ace-tool/
+# Operating-system metadata and local editor/agent state
 .DS_Store
-PlatEMO/tmp/
+._*
+Thumbs.db
+Desktop.ini
+.idea/
+.ace-tool/
+**/.claude/settings.local.json
+*.sw[op]
+*~
+
+# MATLAB autosaves, crashes, generated code, and logs
+*.asv
+*.autosave
+matlab_crash_dump.*
+slprj/
+codegen/
+*.slxc
+*.log
+
+# Experiment data, generated results, and temporary work
+/Data/
+/PlatEMO/Data/
+/PlatEMO/Data-*/
+/PlatEMO/ExperimentData/
+/PlatEMO/Experiments/
+/PlatEMO/Deliverables/
+/PlatEMO/output/
+/PlatEMO/outputs/
+/PlatEMO/tmp/
+
+# Local tests and experiment drivers
+/PlatEMO/Tests/
+/PlatEMO/test_*.m
+
+# Project-root research exports; keep source and documentation assets
+/PlatEMO/*.xlsx
+/PlatEMO/*.zip
+/PlatEMO/*.zip.sha256
+/PlatEMO/*.drawio
+/PlatEMO/*.png
+/PlatEMO/*.mjs
+*.drawio.bkp
+
+# Project-local scratch files
+/PlatEMO/collect_prbccmo1_t_metrics.m
+/PlatEMO/idea.md
