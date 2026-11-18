@@ -1,17 +1,24 @@
 function [State,triggered,delta,threshold] = GANCMO_V4Detection(State,Data,Previous,referenceCount)
-% Formula-2 change from the last successful training; threshold never rises.
+% Formula-2 change from the last successful training; initialized threshold never rises.
 % Learn the distance scale from local archive motion, without a D-based clock.
     triggered = false; delta = NaN; threshold = NaN;
-    if isempty(State)
-        if ~validPoints(Previous); return; end
-        State = initialize(Previous,referenceCount);
-    end
-    threshold = State.theta;
+    if ~isempty(State); threshold = State.theta; end
     if ~validPoints(Data) || ~validPoints(Previous); return; end
     current = (Data.xF+Data.xI)/2;
     previous = (Previous.xF+Previous.xI)/2;
     delta = mean(sqrt(min(pdist2(current,previous,'squaredeuclidean'),[],2)));
     if ~isfinite(delta); return; end
+    if isempty(State)
+        State = initialize(Previous,referenceCount);
+        if isempty(State); State = initialize(Data,referenceCount); end
+        if isempty(State)
+            % No spatial scale from a singleton. Allow meaningful movement
+            % to retrain, without storing a zero threshold in the running minimum.
+            triggered = abs(delta)>1e-12;
+            return;
+        end
+    end
+    threshold = State.theta;
     motion = mean(sqrt(min(pdist2(current,State.previous,'squaredeuclidean'),[],2)));
     State.previous = current;
     % Zero scores are observed; zero local motion does not lower the scale.
@@ -29,13 +36,10 @@ function [State,triggered,delta,threshold] = GANCMO_V4Detection(State,Data,Previ
 end
 
 function State = initialize(Data,referenceCount)
+    State = [];
     points = (Data.xF+Data.xI)/2;
     [radius,count] = spacing(points);
-    if ~isfinite(radius)
-        [radius,count] = spacing([Data.xF;Data.xI]);
-    end
-    assert(isfinite(radius) && radius>0 && count>=2,'GANCMO_V4:DegenerateInitialScale', ...
-        'Legal initial training data must contain distinct finite endpoints.');
+    if ~isfinite(radius) || radius<=0; return; end
     assert(referenceCount>=numel(unique(Data.ref)) && referenceCount==floor(referenceCount));
     theta = sqrt(referenceCount)*radius;
     State = struct('theta',theta,'samples',count,'previous',points, ...

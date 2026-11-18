@@ -1,5 +1,5 @@
 function Dec = GANCMO_V1Candidates(Model,Archive,W,P1,P2,Problem,quota,S,GuideData,allowUse)
-% Direction-local all-pair boxes; cover represented directions first.
+% Divide the quota across paired directions; only the remainder explores.
     if nargin<10; allowUse=true; end
     Dec = zeros(0,Problem.D);
     if quota<=0 || isempty(Model); return; end
@@ -20,9 +20,22 @@ function Dec = GANCMO_V1Candidates(Model,Archive,W,P1,P2,Problem,quota,S,GuideDa
     % Repeated endpoints cannot change the nearest exclusion distance.
     base = unique(base,'rows');
     pairedDirection = false(directionCount,1); pairedDirection(GuideData.ref) = true;
-    % Stable partition preserves random order within each group and its RNG.
-    directionOrder = [directionOrder(pairedDirection(directionOrder)), ...
-        directionOrder(~pairedDirection(directionOrder))];
+    paired = directionOrder(pairedDirection(directionOrder));
+    unpaired = directionOrder(~pairedDirection(directionOrder));
+    pairedCount = numel(paired);
+    if pairedCount==0; return; end
+    directionQuota = zeros(1,directionCount);
+    if quota<pairedCount
+        directionQuota(paired(1:quota)) = 1;
+    else
+        directionQuota(paired) = floor(quota/pairedCount);
+        remainder = min(mod(quota,pairedCount),numel(unpaired));
+        directionQuota(unpaired(1:remainder)) = 1;
+    end
+    % Allocate before screening. Unfilled slots return to ordinary variation.
+    directionOrder = [paired,unpaired];
+    directionOrder = directionOrder(directionQuota(directionOrder)>0);
+    activeCount = numel(directionOrder);
     if GuideData.count>0
         % Bound all retained F/I endpoints belonging to this direction.
         lower = nan(directionCount,Problem.D); upper = lower;
@@ -35,13 +48,14 @@ function Dec = GANCMO_V1Candidates(Model,Archive,W,P1,P2,Problem,quota,S,GuideDa
     end
     Dec = zeros(quota,Problem.D); selected = zeros(quota,Problem.D);
     count = 0; next = 1; fullBatch = false;
-    while count<quota && next<=directionCount
+    while count<quota && next<=activeCount
         % Keep a small batch when only a few slots remain, instead of repeated
         % tiny network calls. Unused directions retain their original priority.
-        last = min(directionCount,next+max(8,quota-count)-1);
-        if fullBatch; last = directionCount; end
+        last = min(activeCount,next+max(8,quota-count)-1);
+        if fullBatch; last = activeCount; end
         directions = directionOrder(next:last); next = last+1;
         slots = find(ismember(refs,directions));
+        if fullBatch; slots = (1:total)'; end
         if isempty(slots); continue; end
         batchRefs = refs(slots);
         % Tiny matrix products can use a different floating-point reduction.
@@ -81,17 +95,25 @@ function Dec = GANCMO_V1Candidates(Model,Archive,W,P1,P2,Problem,quota,S,GuideDa
             end
             % rows preserve ascending slot IDs; stable sort retains that tie order.
             [~,order] = sort(rank);
-            best = 0; second = 0;
+            best = 0; second = 0; assigned = 0;
             for k = reshape(rows(order),1,[])
                 if count>0 && any(vecnorm(selected(1:count,:)-Z(k,:),2,2)<=1e-6)
                     continue;
                 end
-                if best==0
+                if pairedDirection(j)
+                    count = count+1; Dec(count,:) = double(X(k,:)); selected(count,:) = Z(k,:);
+                    assigned = assigned+1;
+                    if assigned>=directionQuota(j); break; end
+                elseif best==0
                     best = k;
-                    if pairedDirection(j) || fullBatch; break; end
+                    if fullBatch; break; end
                 else
                     second = k; break;
                 end
+            end
+            if pairedDirection(j)
+                if count>=quota; break; end
+                continue;
             end
             if best==0; continue; end
             if second>0
