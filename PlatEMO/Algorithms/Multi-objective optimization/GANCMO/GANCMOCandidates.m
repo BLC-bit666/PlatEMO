@@ -1,5 +1,7 @@
 function Dec = GANCMOCandidates(Model,Archive,W,P1,P2,Problem,quota,S,GuideData,allowUse)
 % Divide the quota across paired directions; only the remainder explores.
+% A paired candidate must lie in the ball (F/I segment as diameter) of any
+% retained pair of its direction; unfilled slots return to ordinary variation.
     if nargin<10; allowUse=true; end
     Dec = zeros(0,Problem.D);
     if quota<=0 || isempty(Model); return; end
@@ -37,13 +39,14 @@ function Dec = GANCMOCandidates(Model,Archive,W,P1,P2,Problem,quota,S,GuideData,
     directionOrder = directionOrder(directionQuota(directionOrder)>0);
     activeCount = numel(directionOrder);
     if GuideData.count>0
-        % Bound all retained F/I endpoints belonging to this direction.
-        lower = nan(directionCount,Problem.D); upper = lower;
+        % One ball per retained pair of this direction, with the F/I segment
+        % as diameter; the F endpoints are the ranking references.
+        Mid = cell(directionCount,1); Rad = Mid; Fr = Mid;
         for ref = reshape(GuideData.ref,1,[])
             rows = Archive.ref==ref;
-            endpoints = (double([Archive.xf(rows,:);Archive.xi(rows,:)])-Problem.lower)./span;
-            lower(ref,:) = min(endpoints,[],1);
-            upper(ref,:) = max(endpoints,[],1);
+            XF = (double(Archive.xf(rows,:))-Problem.lower)./span;
+            XI = (double(Archive.xi(rows,:))-Problem.lower)./span;
+            Mid{ref} = (XF+XI)/2; Rad{ref} = vecnorm(XF-XI,2,2)'/2; Fr{ref} = XF;
         end
     end
     Dec = zeros(quota,Problem.D); selected = zeros(quota,Problem.D);
@@ -69,12 +72,14 @@ function Dec = GANCMOCandidates(Model,Archive,W,P1,P2,Problem,quota,S,GuideData,
         Z = (double(X)-Problem.lower)./span;
         hasPair = pairedDirection(batchRefs);
         if GuideData.count>0
-            localRefs = batchRefs(hasPair);
-            valid(hasPair) = valid(hasPair) & all(Z(hasPair,:)>=lower(localRefs,:)-1e-12 & ...
-                Z(hasPair,:)<=upper(localRefs,:)+1e-12,2);
+            % A candidate qualifies if it lies in the ball of any pair.
+            for ref = reshape(unique(batchRefs(hasPair)),1,[])
+                in = find(hasPair & batchRefs==ref);
+                valid(in) = valid(in) & any(pdist2(Z(in,:),Mid{ref})<=Rad{ref}+1e-12,2);
+            end
         end
         if ~isempty(base)
-            % Rejected box/nonfinite rows cannot become valid again.
+            % Rejected ball/nonfinite rows cannot become valid again.
             rows = find(valid);
             valid(rows) = min(pdist2(Z(rows,:),base),[],2)>1e-6;
         end
@@ -88,7 +93,7 @@ function Dec = GANCMOCandidates(Model,Archive,W,P1,P2,Problem,quota,S,GuideData,
             rows = find(batchRefs==j & valid);
             if isempty(rows); continue; end
             if pairedDirection(j)
-                F = GuideData.xF(GuideData.ref==j,:);
+                F = Fr{j};
                 rank = min(pdist2(Z(rows,:),F),[],2);
             else
                 rank = -criticScore(rows);

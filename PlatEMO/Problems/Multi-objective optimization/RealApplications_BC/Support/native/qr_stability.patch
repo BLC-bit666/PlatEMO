@@ -1,0 +1,55 @@
+--- a/core/src/qrcode/QRDetector.cpp
++++ b/core/src/qrcode/QRDetector.cpp
+@@ -349,10 +349,19 @@
+ 
+ 	return {dimension + error, moduleSize, std::abs(error)};
+ }
++
++static thread_local uint64_t realappsGuardHits = 0;
++static thread_local uint64_t realappsNonfiniteHits = 0;
++static thread_local uint64_t realappsZeroHits = 0;
++extern "C" __attribute__((visibility("default"))) uint64_t realapps_qr_nonfinite_hits() { return realappsNonfiniteHits; }
++extern "C" __attribute__((visibility("default"))) uint64_t realapps_qr_zero_hits() { return realappsZeroHits; }
++extern "C" __attribute__((visibility("default"))) uint64_t realapps_qr_guard_hits() { return realappsGuardHits; }
+ 
+ static RegressionLine TraceLine(const BitMatrix& image, PointF p, PointF d, int edge)
+ {
+ 	BitMatrixCursorF cur(image, p, d - p);
++	// A degenerate finder pair has no trace direction; keep the existing fallback.
++	if (!std::isfinite(cur.d.x) || !std::isfinite(cur.d.y)) { ++realappsGuardHits; ++realappsNonfiniteHits; return {}; }
+ 	RegressionLine line;
+ 	line.setDirectionInward(cur.back());
+ 
+@@ -362,6 +371,7 @@
+ 		cur.turnBack();
+ 
+ 	auto curI = BitMatrixCursorI(image, PointI(cur.p), PointI(mainDirection(cur.d)));
++	if (curI.d == PointI{}) { ++realappsGuardHits; ++realappsZeroHits; return {}; }
+ 	// make sure curI positioned such that the white->black edge is directly behind
+ 	// Test image: fix-traceline.jpg
+ 	while (curI.isIn() && !curI.edgeAtBack()) {
+--- a/zxing.cpp
++++ b/zxing.cpp
+@@ -680,4 +680,22 @@
+ 		":param ec_level: error correction level of the barcode (Used for Aztec, PDF417, and QRCode only).\n"
+ 		":rtype: zxingcpp.Bitmap\n"
+ 	);
++}
++
++// Local fixed-input RGB bridge; options match Python read_barcode defaults.
++#include <cstdio>
++extern "C" __attribute__((visibility("default")))
++int realapps_qr_matches(const uint8_t* pixels, int width, int height, int stride,
++                        const char* expected, char* error, int error_size)
++{
++    try {
++        const auto options = ReaderOptions().formats(BarcodeFormat::QRCode)
++            .tryRotate(true).tryDownscale(true).tryInvert(true).textMode(TextMode::HRI)
++            .binarizer(Binarizer::LocalAverage).isPure(false).maxNumberOfSymbols(1)
++            .eanAddOnSymbol(EanAddOnSymbol::Ignore).returnErrors(false);
++        auto results = ReadBarcodes(ImageView(pixels,width,height,ImageFormat::RGB,stride),options);
++        return !results.empty() && results.front().text() == expected;
++    } catch (const std::exception& e) {
++        std::snprintf(error,error_size,"%s",e.what());return -1;
++    }
+ }

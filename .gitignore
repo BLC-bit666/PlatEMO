@@ -18,8 +18,15 @@ codegen/
 *.slxc
 *.log
 
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
 # Experiment data, generated results, and temporary work
 /Data/
+/Data-*/
 /PlatEMO/Data/
 /PlatEMO/Data-*/
 /PlatEMO/ExperimentData/
@@ -31,7 +38,27 @@ codegen/
 
 # Local tests and experiment drivers
 /PlatEMO/Tests/
+/PlatEMO/test.m
 /PlatEMO/test_*.m
+/PlatEMO/run_*.m
+/PlatEMO/check_*.m
+/PlatEMO/analyze_*.m
+/PlatEMO/plot_*.m
+/PlatEMO/summarize_*.m
+/PlatEMO/benchmark_*.m
+/PlatEMO/Problems/Multi-objective optimization/Engineering_BC/Support/run_*.m
+/PlatEMO/Problems/Multi-objective optimization/Engineering_BC/Support/test_*.m
+/PlatEMO/Algorithms/Multi-objective optimization/PRBCCMO/Support/analyze_*.m
+/PlatEMO/Algorithms/Multi-objective optimization/PRBCCMO/Support/benchmark_*.m
+/PlatEMO/Algorithms/Multi-objective optimization/PRBCCMO/Support/plot_*.m
+/PlatEMO/Algorithms/Multi-objective optimization/PRBCCMO/Support/run_*.m
+/PlatEMO/Algorithms/Multi-objective optimization/PRBCCMO/Support/summarize_*.m
+/PlatEMO/Algorithms/Multi-objective optimization/PRBCCMO/Support/test_*.m
+
+# Local native builds; retain source, patches, licenses, and build scripts
+/PlatEMO/Problems/Multi-objective optimization/RealApplications_BC/Support/native/*.dylib
+/PlatEMO/Problems/Multi-objective optimization/RealApplications_BC/Support/native/*.so
+/PlatEMO/Problems/Multi-objective optimization/RealApplications_BC/Support/native/*.dll
 
 # Project-root research exports; keep source and documentation assets
 /PlatEMO/*.xlsx
@@ -43,5 +70,6 @@ codegen/
 *.drawio.bkp
 
 # Project-local scratch files
+/PlatEMO/session.txt
 /PlatEMO/collect_prbccmo1_t_metrics.m
 /PlatEMO/idea.md

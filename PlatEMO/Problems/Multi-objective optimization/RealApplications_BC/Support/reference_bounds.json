@@ -1,0 +1,22 @@
+{
+  "qr": {
+    "HVNormalizationBound": [
+      40958,
+      12995.966327160493
+    ],
+    "source_file": "outputs/real_world_exact_reproduction_20261119/evidence/prior_reference/qr_checks.json",
+    "source_sha256": "85315dc1ece1db98e834adcf95bfc000780c38531b2d42f71f1bd1acd8d201a0",
+    "method": "coordinatewise maxima of previously fixed verification examples; frozen before optimizer execution; not a Pareto front or global upper bound",
+    "sample_count": 88
+  },
+  "route": {
+    "HVNormalizationBound": [
+      51.77148668090174,
+      1596.6355452601128
+    ],
+    "source_file": "outputs/real_world_exact_reproduction_20261119/evidence/prior_reference/route_checks.json",
+    "source_sha256": "98d65d0054eb4d8d3b5a148af9ab7a2dc297bbbbb8d2537a350e0fab07bf1abb",
+    "method": "coordinatewise maxima of previously fixed verification examples; frozen before optimizer execution; not a Pareto front or global upper bound",
+    "sample_count": 48
+  }
+}
